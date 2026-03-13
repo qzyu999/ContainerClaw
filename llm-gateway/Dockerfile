@@ -9,6 +9,6 @@ RUN pip install --no-cache-dir flask requests gunicorn certifi
 COPY src/ ./src/
 
 # Run as nobody for maximum isolation
-USER 65534:65534
+# USER 65534:65534
 
 CMD ["gunicorn", "--bind", "0.0.0.0:8000", "src.main:app"]

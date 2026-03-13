@@ -1,8 +1,11 @@
 import os
-from flask import Flask, request, Response
 import requests
-import certifi
+from flask import Flask, request, Response
 import json
+import certifi
+import urllib3
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 
 app = Flask(__name__)
 
@@ -25,11 +28,24 @@ def is_active(key_name):
     key = KEYS.get(key_name)
     return key and not key.startswith("placeholder")
 
+# Set up a resilient requests session
+session = requests.Session()
+retry_strategy = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+)
+adapter = HTTPAdapter(max_retries=retry_strategy)
+session.mount("https://", adapter)
+session.mount("http://", adapter)
+
 @app.route("/v1/chat/completions", methods=["POST"])
 def proxy():
     body = request.get_json()
     model = body.get("model", "").lower()
     
+    print(f"Proxying request for model: {model}")
+
     # 1. Gemini Routing
     if "gemini" in model:
         if not is_active("gemini"):
@@ -37,7 +53,7 @@ def proxy():
         
         # Map OpenAI-style messages to Gemini contents
         contents = []
-        for m in body["messages"]:
+        for m in body.get("messages", []):
             role = "user" if m["role"] == "user" else "model"
             contents.append({
                 "role": role,
@@ -46,36 +62,37 @@ def proxy():
         
         gemini_payload = {"contents": contents}
         
-        # Try v1beta first, fallback to v1 if it fails with 404
-        endpoints = [
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={KEYS['gemini']}",
-            f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={KEYS['gemini']}"
-        ]
+        # We try v1beta as the primary, and handle specific errors
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={KEYS['gemini']}"
         
-        last_resp = None
-        for url in endpoints:
-            try:
-                resp = requests.post(url, headers={"Content-Type": "application/json"}, json=gemini_payload, verify=certifi.where())
-                if resp.status_code != 404:
-                    return Response(resp.text, status=resp.status_code, content_type="application/json")
-                # Store as a flask Response if we want to return it later
-                last_resp = Response(resp.text, status=resp.status_code, content_type="application/json")
-            except Exception as e:
-                last_resp = Response(str(e), status=500)
-        
-        return last_resp if last_resp else Response("No endpoints reachable", status=502)
+        try:
+            print(f"Requesting Gemini URL: {url.split('?')[0]}?key=REDACTED")
+            resp = session.post(
+                url, 
+                headers={"Content-Type": "application/json"}, 
+                json=gemini_payload, 
+                verify=certifi.where(),
+                timeout=90
+            )
+            
+            if resp.status_code != 200:
+                print(f"Gemini error response ({resp.status_code}): {resp.text}")
+                
+            return Response(resp.text, status=resp.status_code, content_type="application/json")
+            
+        except requests.exceptions.SSLError as e:
+            print(f"SSL Error proxying to Gemini: {str(e)}")
+            return Response(f"SSL error: {str(e)}", status=500)
+        except Exception as e:
+            print(f"General Error proxying to Gemini: {str(e)}")
+            return Response(f"General error: {str(e)}", status=500)
         
     # 2. Anthropic Routing
     elif "claude" in model:
         if not is_active("anthropic"):
             return Response("Anthropic API key is not configured.", status=401)
-        url = "https://api.anthropic.com/v1/messages"
-        headers = {
-            "x-api-key": KEYS["anthropic"],
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json"
-        }
-        # Transformation logic can be added here
+        # Placeholder for transformation logic
+        return Response("Anthropic integration pending full mapping.", status=501)
 
     # 3. OpenAI / Default Routing
     else:
@@ -86,15 +103,12 @@ def proxy():
             "Authorization": f"Bearer {KEYS['openai']}",
             "Content-Type": "application/json"
         }
-
-    # Audit the request (log to Fluss placeholder)
-    print(f"Proxying request for model: {model}")
-    
-    resp = requests.post(url, json=body, headers=headers, stream=True)
-    
-    return Response(resp.iter_content(chunk_size=1024), 
-                    status=resp.status_code, 
-                    content_type=resp.headers.get("content-type"))
+        try:
+            resp = session.post(url, json=body, headers=headers, timeout=90)
+            return Response(resp.text, status=resp.status_code, content_type=resp.headers.get("content-type"))
+        except Exception as e:
+            print(f"Error proxying to OpenAI: {str(e)}")
+            return Response(str(e), status=500)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)

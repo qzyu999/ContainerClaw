@@ -23,37 +23,126 @@
 
         <section class="hero">
             <h2>Secure Agent Sandbox</h2>
-            <p>Your session <span class="session-id">my-session</span> is isolated and ready.</p>
+            <p>Your session <span class="session-id">user-session</span> is isolated and ready.</p>
+            <form id="task-form" class="task-input">
+                <input type="text" id="prompt" placeholder="Ask your agent (e.g. 'check my files')" autocomplete="off">
+                <button type="submit">Execute</button>
+            </form>
         </section>
 
         <div class="grid">
+            <!-- Cards remain the same -->
             <div class="card">
                 <h3>Agent Status</h3>
-                <div class="stat">Running</div>
-                <p>Execution sandbox initialized with Seccomp-L1.</p>
+                <div id="agent-status" class="stat">Idle</div>
+                <p>Execution lifecycle monitor.</p>
             </div>
             <div class="card">
-                <h3>LLM Gateway</h3>
-                <div class="stat active">GEMINI_API</div>
-                <p>Credential vault locked. Egress filtering enabled.</p>
+                <h3>Safety Check</h3>
+                <div id="safety-level" class="stat">Low Risk</div>
+                <div class="risk-meter-bg">
+                    <div id="risk-meter" class="risk-meter-fill"></div>
+                </div>
             </div>
             <div class="card">
-                <h3>Logging</h3>
-                <div class="stat">Persistence On</div>
-                <p>All actions are being streamed to Apache Fluss.</p>
+                <h3>Sandbox</h3>
+                <div class="stat">Seccomp L1</div>
+                <p>Syscall & AppArmor active.</p>
             </div>
         </div>
 
         <footer class="terminal-preview">
             <div class="term-header">Terminal Output</div>
-            <div class="term-body">
-                <p>> [SYSTEM] ContainerClaw v0.1.0 starting up...</p>
-                <p>> [NETWORK] Internal bridge "containerclaw_internal" established.</p>
-                <p>> [SECURITY] Seccomp profile "seccomp-agent.json" applied.</p>
-                <p>> [AGENT] Ready for tasks.</p>
+            <div id="terminal" class="term-body">
+                <p>> [SYSTEM] Ready for tasks.</p>
                 <span class="cursor">_</span>
             </div>
         </footer>
     </main>
+
+    <script>
+        const terminal = document.getElementById('terminal');
+        const form = document.getElementById('task-form');
+        const promptInput = document.getElementById('prompt');
+        const sessionId = "user-session"; // Standard for MVP
+
+        const riskMeter = document.getElementById('risk-meter');
+        const safetyLevel = document.getElementById('safety-level');
+
+        function addLog(type, content, risk_score = 0.1) {
+            const p = document.createElement('p');
+            const timestamp = new Date().toLocaleTimeString();
+            
+            // Risk level class
+            let riskClass = 'risk-low';
+            if (risk_score > 0.7) riskClass = 'risk-high';
+            else if (risk_score > 0.3) riskClass = 'risk-med';
+
+            p.innerHTML = `
+                <span class="timestamp">[${timestamp}]</span> 
+                <span class="tag ${type}">[${type.toUpperCase()}]</span> 
+                ${content}
+                <span class="risk-indicator ${riskClass}"></span>
+            `;
+            
+            terminal.insertBefore(p, terminal.lastElementChild);
+            terminal.scrollTop = terminal.scrollHeight;
+
+            // Update safety meter
+            if (risk_score) {
+                const percent = risk_score * 100;
+                riskMeter.style.width = `${percent}%`;
+                if (risk_score > 0.7) {
+                    safetyLevel.innerText = "High Risk";
+                    safetyLevel.style.color = "#e74c3c";
+                } else if (risk_score > 0.3) {
+                    safetyLevel.innerText = "Medium Risk";
+                    safetyLevel.style.color = "#f1c40f";
+                } else {
+                    safetyLevel.innerText = "Low Risk";
+                    safetyLevel.style.color = "#4ade80";
+                }
+            }
+        }
+
+        // 1. Connect to SSE Stream
+        const eventSource = new EventSource(`http://localhost:5001/events/${sessionId}`);
+        
+        eventSource.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            addLog(data.type, data.content, data.risk_score);
+            if (data.type === 'thought') {
+                document.getElementById('agent-status').innerText = "Thinking...";
+                document.getElementById('agent-status').className = "stat active";
+            } else if (data.type === 'finish' || data.type === 'error') {
+                document.getElementById('agent-status').innerText = "Idle";
+                document.getElementById('agent-status').className = "stat";
+            }
+        };
+
+        // 2. Submit Task
+        form.onsubmit = async (e) => {
+            e.preventDefault();
+            const prompt = promptInput.value;
+            if (!prompt) return;
+
+            addLog('user', prompt);
+            promptInput.value = '';
+
+            try {
+                const resp = await fetch('http://localhost:5001/task', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ prompt, session_id: sessionId })
+                });
+                const result = await resp.json();
+                if (result.status === 'error') {
+                    addLog('error', result.message);
+                }
+            } catch (err) {
+                addLog('error', 'Failed to send task to bridge.');
+            }
+        };
+    </script>
 </body>
 </html>

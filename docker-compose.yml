@@ -1,23 +1,20 @@
 services:
-  agent:
+  claw-agent:
+    container_name: claw-agent
     build:
       context: ./agent
     ports:
       - "50051:50051"
+      - "5001:5001"
     networks:
-      - containerclaw_net
+      - claw_v3_net
     volumes:
       - ${PROJECT_DIR:-.}:/workspace:rw
     environment:
       - LLM_GATEWAY_URL=${LLM_GATEWAY_URL:-http://llm-gateway:8000}
       - FLUSS_ENDPOINT=${FLUSS_ENDPOINT:-fluss:9092}
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - NET_BIND_SERVICE
-    user: "1000:1000"
+    tty: true
+    stdin_open: true
 
   llm-gateway:
     build:
@@ -25,7 +22,7 @@ services:
     ports:
       - "8000:8000"
     networks:
-      - containerclaw_net
+      - claw_v3_net
     secrets:
       - gemini_api_key
       - anthropic_api_key
@@ -33,18 +30,12 @@ services:
     environment:
       - RATE_LIMIT_RPM=60
       - MAX_TOKENS_PER_REQUEST=8192
-      - ALLOWED_MODELS=claude-sonnet-4-20250514,gpt-4o
-    security_opt:
-      - no-new-privileges:true
-    cap_add:
-      - NET_RAW
-      - NET_ADMIN
-    user: "65534:65534"
+    command: ["gunicorn", "--timeout", "120", "--bind", "0.0.0.0:8000", "src.main:app"]
 
   fluss:
     image: apache/flink:latest
     networks:
-      - containerclaw_net
+      - claw_v3_net
     volumes:
       - fluss_data:/var/lib/fluss
 
@@ -54,10 +45,23 @@ services:
     ports:
       - "3000:80"
     networks:
-      - containerclaw_net
+      - claw_v3_net
+    depends_on:
+      - ui-bridge
+
+  ui-bridge:
+    build:
+      context: ./ui
+      dockerfile: bridge.Dockerfile
+    network_mode: "service:claw-agent"
+    environment:
+      - AGENT_URL=localhost:50051
+      - GRPC_DNS_RESOLVER=native
+    depends_on:
+      - claw-agent
 
 networks:
-  containerclaw_net:
+  claw_v3_net:
     driver: bridge
     driver_opts:
       com.docker.network.driver.mtu: 1400

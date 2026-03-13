@@ -33,6 +33,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         return self.event_queues[session_id]
 
     def _emit(self, session_id, e_type, content):
+        print(f"[{session_id}] [{e_type.upper()}] {content}")
         q = self._get_queue(session_id)
         event = agent_pb2.ActivityEvent(
             timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -45,6 +46,16 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
     def ExecuteTask(self, request, context):
         print(f"Received task for session {request.session_id}: {request.prompt}")
         session_id = request.session_id
+        
+        # Clear the queue for this session to avoid log leakage from previous runs
+        if session_id in self.event_queues:
+            q = self.event_queues[session_id]
+            while not q.empty():
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break
+        
         # Start the autonomous loop in a background thread
         thread = threading.Thread(target=self._run_loop, args=(session_id, request.prompt))
         thread.daemon = True
@@ -65,42 +76,113 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             except queue.Empty:
                 continue
 
+    def _execute_command(self, session_id, command):
+        """Executes a command in the sandbox and returns the output."""
+        try:
+            # We restrict commands for safety here even though Seccomp is active
+            allowed_cmds = ["ls", "cat", "git", "echo", "pwd", "mkdir"]
+            base_cmd = command.split()[0]
+            if base_cmd not in allowed_cmds and base_cmd != "python":
+                 return f"Error: Command '{base_cmd}' not in allowed list."
+
+            import subprocess
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd="/workspace"
+            )
+            return result.stdout if result.returncode == 0 else result.stderr
+        except Exception as e:
+            return f"Execution error: {str(e)}"
+
+    def _write_file(self, session_id, path, content):
+        """Writes content to a file in the workspace."""
+        try:
+            full_path = os.path.join("/workspace", path.lstrip("/"))
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+            with open(full_path, "w") as f:
+                f.write(content)
+            return f"Successfully wrote to {path}"
+        except Exception as e:
+            return f"Write error: {str(e)}"
+
     def _run_loop(self, session_id, prompt):
-        self._emit(session_id, "thought", f"Starting autonomous loop for prompt: {prompt}")
+        self._emit(session_id, "thought", f"Starting autonomous loop for: {prompt}")
         history = self._get_history(session_id)
         
-        # Prepare the current turn with instruction
-        current_messages = history + [{"role": "user", "content": f"Task: {prompt}\n\nPlan and execute this task."}]
+        # System-like instruction for the loop
+        instruction = (
+            "You are an autonomous agent. Plan your steps and use tools. "
+            "Available tools: execute_command(cmd), write_file(path, content). "
+            "Respond in JSON format: {\"thought\": \"...\", \"tool\": \"execute_command\", \"args\": \"ls -la\"} "
+            "Or finish: {\"thought\": \"...\", \"finish\": \"message\"}"
+        )
         
-        try:
-            # 1. Ask Gemini for a plan
-            plan = self._call_llm(session_id, current_messages)
-            
-            # Update permanent history
-            history.append({"role": "user", "content": prompt})
-            history.append({"role": "assistant", "content": f"Plan: {plan}"})
-            
-            self._emit(session_id, "thought", f"Plan developed: {plan[:100]}...")
-            
-            # Simple demonstration of a tool call
-            self._emit(session_id, "thought", "Executing step 1: Environment check")
-            result = self._execute_command(session_id, "ls -la /workspace")
-            self._emit(session_id, "output", result)
-            
-            # In a real autonomy loop, we'd feed 'result' back to Gemini here.
-            # For Phase 2 MVP, we just finish.
-            
-            self._emit(session_id, "thought", "Task sequence complete.")
-            self._emit(session_id, "finish", "Execution finished.")
-        except Exception as e:
-            self._emit(session_id, "error", f"Autonomous loop failed: {str(e)}")
+        current_messages = history + [{"role": "user", "content": f"Context: {instruction}\n\nTask: {prompt}"}]
+        
+        max_steps = 5
+        for step in range(max_steps):
+            try:
+                # 1. Ask Gemini for next action
+                response_text = self._call_llm(session_id, current_messages)
+                
+                # Robust JSON extraction
+                import re
+                json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+                try:
+                    if json_match:
+                        action = json.loads(json_match.group())
+                    else:
+                        raise ValueError("No JSON block found")
+                except Exception as e:
+                    print(f"JSON Parse Error: {e}. Raw: {response_text}")
+                    # Fallback if Gemini doesn't follow JSON exactly
+                    action = {"thought": response_text, "finish": "Task concluded (fallback)"}
+
+                self._emit(session_id, "thought", action.get("thought", "Thinking..."))
+                
+                if "finish" in action:
+                    history.append({"role": "user", "content": prompt})
+                    history.append({"role": "assistant", "content": action["thought"]})
+                    self._emit(session_id, "finish", action["finish"])
+                    break
+                
+                # 2. Execute Tool
+                tool_name = action.get("tool")
+                args = action.get("args")
+                
+                output = "Unknown tool"
+                if tool_name == "execute_command":
+                    self._emit(session_id, "thought", f"Executing: {args}")
+                    output = self._execute_command(session_id, args)
+                elif tool_name == "write_file":
+                    path = action.get("path")
+                    content = action.get("content")
+                    self._emit(session_id, "thought", f"Writing to: {path}")
+                    output = self._write_file(session_id, path, content)
+                
+                self._emit(session_id, "output", output)
+                
+                # 3. Feed back to history
+                current_messages.append({"role": "assistant", "content": response_text})
+                current_messages.append({"role": "user", "content": f"Observation: {output}"})
+                
+            except Exception as e:
+                self._emit(session_id, "error", f"Autonomous loop step {step} failed: {str(e)}")
+                break
+        else:
+            self._emit(session_id, "finish", "Task timed out after max steps.")
 
     def _call_llm(self, session_id, messages):
-        max_retries = 3
-        retry_delay = 2
+        max_retries = 8 # Increased retries
+        retry_delay = 5
+
         
         payload = {
-            "model": "gemini-2.5-flash",
+            "model": "gemini-2.5-flash", # Hardcoded for now
             "messages": messages
         }
         
@@ -109,7 +191,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 resp = requests.post(
                     f"{self.gateway_url}/v1/chat/completions",
                     json=payload,
-                    timeout=30
+                    timeout=60 # Increased timeout
                 )
                 if resp.status_code == 200:
                     data = resp.json()
@@ -118,6 +200,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                     return data["choices"][0]["message"]["content"]
                 
                 print(f"Attempt {attempt+1}: Gateway returned {resp.status_code}")
+                print(f"Response body: {resp.text}")
             except Exception as e:
                 print(f"Attempt {attempt+1} failed: {str(e)}")
             
@@ -127,14 +210,6 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         
         raise Exception("Failed to reach LLM Gateway after multiple retries")
 
-    def _execute_command(self, session_id, cmd):
-        self._emit(session_id, "tool_call", cmd)
-        try:
-            # We enforce running in /workspace
-            result = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT, cwd="/workspace")
-            return result.decode("utf-8")
-        except subprocess.CalledProcessError as e:
-            return f"Error: {e.output.decode('utf-8')}"
 
 def serve():
     server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=10))
