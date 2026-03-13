@@ -1,3 +1,7 @@
 FROM nginx:alpine
-# Simple static UI placeholder
-RUN echo "<h1>ContainerClaw UI</h1><p>Session: placeholder</p>" > /usr/share/nginx/html/index.html
+
+# Create a more premium UI placeholder
+RUN rm /usr/share/nginx/html/index.html
+
+COPY index.html /usr/share/nginx/html/index.html
+COPY style.css /usr/share/nginx/html/style.css

@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ContainerClaw Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=JetBrains+Mono&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="glass-bg"></div>
+    <main class="dashboard">
+        <header>
+            <div class="logo">
+                <span class="icon">🦀</span>
+                <h1>ContainerClaw</h1>
+            </div>
+            <div class="status-badge">
+                <span class="pulse"></span>
+                System Active
+            </div>
+        </header>
+
+        <section class="hero">
+            <h2>Secure Agent Sandbox</h2>
+            <p>Your session <span class="session-id">my-session</span> is isolated and ready.</p>
+        </section>
+
+        <div class="grid">
+            <div class="card">
+                <h3>Agent Status</h3>
+                <div class="stat">Running</div>
+                <p>Execution sandbox initialized with Seccomp-L1.</p>
+            </div>
+            <div class="card">
+                <h3>LLM Gateway</h3>
+                <div class="stat active">GEMINI_API</div>
+                <p>Credential vault locked. Egress filtering enabled.</p>
+            </div>
+            <div class="card">
+                <h3>Logging</h3>
+                <div class="stat">Persistence On</div>
+                <p>All actions are being streamed to Apache Fluss.</p>
+            </div>
+        </div>
+
+        <footer class="terminal-preview">
+            <div class="term-header">Terminal Output</div>
+            <div class="term-body">
+                <p>> [SYSTEM] ContainerClaw v0.1.0 starting up...</p>
+                <p>> [NETWORK] Internal bridge "containerclaw_internal" established.</p>
+                <p>> [SECURITY] Seccomp profile "seccomp-agent.json" applied.</p>
+                <p>> [AGENT] Ready for tasks.</p>
+                <span class="cursor">_</span>
+            </div>
+        </footer>
+    </main>
+</body>
+</html>

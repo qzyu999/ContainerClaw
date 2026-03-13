@@ -49,7 +49,7 @@ services:
     build:
       context: ./ui
     ports:
-      - "3000:3000"
+      - "3000:80"
     networks:
       - internal
       - frontend
