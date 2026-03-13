@@ -15,6 +15,12 @@ services:
       - FLUSS_ENDPOINT=${FLUSS_ENDPOINT:-fluss:9092}
     tty: true
     stdin_open: true
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.connect((\"localhost\", 50051))'"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   llm-gateway:
     build:
@@ -34,6 +40,7 @@ services:
 
   fluss:
     image: apache/flink:latest
+    command: ["jobmanager"]
     networks:
       - claw_v3_net
     volumes:
@@ -47,7 +54,8 @@ services:
     networks:
       - claw_v3_net
     depends_on:
-      - ui-bridge
+      ui-bridge:
+        condition: service_started
 
   ui-bridge:
     build:
@@ -58,7 +66,8 @@ services:
       - AGENT_URL=localhost:50051
       - GRPC_DNS_RESOLVER=native
     depends_on:
-      - claw-agent
+      claw-agent:
+        condition: service_healthy
 
 networks:
   claw_v3_net:

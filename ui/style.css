@@ -38,6 +38,7 @@ body {
 .dashboard {
     width: 90%;
     max-width: 1100px;
+    max-height: 95vh;
     background: var(--card-bg);
     backdrop-filter: blur(12px);
     border: 1px solid rgba(255, 255, 255, 0.1);
@@ -45,6 +46,7 @@ body {
     padding: 40px;
     box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
     animation: fadeIn 0.8s ease-out;
+    overflow-y: auto;
 }
 
 @keyframes fadeIn {
@@ -184,11 +186,29 @@ header {
 }
 
 .term-body {
+    height: 400px;
+    overflow-y: auto;
     padding: 16px;
     font-family: 'JetBrains Mono', monospace;
     font-size: 13px;
     color: #4ade80;
     line-height: 1.6;
+    scroll-behavior: smooth;
+}
+
+/* Premium Scrollbar */
+.term-body::-webkit-scrollbar {
+    width: 6px;
+}
+.term-body::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.02);
+}
+.term-body::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+}
+.term-body::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
 }
 
 .term-body p {

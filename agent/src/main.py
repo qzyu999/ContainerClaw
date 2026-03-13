@@ -198,9 +198,15 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                     if "candidates" in data:
                         return data["candidates"][0]["content"]["parts"][0]["text"]
                     return data["choices"][0]["message"]["content"]
-                
-                print(f"Attempt {attempt+1}: Gateway returned {resp.status_code}")
-                print(f"Response body: {resp.text}")
+                elif resp.status_code == 429:
+                    error_msg = "Quota Exceeded (429). Please try again later or use a different API key."
+                    self._emit(session_id, "error", error_msg)
+                    raise Exception(error_msg)
+                else:
+                    print(f"Attempt {attempt + 1}: Gateway returned {resp.status_code}")
+                    print(f"Response body: {resp.text}")
+                    if attempt == max_retries - 1:
+                        raise Exception(f"Gateway error {resp.status_code}: {resp.text}")
             except Exception as e:
                 print(f"Attempt {attempt+1} failed: {str(e)}")
             
