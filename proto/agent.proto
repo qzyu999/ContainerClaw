@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package containerclaw;
+
+service AgentService {
+  // Start a new task on the agent
+  rpc ExecuteTask (TaskRequest) returns (TaskStatus);
+  
+  // Stream activity logs and thought states to the UI
+  rpc StreamActivity (ActivityRequest) returns (stream ActivityEvent);
+}
+
+message TaskRequest {
+  string prompt = 1;
+  string session_id = 2;
+}
+
+message TaskStatus {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message ActivityRequest {
+  string session_id = 1;
+}
+
+message ActivityEvent {
+  string timestamp = 1;
+  string type = 2; // "thought", "tool_call", "output", "error"
+  string content = 3;
+  float risk_score = 4;
+}
