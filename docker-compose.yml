@@ -22,6 +22,8 @@ services:
   llm-gateway:
     build:
       context: ./llm-gateway
+    ports:
+      - "8000:8000"
     networks:
       - containerclaw_net
     secrets:

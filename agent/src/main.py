@@ -84,7 +84,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         
         # We target an available gemini model
         payload = {
-            "model": "gemini-pro-latest",
+            "model": "gemini-2.5-flash",
             "messages": [{"role": "user", "content": prompt}]
         }
         
