@@ -12,6 +12,7 @@ if ! docker compose version >/dev/null 2>&1; then
   DOCKER_COMPOSE="docker-compose"
 fi
 
+case $COMMAND in
   up)
     echo "Starting ContainerClaw session: $SESSION_ID"
     # Ensure secrets directory exists if referenced in compose
