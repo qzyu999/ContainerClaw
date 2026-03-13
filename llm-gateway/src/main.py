@@ -50,9 +50,12 @@ def proxy():
                     return Response(resp.text, status=resp.status_code, content_type="application/json")
                 last_resp = resp
             except Exception as e:
-                return Response(str(e), status=500)
+                print(f"FAILED TO CALL GEMINI AT {url}: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                last_resp = Response(str(e), status=500)
         
-        return Response(last_resp.text, status=last_resp.status_code, content_type="application/json")
+        return last_resp
         
     # 2. Anthropic Routing
     elif "claude" in model:
