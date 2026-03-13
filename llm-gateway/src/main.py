@@ -32,9 +32,27 @@ def proxy():
     if "gemini" in model:
         if not is_active("gemini"):
             return Response("Gemini API key is not configured.", status=401)
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={KEYS['gemini']}"
-        headers = {"Content-Type": "application/json"}
-        # Transformation logic can be added here
+        
+        last_msg = body["messages"][-1]["content"]
+        gemini_payload = {"contents": [{"parts": [{"text": last_msg}]}]}
+        
+        # Try v1beta first, fallback to v1 if it fails with 404
+        endpoints = [
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={KEYS['gemini']}",
+            f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={KEYS['gemini']}"
+        ]
+        
+        last_resp = None
+        for url in endpoints:
+            try:
+                resp = requests.post(url, headers={"Content-Type": "application/json"}, json=gemini_payload)
+                if resp.status_code != 404:
+                    return Response(resp.text, status=resp.status_code, content_type="application/json")
+                last_resp = resp
+            except Exception as e:
+                return Response(str(e), status=500)
+        
+        return Response(last_resp.text, status=last_resp.status_code, content_type="application/json")
         
     # 2. Anthropic Routing
     elif "claude" in model:
