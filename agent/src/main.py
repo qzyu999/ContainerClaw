@@ -20,6 +20,12 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         self.session_id = os.getenv("CLAW_SESSION_ID", "default-session")
         self.is_running = True
         self.event_queues = {} # session_id -> Queue
+        self.histories = {}    # session_id -> list of messages
+
+    def _get_history(self, session_id):
+        if session_id not in self.histories:
+            self.histories[session_id] = []
+        return self.histories[session_id]
 
     def _get_queue(self, session_id):
         if session_id not in self.event_queues:
@@ -37,7 +43,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         q.put(event)
 
     def ExecuteTask(self, request, context):
-        print(f"Received task: {request.prompt}")
+        print(f"Received task for session {request.session_id}: {request.prompt}")
         session_id = request.session_id
         # Start the autonomous loop in a background thread
         thread = threading.Thread(target=self._run_loop, args=(session_id, request.prompt))
@@ -61,11 +67,19 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
     def _run_loop(self, session_id, prompt):
         self._emit(session_id, "thought", f"Starting autonomous loop for prompt: {prompt}")
+        history = self._get_history(session_id)
+        
+        # Prepare the current turn with instruction
+        current_messages = history + [{"role": "user", "content": f"Task: {prompt}\n\nPlan and execute this task."}]
         
         try:
             # 1. Ask Gemini for a plan
-            # Using 'gemini-1.5-flash' which is the standard name
-            plan = self._call_llm(session_id, f"Plan the following task: {prompt}")
+            plan = self._call_llm(session_id, current_messages)
+            
+            # Update permanent history
+            history.append({"role": "user", "content": prompt})
+            history.append({"role": "assistant", "content": f"Plan: {plan}"})
+            
             self._emit(session_id, "thought", f"Plan developed: {plan[:100]}...")
             
             # Simple demonstration of a tool call
@@ -73,19 +87,21 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             result = self._execute_command(session_id, "ls -la /workspace")
             self._emit(session_id, "output", result)
             
+            # In a real autonomy loop, we'd feed 'result' back to Gemini here.
+            # For Phase 2 MVP, we just finish.
+            
             self._emit(session_id, "thought", "Task sequence complete.")
             self._emit(session_id, "finish", "Execution finished.")
         except Exception as e:
             self._emit(session_id, "error", f"Autonomous loop failed: {str(e)}")
 
-    def _call_llm(self, session_id, prompt):
+    def _call_llm(self, session_id, messages):
         max_retries = 3
         retry_delay = 2
         
-        # We target an available gemini model
         payload = {
             "model": "gemini-2.5-flash",
-            "messages": [{"role": "user", "content": prompt}]
+            "messages": messages
         }
         
         for attempt in range(max_retries):
@@ -97,7 +113,6 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 )
                 if resp.status_code == 200:
                     data = resp.json()
-                    # Handle both Google format and OpenAI format for convenience
                     if "candidates" in data:
                         return data["candidates"][0]["content"]["parts"][0]["text"]
                     return data["choices"][0]["message"]["content"]

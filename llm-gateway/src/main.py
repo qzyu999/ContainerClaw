@@ -35,8 +35,16 @@ def proxy():
         if not is_active("gemini"):
             return Response("Gemini API key is not configured.", status=401)
         
-        last_msg = body["messages"][-1]["content"]
-        gemini_payload = {"contents": [{"parts": [{"text": last_msg}]}]}
+        # Map OpenAI-style messages to Gemini contents
+        contents = []
+        for m in body["messages"]:
+            role = "user" if m["role"] == "user" else "model"
+            contents.append({
+                "role": role,
+                "parts": [{"text": m["content"]}]
+            })
+        
+        gemini_payload = {"contents": contents}
         
         # Try v1beta first, fallback to v1 if it fails with 404
         endpoints = [
