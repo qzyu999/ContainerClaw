@@ -71,15 +71,40 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         return self.event_queues[session_id]
 
     def _emit(self, session_id, e_type, content):
+        timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         print(f"[{session_id}] [{e_type.upper()}] {content}")
+        
+        # 1. Internal gRPC queue for UI
         q = self._get_queue(session_id)
         event = agent_pb2.ActivityEvent(
-            timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            timestamp=timestamp,
             type=e_type,
             content=content,
             risk_score=0.1
         )
         q.put(event)
+
+        # 2. External Log Streamer (Fluss)
+        fluss_endpoint = os.getenv("FLUSS_ENDPOINT")
+        if fluss_endpoint:
+            try:
+                # In a real Fluss setup, we might use a dedicated client or HTTP sink
+                # For Phase 2 MVP, we'll use a simple HTTP POST to the Fluss ingestion service
+                # (assuming a REST proxy or similar is in front of Flink/Fluss)
+                event_json = {
+                    "event_id": str(time.time_ns()),
+                    "timestamp": timestamp,
+                    "agent_id": "claw-agent-01",
+                    "session_id": session_id,
+                    "event_type": e_type,
+                    "payload": {"content": content},
+                    "risk_score": 0.1
+                }
+                # We skip actual requests call here as Fluss is not yet fully configured in compose
+                # but we've added the hook for it.
+                # requests.post(f"http://{fluss_endpoint}/v1/events", json=event_json, timeout=1)
+            except Exception as e:
+                print(f"Failed to emit to Fluss: {e}")
 
     def ExecuteTask(self, request, context):
         print(f"Received task for session {request.session_id}: {request.prompt}")

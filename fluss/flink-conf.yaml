@@ -1,0 +1,7 @@
+jobmanager.rpc.address: fluss
+blob.server.port: 6124
+queryable-state.server.ports: 9067
+jobmanager.memory.process.size: 1024m
+taskmanager.memory.process.size: 1024m
+taskmanager.numberOfTaskSlots: 2
+parallelism.default: 1

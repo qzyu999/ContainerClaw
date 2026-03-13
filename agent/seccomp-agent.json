@@ -23,7 +23,7 @@
         "lseek", "lsetxattr", "lstat", "madvise", "memfd_create", "mincore", "mkdir", "mkdirat", "mknod",
         "mknodat", "mmap", "mprotect", "mremap", "msync", "munmap", "nanosleep", "newfstatat", "open", "openat",
         "pause", "pipe", "pipe2", "poll", "ppoll", "prctl", "pread64", "preadv", "preadv2", "prlimit64",
-        "pselect6|", "pwrite64", "pwritev", "pwritev2", "read", "readahead", "readlink", "readlinkat", "readv",
+        "pselect6", "pwrite64", "pwritev", "pwritev2", "read", "readahead", "readlink", "readlinkat", "readv",
         "recvfrom", "recvmmsg", "recvmsg", "rename", "renameat", "renameat2", "rmdir", "rt_sigaction",
         "rt_sigpending", "rt_sigprocmask", "rt_sigqueueinfo", "rt_sigreturn", "rt_sigsuspend", "rt_sigtimedwait",
         "sched_get_priority_max", "sched_get_priority_min", "sched_getaffinity", "sched_getparam",

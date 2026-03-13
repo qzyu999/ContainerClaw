@@ -8,7 +8,7 @@ services:
       - "50051:50051"
       - "5001:5001"
     networks:
-      - claw_v3_net
+      - internal
     volumes:
       - ${PROJECT_DIR:-.}:/workspace:rw
     environment:
@@ -16,6 +16,23 @@ services:
       - FLUSS_ENDPOINT=${FLUSS_ENDPOINT:-fluss:9092}
     tty: true
     stdin_open: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=512M,noexec
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:agent/seccomp-agent.json
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    user: "1000:1000"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G
+          pids: 256
     healthcheck:
       test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.connect((\"localhost\", 50051))'"]
       interval: 5s
@@ -29,7 +46,8 @@ services:
     ports:
       - "8000:8000"
     networks:
-      - claw_v3_net
+      - internal
+      - egress
     secrets:
       - gemini_api_key
       - anthropic_api_key
@@ -43,7 +61,7 @@ services:
     image: apache/flink:latest
     command: ["jobmanager"]
     networks:
-      - claw_v3_net
+      - internal
     volumes:
       - fluss_data:/var/lib/fluss
 
@@ -53,7 +71,7 @@ services:
     ports:
       - "3000:80"
     networks:
-      - claw_v3_net
+      - frontend
     depends_on:
       ui-bridge:
         condition: service_started
@@ -71,10 +89,13 @@ services:
         condition: service_healthy
 
 networks:
-  claw_v3_net:
+  frontend:
     driver: bridge
-    driver_opts:
-      com.docker.network.driver.mtu: 1400
+  internal:
+    driver: bridge
+    internal: true
+  egress:
+    driver: bridge
 
 volumes:
   fluss_data:
