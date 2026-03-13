@@ -82,9 +82,9 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         max_retries = 3
         retry_delay = 2
         
-        # We target a gemini model by name; the gateway will route it
+        # We target an available gemini model
         payload = {
-            "model": "gemini-1.5-flash",
+            "model": "gemini-pro-latest",
             "messages": [{"role": "user", "content": prompt}]
         }
         
