@@ -52,7 +52,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 def serve():
     server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=10))
     agent_pb2_grpc.add_AgentServiceServicer_to_server(AgentService(), server)
-    server.add_insecure_port('[::]:50051')
+    server.add_insecure_port('0.0.0.0:50051')
     
     print("ContainerClaw Agent gRPC Server starting on port 50051...")
     server.start()

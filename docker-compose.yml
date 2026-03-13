@@ -6,6 +6,7 @@ services:
       - "50051:50051"
     networks:
       - internal
+      - frontend
     volumes:
       - ${PROJECT_DIR:-.}:/workspace:rw
     environment:
@@ -61,7 +62,6 @@ networks:
     driver: bridge
   internal:
     driver: bridge
-    internal: true
   egress:
     driver: bridge
 
