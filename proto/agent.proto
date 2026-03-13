@@ -8,6 +8,9 @@ service AgentService {
   
   // Stream activity logs and thought states to the UI
   rpc StreamActivity (ActivityRequest) returns (stream ActivityEvent);
+
+  // List files in the workspace
+  rpc ListWorkspace (WorkspaceRequest) returns (WorkspaceResponse);
 }
 
 message TaskRequest {
@@ -29,4 +32,12 @@ message ActivityEvent {
   string type = 2; // "thought", "tool_call", "output", "error"
   string content = 3;
   float risk_score = 4;
+}
+
+message WorkspaceRequest {
+  string session_id = 1;
+}
+
+message WorkspaceResponse {
+  repeated string files = 1;
 }

@@ -31,11 +31,15 @@
         </section>
 
         <div class="grid">
-            <!-- Cards remain the same -->
             <div class="card">
                 <h3>Agent Status</h3>
                 <div id="agent-status" class="stat">Idle</div>
                 <p>Execution lifecycle monitor.</p>
+            </div>
+            <div class="card">
+                <h3>Workspace</h3>
+                <div id="workspace-files" class="stat-small">Scanning...</div>
+                <p>Current sandbox files.</p>
             </div>
             <div class="card">
                 <h3>Safety Check</h3>
@@ -44,20 +48,24 @@
                     <div id="risk-meter" class="risk-meter-fill"></div>
                 </div>
             </div>
-            <div class="card">
-                <h3>Sandbox</h3>
-                <div class="stat">Seccomp L1</div>
-                <p>Syscall & AppArmor active.</p>
-            </div>
         </div>
 
-        <footer class="terminal-preview">
-            <div class="term-header">Terminal Output</div>
-            <div id="terminal" class="term-body">
-                <p>> [SYSTEM] Ready for tasks.</p>
-                <span class="cursor">_</span>
-            </div>
-        </footer>
+        <section class="main-content">
+            <aside class="history-sidebar">
+                <div class="sidebar-header">Session History</div>
+                <div id="history-list" class="history-body">
+                    <!-- History items will be injected here -->
+                </div>
+            </aside>
+
+            <footer class="terminal-preview">
+                <div class="term-header">Terminal Output</div>
+                <div id="terminal" class="term-body">
+                    <p>> [SYSTEM] Ready for tasks.</p>
+                    <span class="cursor">_</span>
+                </div>
+            </footer>
+        </section>
     </main>
 
     <script>
@@ -68,6 +76,19 @@
 
         const riskMeter = document.getElementById('risk-meter');
         const safetyLevel = document.getElementById('safety-level');
+        const workspaceFiles = document.getElementById('workspace-files');
+        const historyList = document.getElementById('history-list');
+
+        function updateWorkspace() {
+            fetch(`http://localhost:5001/workspace/${sessionId}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        workspaceFiles.innerText = data.files.join(', ') || 'Empty';
+                    }
+                })
+                .catch(e => { workspaceFiles.innerText = 'Error'; });
+        }
 
         function addLog(type, content, risk_score = 0.1) {
             const p = document.createElement('p');
@@ -87,6 +108,15 @@
             
             terminal.insertBefore(p, terminal.lastElementChild);
             terminal.scrollTop = terminal.scrollHeight;
+
+            // Add to history sidebar if it's a thought or user prompt
+            if (type === 'thought' || type === 'user') {
+                const item = document.createElement('div');
+                item.className = 'history-item';
+                item.innerText = content.substring(0, 50) + (content.length > 50 ? '...' : '');
+                item.onclick = () => { promptInput.value = content; };
+                historyList.prepend(item);
+            }
 
             // Update safety meter
             if (risk_score) {
@@ -117,8 +147,12 @@
             } else if (data.type === 'finish' || data.type === 'error') {
                 document.getElementById('agent-status').innerText = "Idle";
                 document.getElementById('agent-status').className = "stat";
+                updateWorkspace(); // Refresh workspace after task
             }
         };
+
+        // Initial fetch
+        updateWorkspace();
 
         // 2. Submit Task
         form.onsubmit = async (e) => {

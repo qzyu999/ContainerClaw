@@ -82,5 +82,14 @@ def proxy_task():
         except Exception as e:
             return {"status": "error", "message": str(e)}, 500
 
+@app.route("/workspace/<session_id>")
+def list_workspace(session_id):
+    try:
+        stub = get_grpc_stub()
+        response = stub.ListWorkspace(agent_pb2.WorkspaceRequest(session_id=session_id))
+        return {"status": "ok", "files": list(response.files)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001, threaded=True)

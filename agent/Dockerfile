@@ -3,10 +3,7 @@ FROM python:3.11-slim-bookworm as builder
 
 WORKDIR /app
 
-# Install build dependencies if needed
-# RUN apt-get update && apt-get install -y build-essential
-
-COPY requirements.txt .
+COPY agent/requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # Final stage
@@ -19,7 +16,11 @@ RUN groupadd -g 1000 agent && \
 COPY --from=builder /install /usr/local
 
 WORKDIR /app
-COPY src/ ./src/
+
+# Copy proto and generate stubs
+COPY proto/ ./proto/
+COPY agent/src/ ./src/
+RUN python3 -m grpc_tools.protoc -I./proto --python_out=./src --grpc_python_out=./src ./proto/agent.proto
 
 # Set ownership to the non-root user
 RUN chown -R agent:agent /app
