@@ -9,7 +9,7 @@ export CLAW_SESSION_ID=$SESSION_ID
 case $COMMAND in
   up)
     echo "Starting ContainerClaw session: $SESSION_ID"
-    docker-compose up -d
+    docker compose up -d --build
     ;;
   down)
     echo "Stopping ContainerClaw session: $SESSION_ID"
