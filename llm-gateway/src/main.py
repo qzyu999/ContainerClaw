@@ -1,6 +1,8 @@
 import os
 from flask import Flask, request, Response
 import requests
+import certifi
+import json
 
 app = Flask(__name__)
 
@@ -45,17 +47,18 @@ def proxy():
         last_resp = None
         for url in endpoints:
             try:
-                resp = requests.post(url, headers={"Content-Type": "application/json"}, json=gemini_payload)
+                resp = requests.post(url, headers={"Content-Type": "application/json"}, json=gemini_payload, verify=certifi.where())
                 if resp.status_code != 404:
                     return Response(resp.text, status=resp.status_code, content_type="application/json")
-                last_resp = resp
+                # Store as a flask Response if we want to return it later
+                last_resp = Response(resp.text, status=resp.status_code, content_type="application/json")
             except Exception as e:
                 print(f"FAILED TO CALL GEMINI AT {url}: {str(e)}")
                 import traceback
                 traceback.print_exc()
                 last_resp = Response(str(e), status=500)
         
-        return last_resp
+        return last_resp if last_resp else Response("No endpoints reachable", status=502)
         
     # 2. Anthropic Routing
     elif "claude" in model:

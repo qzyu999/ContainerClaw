@@ -79,22 +79,38 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             self._emit(session_id, "error", f"Autonomous loop failed: {str(e)}")
 
     def _call_llm(self, session_id, prompt):
+        max_retries = 3
+        retry_delay = 2
+        
         # We target a gemini model by name; the gateway will route it
         payload = {
             "model": "gemini-1.5-flash",
             "messages": [{"role": "user", "content": prompt}]
         }
-        resp = requests.post(f"{self.gateway_url}/v1/chat/completions", json=payload)
-        if resp.status_code != 200:
-            raise Exception(f"LLM Gateway error: {resp.text}")
         
-        # Gemini API Studio format might differ; our proxy handles v1beta models
-        # But for this MVP, we assume the Gateway returns a simple JSON
-        data = resp.json()
-        # Handle both Google format and OpenAI format for convenience
-        if "candidates" in data:
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-        return data["choices"][0]["message"]["content"]
+        for attempt in range(max_retries):
+            try:
+                resp = requests.post(
+                    f"{self.gateway_url}/v1/chat/completions",
+                    json=payload,
+                    timeout=30
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    # Handle both Google format and OpenAI format for convenience
+                    if "candidates" in data:
+                        return data["candidates"][0]["content"]["parts"][0]["text"]
+                    return data["choices"][0]["message"]["content"]
+                
+                print(f"Attempt {attempt+1}: Gateway returned {resp.status_code}")
+            except Exception as e:
+                print(f"Attempt {attempt+1} failed: {str(e)}")
+            
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay *= 2
+        
+        raise Exception("Failed to reach LLM Gateway after multiple retries")
 
     def _execute_command(self, session_id, cmd):
         self._emit(session_id, "tool_call", cmd)

@@ -5,8 +5,7 @@ services:
     ports:
       - "50051:50051"
     networks:
-      - internal
-      - frontend
+      - containerclaw_net
     volumes:
       - ${PROJECT_DIR:-.}:/workspace:rw
     environment:
@@ -14,7 +13,6 @@ services:
       - FLUSS_ENDPOINT=${FLUSS_ENDPOINT:-fluss:9092}
     security_opt:
       - no-new-privileges:true
-    # Note: seccomp and apparmor profiles will be added in subsequent steps
     cap_drop:
       - ALL
     cap_add:
@@ -25,8 +23,7 @@ services:
     build:
       context: ./llm-gateway
     networks:
-      - internal
-      - default
+      - containerclaw_net
     secrets:
       - gemini_api_key
       - anthropic_api_key
@@ -43,9 +40,9 @@ services:
     user: "65534:65534"
 
   fluss:
-    image: apache/flink:latest # Placeholder for Fluss
+    image: apache/flink:latest
     networks:
-      - internal
+      - containerclaw_net
     volumes:
       - fluss_data:/var/lib/fluss
 
@@ -55,16 +52,13 @@ services:
     ports:
       - "3000:80"
     networks:
-      - internal
-      - frontend
+      - containerclaw_net
 
 networks:
-  frontend:
+  containerclaw_net:
     driver: bridge
-  internal:
-    driver: bridge
-  egress:
-    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1400
 
 volumes:
   fluss_data:
