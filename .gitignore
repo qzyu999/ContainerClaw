@@ -31,6 +31,13 @@ build/
 # If we store fluss data locally
 fluss_data/
 
+# ContainerClaw Specific
+.claw_state/
+agent/src/agent_pb2.py
+agent/src/agent_pb2_grpc.py
+ui/src/proto/*_pb2.py
+ui/src/proto/*_pb2_grpc.py
+
 # OS Files
 .DS_Store
 Thumbs.db
