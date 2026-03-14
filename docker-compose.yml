@@ -10,7 +10,8 @@ services:
     networks:
       - internal
     volumes:
-      - ${PROJECT_DIR:-.}:/workspace:rw
+      - ${PROJECT_DIR:-.}/workspace:/workspace:rw
+      - ${PROJECT_DIR:-.}/.claw_state:/state:rw
     environment:
       - LLM_GATEWAY_URL=${LLM_GATEWAY_URL:-http://llm-gateway:8000}
       - FLUSS_ENDPOINT=${FLUSS_ENDPOINT:-fluss:9092}

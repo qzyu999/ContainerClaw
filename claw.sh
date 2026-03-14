@@ -20,6 +20,7 @@ case $COMMAND in
       mkdir -p secrets
       touch secrets/gemini_api_key.txt secrets/anthropic_api_key.txt secrets/openai_api_key.txt
     fi
+    mkdir -p workspace
     $DOCKER_COMPOSE up -d --build --remove-orphans
     ;;
   down)

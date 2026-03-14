@@ -21,7 +21,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         self.is_running = True
         self.event_queues = {} # session_id -> Queue
         self.histories = {}    # session_id -> list of messages
-        self.state_root = "/workspace/.claw_state"
+        self.state_root = os.getenv("STATE_ROOT", "/state")
         self.session_locks = {} # session_id -> threading.Lock
         
         # Load any existing state for the default session on startup
