@@ -152,9 +152,6 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             try:
                 event = q.get(timeout=2.0)
                 yield event
-                # Stop streaming if we get a termination type
-                if event.type in ["error", "finish"]:
-                    break
             except queue.Empty:
                 continue
 
