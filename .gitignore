@@ -35,8 +35,8 @@ fluss_data/
 .claw_state/
 agent/src/agent_pb2.py
 agent/src/agent_pb2_grpc.py
-ui/src/proto/*_pb2.py
-ui/src/proto/*_pb2_grpc.py
+bridge/src/proto/*_pb2.py
+bridge/src/proto/*_pb2_grpc.py
 
 # OS Files
 .DS_Store
