@@ -409,8 +409,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
         
         payload = {
-            # "model": "gemini-2.5-flash", # Hardcoded for now
-            "model": "gemini-2.5-flash-lite", # Hardcoded for now
+            "model": "gemini-3-flash-preview", # Hardcoded for now
             "messages": messages
         }
         
