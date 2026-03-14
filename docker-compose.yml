@@ -92,7 +92,7 @@ networks:
     driver: bridge
   internal:
     driver: bridge
-    internal: true
+    # internal: true
   egress:
     driver: bridge
 
