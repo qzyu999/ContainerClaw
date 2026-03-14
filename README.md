@@ -44,7 +44,7 @@ docker ps
 ### Interacting with the Agent
 In this Phase 1 MVP, the Agent is a background service. You can interact with the components:
 
-- **UI Placeholder**: Open `http://localhost:3000` in your browser to see the UI container running.
+- **Dashboard**: Open `http://localhost:3000` in your browser to interact with the modern React dashboard.
 - **Log Streaming**: Follow the live logs to see what's happening:
   ```bash
   ./claw.sh logs
@@ -73,7 +73,8 @@ ContainerClaw follows a **Microservices Security Pattern**:
 
 - `agent/`: The autonomous execution engine.
 - `llm-gateway/`: The credential-isolated proxy for LLM APIs.
-- `ui/`: The decoupled web interface.
+- `bridge/`: Flask proxy bridging gRPC streams to SSE for the browser.
+- `ui/`: Modern Vite/React frontend dashboard.
 - `proto/`: gRPC definitions for internal communication.
 - `claw.sh`: The main control script.
 
