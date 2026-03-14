@@ -58,8 +58,10 @@ services:
     command: ["gunicorn", "--timeout", "120", "--bind", "0.0.0.0:8000", "src.main:app"]
 
   fluss:
-    image: apache/flink:latest
-    command: ["jobmanager"]
+    build:
+      context: ./fluss
+    ports:
+      - "9092:9092"
     networks:
       - internal
     volumes:

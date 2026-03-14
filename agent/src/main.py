@@ -21,11 +21,15 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         self.is_running = True
         self.event_queues = {} # session_id -> Queue
         self.histories = {}    # session_id -> list of messages
+        self.plans = {}        # session_id -> dict/list of tasks
+        self.memories = {}     # session_id -> dict of facts
+        self.envs = {}         # session_id -> dict of env vars
         self.state_root = os.getenv("STATE_ROOT", "/state")
         self.session_locks = {} # session_id -> threading.Lock
         
         # Load any existing state for the default session on startup
         self._load_session_state(self.session_id)
+        self._verify_workspace_integrity(self.session_id)
 
     def _get_lock(self, session_id):
         if session_id not in self.session_locks:
@@ -36,17 +40,26 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         return os.path.join(self.state_root, session_id)
 
     def _load_session_state(self, session_id):
-        """Loads session history and plan from disk if they exist."""
+        """Loads session history, plan, memory, and env from disk if they exist."""
         state_dir = self._get_state_path(session_id)
-        history_path = os.path.join(state_dir, "history.json")
         
-        if os.path.exists(history_path):
-            try:
-                with open(history_path, "r") as f:
-                    self.histories[session_id] = json.load(f)
-                print(f"[{session_id}] Loaded history from {history_path}")
-            except Exception as e:
-                print(f"[{session_id}] Error loading history: {e}")
+        # Helper to load JSON files
+        def load_json(filename, default_val):
+            path = os.path.join(state_dir, filename)
+            if os.path.exists(path):
+                try:
+                    with open(path, "r") as f:
+                        data = json.load(f)
+                        print(f"[{session_id}] Loaded {filename} from {path}")
+                        return data
+                except Exception as e:
+                    print(f"[{session_id}] Error loading {filename}: {e}")
+            return default_val
+
+        self.histories[session_id] = load_json("history.json", [])
+        self.plans[session_id] = load_json("plan.json", {})
+        self.memories[session_id] = load_json("memory.json", {})
+        self.envs[session_id] = load_json("env.json", {})
 
     def checkpoint_session(self, session_id=None):
         """Saves current session state to disk."""
@@ -56,16 +69,78 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         state_dir = self._get_state_path(session_id)
         os.makedirs(state_dir, exist_ok=True)
         
-        history = self.histories.get(session_id)
-        if history:
-            history_path = os.path.join(state_dir, "history.json")
-            try:
-                with open(history_path, "w") as f:
-                    json.dump(history, f, indent=2)
-                print(f"[{session_id}] Checkpointed history to {history_path}")
-            except Exception as e:
-                print(f"[{session_id}] Error saving history: {e}")
+        # Helper to save JSON files
+        def save_json(filename, data):
+            if data is not None:
+                path = os.path.join(state_dir, filename)
+                try:
+                    # Atomic write using a temp file
+                    temp_path = path + ".tmp"
+                    with open(temp_path, "w") as f:
+                        json.dump(data, f, indent=2)
+                    os.rename(temp_path, path)
+                    print(f"[{session_id}] Checkpointed {filename} to {path}")
+                except Exception as e:
+                    print(f"[{session_id}] Error saving {filename}: {e}")
 
+        save_json("history.json", self.histories.get(session_id))
+        save_json("plan.json", self.plans.get(session_id))
+        save_json("memory.json", self.memories.get(session_id))
+        save_json("env.json", self.envs.get(session_id))
+
+    def _verify_workspace_integrity(self, session_id):
+        """Checks if files in the workspace have changed since the last session."""
+        state_dir = self._get_state_path(session_id)
+        hash_path = os.path.join(state_dir, "workspace_hashes.json")
+        
+        current_hashes = {}
+        workspace_root = "/workspace"
+        
+        if not os.path.exists(workspace_root):
+            return
+
+        import hashlib
+        for root, dirs, files in os.walk(workspace_root):
+            # Skip .git and .claw_state
+            dirs[:] = [d for d in dirs if d not in [".git", ".claw_state"]]
+            for file in files:
+                full_path = os.path.join(root, file)
+                rel_path = os.path.relpath(full_path, workspace_root)
+                try:
+                    with open(full_path, "rb") as f:
+                        file_hash = hashlib.sha256(f.read()).hexdigest()
+                        current_hashes[rel_path] = file_hash
+                except Exception as e:
+                    print(f"Error hashing {rel_path}: {e}")
+
+        if os.path.exists(hash_path):
+            try:
+                with open(hash_path, "r") as f:
+                    old_hashes = json.load(f)
+                
+                changed = []
+                for path, h in current_hashes.items():
+                    if path not in old_hashes or old_hashes[path] != h:
+                        changed.append(path)
+                
+                added = set(current_hashes.keys()) - set(old_hashes.keys())
+                removed = set(old_hashes.keys()) - set(current_hashes.keys())
+
+                if changed or added or removed:
+                    msg = f"Workspace integrity check: {len(changed)} changed, {len(added)} added, {len(removed)} removed."
+                    print(f"[{session_id}] {msg}")
+                    self._emit(session_id, "warning", msg)
+                    if changed: print(f"[{session_id}] Changed: {changed[:5]}")
+            except Exception as e:
+                print(f"[{session_id}] Error verifying integrity: {e}")
+
+        # Save current hashes for next time
+        try:
+            os.makedirs(state_dir, exist_ok=True)
+            with open(hash_path, "w") as f:
+                json.dump(current_hashes, f, indent=2)
+        except Exception as e:
+            print(f"[{session_id}] Error saving hashes: {e}")
     def _get_history(self, session_id):
         if session_id not in self.histories:
             self.histories[session_id] = []
@@ -97,6 +172,8 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 # In a real Fluss setup, we might use a dedicated client or HTTP sink
                 # For Phase 2 MVP, we'll use a simple HTTP POST to the Fluss ingestion service
                 # (assuming a REST proxy or similar is in front of Flink/Fluss)
+                # Use HTTP POST to the Fluss ingestion service
+                # (assuming a REST proxy or similar is in front of Flink/Fluss)
                 event_json = {
                     "event_id": str(time.time_ns()),
                     "timestamp": timestamp,
@@ -106,9 +183,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                     "payload": {"content": content},
                     "risk_score": 0.1
                 }
-                # We skip actual requests call here as Fluss is not yet fully configured in compose
-                # but we've added the hook for it.
-                # requests.post(f"http://{fluss_endpoint}/v1/events", json=event_json, timeout=1)
+                requests.post(f"http://{fluss_endpoint}/v1/events", json=event_json, timeout=1)
             except Exception as e:
                 print(f"Failed to emit to Fluss: {e}")
 
@@ -121,6 +196,9 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             return agent_pb2.TaskStatus(accepted=False, message="Agent is currently busy.")
 
         print(f"Received task for session {session_id}: {request.prompt}")
+        
+        # Ensure workspace integrity is checked for this session
+        self._verify_workspace_integrity(session_id)
         
         # Start the autonomous loop in a background thread
         thread = threading.Thread(target=self._guarded_run_loop, args=(session_id, request.prompt))
@@ -233,13 +311,19 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         self._emit(session_id, "thought", f"Starting autonomous loop for: {prompt}")
         history = self._get_history(session_id)
         
+        plan = self.plans.get(session_id, {})
+        memory = self.memories.get(session_id, {})
+        
         # System-like instruction for the loop
         instruction = (
-            "You are an autonomous agent. Plan your steps and use tools. "
-            "Available tools: execute_command(cmd), write_file(path, content), read_file(path), ls_workspace(path). "
-            "Respond in JSON format: {\"thought\": \"...\", \"tool\": \"execute_command\", \"args\": \"ls -la\"} "
-            "Or for files: {\"thought\": \"...\", \"tool\": \"write_file\", \"path\": \"...\", \"content\": \"...\"} "
-            "Or finish: {\"thought\": \"...\", \"finish\": \"message\"}"
+            "You are an autonomous agent. Plan your steps and use tools.\n"
+            f"Current Plan: {json.dumps(plan)}\n"
+            f"Current Memory: {json.dumps(memory)}\n"
+            "Available tools: execute_command(cmd), write_file(path, content), read_file(path), ls_workspace(path).\n"
+            "Respond in JSON format: {\"thought\": \"...\", \"plan_update\": \"...\", \"memory_update\": \"...\", \"tool\": \"execute_command\", \"args\": \"ls -la\"}\n"
+            "Or for files: {\"thought\": \"...\", \"tool\": \"write_file\", \"path\": \"...\", \"content\": \"...\"}\n"
+            "Or finish: {\"thought\": \"...\", \"finish\": \"message\"}\n"
+            "Always include a 'thought' and optionally 'plan_update' or 'memory_update' if the state should change."
         )
         
         current_messages = history + [{"role": "user", "content": f"Context: {instruction}\n\nTask: {prompt}"}]
@@ -264,6 +348,14 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                     action = {"thought": response_text, "finish": "Task concluded (fallback)"}
 
                 self._emit(session_id, "thought", action.get("thought", "Thinking..."))
+                
+                # Update plan or memory if provided
+                if "plan_update" in action:
+                    self.plans[session_id] = action["plan_update"]
+                    self._emit(session_id, "thought", f"Plan updated: {action['plan_update']}")
+                if "memory_update" in action:
+                    self.memories[session_id] = action["memory_update"]
+                    self._emit(session_id, "thought", f"Memory updated: {action['memory_update']}")
                 
                 if "finish" in action:
                     history.append({"role": "user", "content": prompt})

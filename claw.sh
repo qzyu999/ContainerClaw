@@ -50,7 +50,12 @@ case $COMMAND in
     docker network prune -f
     ;;
   logs)
-    $DOCKER_COMPOSE logs -f
+    echo "Streaming logs for session: $SESSION_ID"
+    # Try to stream from Fluss log server, fallback to docker logs if it fails
+    if ! curl -s --fail http://localhost:9092/v1/logs/$SESSION_ID/stream; then
+      echo "Failed to reach log server. Falling back to docker compose logs..."
+      $DOCKER_COMPOSE logs -f
+    fi
     ;;
   *)
     echo "Usage: $0 {up|down|purge|status|restart|clean|logs} [session_id]"
