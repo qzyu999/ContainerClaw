@@ -80,8 +80,7 @@ services:
 
   ui-bridge:
     build:
-      context: .
-      dockerfile: ui/bridge.Dockerfile
+      context: ./bridge
     network_mode: "service:claw-agent"
     environment:
       - AGENT_URL=localhost:50051
