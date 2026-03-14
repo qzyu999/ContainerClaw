@@ -55,7 +55,7 @@ services:
     environment:
       - RATE_LIMIT_RPM=60
       - MAX_TOKENS_PER_REQUEST=8192
-    command: ["gunicorn", "--timeout", "120", "--bind", "0.0.0.0:8000", "src.main:app"]
+    command: ["gunicorn", "-w", "4", "--timeout", "120", "--bind", "0.0.0.0:8000", "--access-logfile", "-", "--error-logfile", "-", "src.main:app"]
 
   fluss:
     build:

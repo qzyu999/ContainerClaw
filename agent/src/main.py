@@ -419,7 +419,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 resp = requests.post(
                     f"{self.gateway_url}/v1/chat/completions",
                     json=payload,
-                    timeout=60 # Increased timeout
+                    timeout=30 # Reduced timeout for faster retry
                 )
                 if resp.status_code == 200:
                     data = resp.json()

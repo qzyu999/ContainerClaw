@@ -44,7 +44,9 @@ def proxy():
     body = request.get_json()
     model = body.get("model", "").lower()
     
-    print(f"Proxying request for model: {model}")
+    import sys
+    print(f"Proxying request for model: {model}", file=sys.stderr)
+    sys.stderr.flush()
 
     # 1. Gemini Routing
     if "gemini" in model:
@@ -66,7 +68,8 @@ def proxy():
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={KEYS['gemini']}"
         
         try:
-            print(f"Requesting Gemini URL: {url.split('?')[0]}?key=REDACTED")
+            print(f"Requesting Gemini URL: {url.split('?')[0]}?key=REDACTED", file=sys.stderr)
+            sys.stderr.flush()
             resp = session.post(
                 url, 
                 headers={"Content-Type": "application/json"}, 
