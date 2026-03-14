@@ -22,9 +22,15 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         self.event_queues = {} # session_id -> Queue
         self.histories = {}    # session_id -> list of messages
         self.state_root = "/workspace/.claw_state"
+        self.session_locks = {} # session_id -> threading.Lock
         
         # Load any existing state for the default session on startup
         self._load_session_state(self.session_id)
+
+    def _get_lock(self, session_id):
+        if session_id not in self.session_locks:
+            self.session_locks[session_id] = threading.Lock()
+        return self.session_locks[session_id]
 
     def _get_state_path(self, session_id):
         return os.path.join(self.state_root, session_id)
@@ -107,23 +113,28 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 print(f"Failed to emit to Fluss: {e}")
 
     def ExecuteTask(self, request, context):
-        print(f"Received task for session {request.session_id}: {request.prompt}")
         session_id = request.session_id
+        lock = self._get_lock(session_id)
         
-        # Clear the queue for this session to avoid log leakage from previous runs
-        if session_id in self.event_queues:
-            q = self.event_queues[session_id]
-            while not q.empty():
-                try:
-                    q.get_nowait()
-                except queue.Empty:
-                    break
+        if lock.locked():
+            print(f"[{session_id}] Warning: Task received while another is already running. Rejecting.")
+            return agent_pb2.TaskStatus(accepted=False, message="Agent is currently busy.")
+
+        print(f"Received task for session {session_id}: {request.prompt}")
         
         # Start the autonomous loop in a background thread
-        thread = threading.Thread(target=self._run_loop, args=(session_id, request.prompt))
+        thread = threading.Thread(target=self._guarded_run_loop, args=(session_id, request.prompt))
         thread.daemon = True
         thread.start()
         return agent_pb2.TaskStatus(accepted=True, message="Agent loop activated.")
+
+    def _guarded_run_loop(self, session_id, prompt):
+        lock = self._get_lock(session_id)
+        with lock:
+            try:
+                self._run_loop(session_id, prompt)
+            except Exception as e:
+                self._emit(session_id, "error", f"Loop crashed: {e}")
 
     def StreamActivity(self, request, context):
         session_id = request.session_id
