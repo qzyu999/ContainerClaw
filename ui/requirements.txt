@@ -1,6 +1,0 @@
-flask
-flask-cors
-grpcio
-grpcio-tools
-protobuf
-requests
