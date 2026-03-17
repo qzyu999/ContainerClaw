@@ -1,0 +1,4 @@
+[submodule "vendor/fluss-rust"]
+	path = vendor/fluss-rust
+	url = https://github.com/qzyu999/fluss-rust.git
+	branch = feat/424-python-async-iterator
