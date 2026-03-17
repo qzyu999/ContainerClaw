@@ -9,12 +9,15 @@ services:
       - "5001:5001"
     networks:
       - internal
+      - frontend
     volumes:
       - ${PROJECT_DIR:-.}/workspace:/workspace:rw
       - ${PROJECT_DIR:-.}/.claw_state:/state:rw
     environment:
+      - PYTHONUNBUFFERED=1
       - LLM_GATEWAY_URL=${LLM_GATEWAY_URL:-http://llm-gateway:8000}
-      - FLUSS_ENDPOINT=${FLUSS_ENDPOINT:-fluss:9092}
+      - FLUSS_BOOTSTRAP_SERVERS=coordinator-server:9123
+      - FLUSS_ENDPOINT=coordinator-server:9123
     tty: true
     stdin_open: true
     read_only: true
@@ -57,15 +60,59 @@ services:
       - MAX_TOKENS_PER_REQUEST=8192
     command: ["gunicorn", "-w", "4", "--timeout", "120", "--bind", "0.0.0.0:8000", "--access-logfile", "-", "--error-logfile", "-", "src.main:app"]
 
-  fluss:
-    build:
-      context: ./fluss
-    ports:
-      - "9092:9092"
+  zookeeper:
+    image: zookeeper:3.9.2
+    restart: always
     networks:
       - internal
+    healthcheck:
+      test: ["CMD-SHELL", "echo srvr | nc localhost 2181 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  coordinator-server:
+    image: apache/fluss:0.9.0-incubating
+    command: coordinatorServer
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    networks:
+      - internal
+    environment:
+      - |
+        FLUSS_PROPERTIES=
+        zookeeper.address: zookeeper:2181
+        bind.listeners: INTERNAL://0.0.0.0:9122, CLIENT://0.0.0.0:9123
+        advertised.listeners: INTERNAL://coordinator-server:9122, CLIENT://coordinator-server:9123
+        internal.listener.name: INTERNAL
+        remote.data.dir: /tmp/fluss/remote-data
+    ports:
+      - "9123:9123"
+
+  tablet-server:
+    image: apache/fluss:0.9.0-incubating
+    command: tabletServer
+    depends_on:
+      coordinator-server:
+        condition: service_started
+    networks:
+      - internal
+    environment:
+      - |
+        FLUSS_PROPERTIES=
+        zookeeper.address: zookeeper:2181
+        bind.listeners: INTERNAL://0.0.0.0:9122, CLIENT://0.0.0.0:9123
+        advertised.listeners: INTERNAL://tablet-server:9122, CLIENT://tablet-server:9123
+        internal.listener.name: INTERNAL
+        tablet-server.id: 0
+        kv.snapshot.interval: 0s
+        data.dir: /tmp/fluss/data
+        remote.data.dir: /tmp/fluss/remote-data
+    ports:
+        - "9124:9123"
     volumes:
-      - fluss_data:/var/lib/fluss
+      - shared-tmpfs:/tmp/fluss
 
   ui:
     build:
@@ -74,6 +121,8 @@ services:
       - "3000:80"
     networks:
       - frontend
+    environment:
+      - BRIDGE_URL=http://claw-agent:50051
     depends_on:
       ui-bridge:
         condition: service_started
@@ -99,7 +148,11 @@ networks:
     driver: bridge
 
 volumes:
-  fluss_data:
+  shared-tmpfs:
+    driver: local
+    driver_opts:
+      type: "tmpfs"
+      device: "tmpfs"
 
 secrets:
   gemini_api_key:
