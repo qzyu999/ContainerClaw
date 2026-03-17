@@ -4,6 +4,18 @@ ContainerClaw is a secure, defense-in-depth, and containerized runtime for auton
 
 ---
 
+# Temporary Fluss Workaround
+The Dockerfile requires compiling a fluss-rust repo as the Python library is not ready. This is done via a git submodule located in ./vendor/fluss-rust.
+
+## Step 1: Clone the main project
+git clone https://github.com/qzyu999/containerclaw.git
+cd containerclaw
+
+## Step 2: "Fill" the empty portal (The magic command)
+git submodule update --init --recursive
+
+The second command will also git clone the required submodule for the Python fluss library to work correctly.
+
 ## 🚀 Getting Started
 
 ### 1. Prerequisites
