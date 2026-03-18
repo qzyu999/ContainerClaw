@@ -52,7 +52,8 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         q.put(agent_pb2.ActivityEvent(
             timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             type=e_type,
-            content=f"[{actor_id}] {content}"
+            content=content,
+            actor_id=actor_id
         ))
 
     def _get_queue(self, session_id):

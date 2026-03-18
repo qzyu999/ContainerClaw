@@ -52,7 +52,8 @@ def stream_events(session_id):
                     "timestamp": event.timestamp,
                     "type": event.type,
                     "content": event.content,
-                    "risk_score": event.risk_score
+                    "risk_score": event.risk_score,
+                    "actor_id": event.actor_id
                 }
                 # SSE Format: data: <json>\n\n
                 yield f"data: {json.dumps(data)}\n\n"

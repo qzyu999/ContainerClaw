@@ -28,6 +28,8 @@ export default function App() {
         setStatus('Thinking...');
       } else if (event.type === 'action') {
         setStatus('Executing...');
+      } else if (event.type === 'output') {
+        setStatus('Agent responding...');
       } else if (event.type === 'finish' || event.type === 'error') {
         setStatus('Idle');
         refreshWorkspace();
@@ -212,6 +214,11 @@ export default function App() {
                   <span className={`log-tag tag-${event.type}`}>
                     [{event.type.toUpperCase()}]
                   </span>
+                  {event.actor_id && (
+                    <span className={`actor-badge actor-${event.actor_id}`}>
+                      {event.actor_id}
+                    </span>
+                  )}
                   <span className="log-content">{event.content}</span>
                 </motion.div>
               ))}

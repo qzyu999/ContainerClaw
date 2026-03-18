@@ -274,6 +274,26 @@ h1, h2, h3 {
 .tag-user { color: var(--secondary); }
 .tag-action { color: var(--primary); }
 .tag-error { color: var(--error); }
+.tag-output { color: var(--primary); }
+.tag-finish { color: #06b6d4; }
+.tag-system { color: #a1a1aa; }
+
+/* Per-agent identity colors */
+.actor-badge {
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.actor-Alice { background: rgba(139, 92, 246, 0.2); color: #a78bfa; }
+.actor-Bob { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
+.actor-Carol { background: rgba(236, 72, 153, 0.2); color: #f472b6; }
+.actor-David { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+.actor-Eve { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+.actor-Moderator { background: rgba(161, 161, 170, 0.15); color: #a1a1aa; }
+.actor-Human { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
 
 ::-webkit-scrollbar {
   width: 6px;

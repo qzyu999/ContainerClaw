@@ -29,9 +29,10 @@ message ActivityRequest {
 
 message ActivityEvent {
   string timestamp = 1;
-  string type = 2; // "thought", "tool_call", "output", "error"
+  string type = 2; // "thought", "tool_call", "output", "error", "finish"
   string content = 3;
   float risk_score = 4;
+  string actor_id = 5;
 }
 
 message WorkspaceRequest {
