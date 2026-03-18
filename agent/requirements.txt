@@ -2,3 +2,4 @@ requests
 grpcio
 grpcio-tools
 pyarrow
+pandas

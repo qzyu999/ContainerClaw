@@ -42,7 +42,12 @@ session.mount("http://", adapter)
 @app.route('/v1/chat/completions', methods=['POST'])
 def proxy():
     data = request.json
-    api_key = data.get('api_key') or os.getenv("GEMINI_API_KEY")
+    # Priority: payload key → Docker secret → env var
+    api_key = data.get('api_key') or KEYS.get('gemini') or os.getenv("GEMINI_API_KEY")
+    
+    if not api_key:
+        return {"error": "No Gemini API key available (checked payload, secrets, env)"}, 500
+    
     model = data.get('model', 'gemini-3-flash-preview')
     
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
@@ -54,8 +59,11 @@ def proxy():
         "generationConfig": data.get('generationConfig', {})
     }
     
-    res = requests.post(url, json=google_payload, timeout=60)
-    return res.json(), res.status_code
+    try:
+        res = requests.post(url, json=google_payload, timeout=60)
+        return res.json(), res.status_code
+    except Exception as e:
+        return {"error": f"Gateway request failed: {str(e)}"}, 502
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)

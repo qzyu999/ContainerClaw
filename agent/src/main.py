@@ -42,9 +42,10 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             GeminiAgent("Eve", "Business user.", api_key)
         ]
         
+        autonomous_steps = int(os.getenv("AUTONOMOUS_STEPS", "-1"))
         self.moderator = StageModerator(self.table, agents, self._bridge_to_ui)
         print("--- ⚖️ STAGE ACTIVE (Democratic Moderator) ---")
-        self.loop.run_until_complete(self.moderator.run())
+        self.loop.run_until_complete(self.moderator.run(autonomous_steps=autonomous_steps))
 
     def _bridge_to_ui(self, actor_id, content, e_type):
         q = self._get_queue(self.session_id)
@@ -107,7 +108,21 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 async def init_infrastructure():
     print("🛰️ Initializing Fluss Infrastructure...")
     config = fluss.Config({"bootstrap.servers": "coordinator-server:9123"})
-    conn = await fluss.FlussConnection.create(config)
+    
+    # Retry connection — coordinator may not be listening yet
+    conn = None
+    for attempt in range(30):
+        try:
+            conn = await fluss.FlussConnection.create(config)
+            print("✅ Connected to Fluss Coordinator.")
+            break
+        except Exception as e:
+            print(f"⏳ Waiting for Fluss Coordinator (attempt {attempt+1}/30)... {e}")
+            await asyncio.sleep(2)
+    
+    if not conn:
+        raise Exception("❌ Failed to connect to Fluss Coordinator after 30 attempts.")
+    
     admin = await conn.get_admin()
     
     table_path = fluss.TablePath("containerclaw", "chatroom")

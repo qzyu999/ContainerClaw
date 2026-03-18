@@ -20,6 +20,7 @@ services:
       - CLAW_SESSION_ID=user-session
       - LLM_GATEWAY_URL=${LLM_GATEWAY_URL:-http://llm-gateway:8000}
       - FLUSS_BOOTSTRAP_SERVERS=coordinator-server:9123
+      - AUTONOMOUS_STEPS=${AUTONOMOUS_STEPS:--1}
     depends_on:
       coordinator-server:
         condition: service_started
