@@ -13,11 +13,18 @@ services:
     volumes:
       - ${PROJECT_DIR:-.}/workspace:/workspace:rw
       - ${PROJECT_DIR:-.}/.claw_state:/state:rw
+    secrets:
+      - gemini_api_key # MUST give the agent access to read the key for moderator.py
     environment:
       - PYTHONUNBUFFERED=1
+      - CLAW_SESSION_ID=user-session
       - LLM_GATEWAY_URL=${LLM_GATEWAY_URL:-http://llm-gateway:8000}
       - FLUSS_BOOTSTRAP_SERVERS=coordinator-server:9123
-      - FLUSS_ENDPOINT=coordinator-server:9123
+    depends_on:
+      coordinator-server:
+        condition: service_started
+      llm-gateway:
+        condition: service_started
     tty: true
     stdin_open: true
     read_only: true
@@ -37,11 +44,12 @@ services:
           cpus: "2.0"
           memory: 4G
     healthcheck:
-      test: ["CMD-SHELL", "python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.connect((\"localhost\", 50051))'"]
-      interval: 5s
+      # Simple gRPC healthcheck
+      test: [ "CMD-SHELL", "python3 -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.connect((\"localhost\", 50051))'" ]
+      interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 10s
+      retries: 10
+      start_period: 60s # Give it a full minute to init Fluss before checking health
 
   llm-gateway:
     build:
@@ -58,7 +66,7 @@ services:
     environment:
       - RATE_LIMIT_RPM=60
       - MAX_TOKENS_PER_REQUEST=8192
-    command: ["gunicorn", "-w", "4", "--timeout", "120", "--bind", "0.0.0.0:8000", "--access-logfile", "-", "--error-logfile", "-", "src.main:app"]
+    command: [ "gunicorn", "-w", "4", "--timeout", "120", "--bind", "0.0.0.0:8000", "src.main:app" ]
 
   zookeeper:
     image: zookeeper:3.9.2
@@ -66,7 +74,7 @@ services:
     networks:
       - internal
     healthcheck:
-      test: ["CMD-SHELL", "echo srvr | nc localhost 2181 || exit 1"]
+      test: [ "CMD", "zkServer.sh", "status" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -74,6 +82,7 @@ services:
   coordinator-server:
     image: apache/fluss:0.9.0-incubating
     command: coordinatorServer
+    hostname: coordinator-server # Explicitly set for DNS stability
     depends_on:
       zookeeper:
         condition: service_healthy
@@ -110,7 +119,7 @@ services:
         data.dir: /tmp/fluss/data
         remote.data.dir: /tmp/fluss/remote-data
     ports:
-        - "9124:9123"
+      - "9124:9123"
     volumes:
       - shared-tmpfs:/tmp/fluss
 
@@ -121,29 +130,27 @@ services:
       - "3000:80"
     networks:
       - frontend
-    environment:
-      - BRIDGE_URL=http://claw-agent:50051
     depends_on:
       ui-bridge:
         condition: service_started
 
   ui-bridge:
+    container_name: ui-bridge
     build:
       context: ./bridge
+    # Keeps bridge tightly coupled to the agent's network stack
     network_mode: "service:claw-agent"
     environment:
       - AGENT_URL=localhost:50051
-      - GRPC_DNS_RESOLVER=native
     depends_on:
       claw-agent:
-        condition: service_healthy
+        condition: service_started
 
 networks:
   frontend:
     driver: bridge
   internal:
     driver: bridge
-    # internal: true
   egress:
     driver: bridge
 

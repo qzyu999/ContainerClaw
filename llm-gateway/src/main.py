@@ -39,79 +39,50 @@ adapter = HTTPAdapter(max_retries=retry_strategy)
 session.mount("https://", adapter)
 session.mount("http://", adapter)
 
-@app.route("/v1/chat/completions", methods=["POST"])
+@app.route('/v1/chat/completions', methods=['POST'])
 def proxy():
-    body = request.get_json()
-    model = body.get("model", "").lower()
-    
-    import sys
-    print(f"Proxying request for model: {model}", file=sys.stderr)
-    sys.stderr.flush()
-
-    # 1. Gemini Routing
-    if "gemini" in model:
-        if not is_active("gemini"):
-            return Response("Gemini API key is not configured.", status=401)
+    try:
+        data = request.json
+        api_key = data.get('api_key') or open("/run/secrets/gemini_api_key").read().strip()
+        model_id = data.get('model', 'gemini-3-flash-preview')
         
-        # Map OpenAI-style messages to Gemini contents
-        contents = []
-        for m in body.get("messages", []):
-            role = "user" if m["role"] == "user" else "model"
-            contents.append({
+        # 1. TRANSLATE: OpenAI messages -> Gemini contents
+        gemini_messages = []
+        for m in data.get('messages', []):
+            # Gemini roles are strictly 'user' or 'model'
+            role = "model" if m['role'] == "assistant" else "user"
+            gemini_messages.append({
                 "role": role,
-                "parts": [{"text": m["content"]}]
+                "parts": [{"text": m['content']}] # Gemini's required nesting
             })
-        
-        gemini_payload = {"contents": contents}
-        
-        # We try v1beta as the primary, and handle specific errors
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={KEYS['gemini']}"
-        
-        try:
-            print(f"Requesting Gemini URL: {url.split('?')[0]}?key=REDACTED", file=sys.stderr)
-            sys.stderr.flush()
-            resp = session.post(
-                url, 
-                headers={"Content-Type": "application/json"}, 
-                json=gemini_payload, 
-                verify=certifi.where(),
-                timeout=90
-            )
-            
-            if resp.status_code != 200:
-                print(f"Gemini error response ({resp.status_code}): {resp.text}")
-                
-            return Response(resp.text, status=resp.status_code, content_type="application/json")
-            
-        except requests.exceptions.SSLError as e:
-            print(f"SSL Error proxying to Gemini: {str(e)}")
-            return Response(f"SSL error: {str(e)}", status=500)
-        except Exception as e:
-            print(f"General Error proxying to Gemini: {str(e)}")
-            return Response(f"General error: {str(e)}", status=500)
-        
-    # 2. Anthropic Routing
-    elif "claude" in model:
-        if not is_active("anthropic"):
-            return Response("Anthropic API key is not configured.", status=401)
-        # Placeholder for transformation logic
-        return Response("Anthropic integration pending full mapping.", status=501)
 
-    # 3. OpenAI / Default Routing
-    else:
-        if not is_active("openai"):
-            return Response(f"No active API key found for model: {model}", status=401)
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {KEYS['openai']}",
-            "Content-Type": "application/json"
+        # 2. CONSTRUCT: The real Google API payload
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}"
+        
+        payload = {
+            "contents": gemini_messages,
+            "system_instruction": {
+                "parts": [{"text": data.get('system_instruction', '')}]
+            },
+            "generationConfig": {
+                "response_mime_type": data.get('response_mime_type', 'text/plain'),
+                "temperature": 0.7
+            }
         }
-        try:
-            resp = session.post(url, json=body, headers=headers, timeout=90)
-            return Response(resp.text, status=resp.status_code, content_type=resp.headers.get("content-type"))
-        except Exception as e:
-            print(f"Error proxying to OpenAI: {str(e)}")
-            return Response(str(e), status=500)
+
+        # 3. FORWARD: Hit the internet (the Gateway has egress access!)
+        res = requests.post(url, json=payload, timeout=30)
+        
+        # If Google returns an error (400/403), return it to the Agent so we can see why
+        if res.status_code != 200:
+            print(f"⚠️ Google API Error: {res.text}")
+            return res.json(), res.status_code
+
+        return res.json(), 200
+
+    except Exception as e:
+        print(f"🔥 Gateway Crash: {e}")
+        return {"error": str(e)}, 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)

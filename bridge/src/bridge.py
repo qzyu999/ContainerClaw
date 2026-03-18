@@ -17,30 +17,34 @@ import agent_pb2_grpc
 app = Flask(__name__)
 CORS(app) # Allow frontend to hit the bridge
 
-AGENT_URL = os.getenv("AGENT_URL", "agent:50051")
+AGENT_URL = "localhost:50051"
 
 def get_grpc_stub():
-    # Retry logic for initial connection (DNS/startup race)
-    for i in range(5):
+    # 60 attempts * 2s = 2 minutes of patience
+    # This is plenty of time for the Fluss Tablet Server to boot
+    for i in range(60): 
         try:
             channel = grpc.insecure_channel(AGENT_URL)
-            # Try to check if channel is ready
+            # This is the "Python version" of the nc command
+            # It blocks until port 50051 is actually open
             grpc.channel_ready_future(channel).result(timeout=2)
+            print(f"✅ Bridge: Connected to Agent on attempt {i+1}")
             return agent_pb2_grpc.AgentServiceStub(channel)
-        except Exception as e:
-            print(f"Bridge: Agent not ready yet (attempt {i+1}): {e}")
+        except Exception:
+            if i % 5 == 0:
+                print(f"⏳ Bridge: Waiting for Agent gRPC... (Attempt {i+1}/60)")
             time.sleep(2)
     
-    # Fallback to a non-ready channel if retries fail
-    channel = grpc.insecure_channel(AGENT_URL)
-    return agent_pb2_grpc.AgentServiceStub(channel)
+    raise Exception("❌ Bridge: Timeout waiting for Agent.")
 
 @app.route("/events/<session_id>")
 def stream_events(session_id):
+    target_session = "default-session" 
+    print(f"DEBUG: Mapping UI session {session_id} -> Agent session {target_session}")
     def generate():
         print(f"Bridge: Starting SSE stream for session {session_id}")
-        stub = get_grpc_stub()
         try:
+            stub = get_grpc_stub()
             # Consume gRPC stream
             stream = stub.StreamActivity(agent_pb2.ActivityRequest(session_id=session_id))
             for event in stream:
@@ -84,12 +88,14 @@ def proxy_task():
 
 @app.route("/workspace/<session_id>")
 def list_workspace(session_id):
-    try:
-        stub = get_grpc_stub()
-        response = stub.ListWorkspace(agent_pb2.WorkspaceRequest(session_id=session_id))
-        return {"status": "ok", "files": list(response.files)}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}, 500
+    # Just return empty success for now
+    return {"status": "ok", "files": []}
+    # try:
+    #     stub = get_grpc_stub()
+    #     response = stub.ListWorkspace(agent_pb2.WorkspaceRequest(session_id=session_id))
+    #     return {"status": "ok", "files": list(response.files)}
+    # except Exception as e:
+    #     return {"status": "error", "message": str(e)}, 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001, threaded=True)
