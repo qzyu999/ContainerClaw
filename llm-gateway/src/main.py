@@ -41,48 +41,21 @@ session.mount("http://", adapter)
 
 @app.route('/v1/chat/completions', methods=['POST'])
 def proxy():
-    try:
-        data = request.json
-        api_key = data.get('api_key') or open("/run/secrets/gemini_api_key").read().strip()
-        model_id = data.get('model', 'gemini-3-flash-preview')
-        
-        # 1. TRANSLATE: OpenAI messages -> Gemini contents
-        gemini_messages = []
-        for m in data.get('messages', []):
-            # Gemini roles are strictly 'user' or 'model'
-            role = "model" if m['role'] == "assistant" else "user"
-            gemini_messages.append({
-                "role": role,
-                "parts": [{"text": m['content']}] # Gemini's required nesting
-            })
-
-        # 2. CONSTRUCT: The real Google API payload
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}"
-        
-        payload = {
-            "contents": gemini_messages,
-            "system_instruction": {
-                "parts": [{"text": data.get('system_instruction', '')}]
-            },
-            "generationConfig": {
-                "response_mime_type": data.get('response_mime_type', 'text/plain'),
-                "temperature": 0.7
-            }
-        }
-
-        # 3. FORWARD: Hit the internet (the Gateway has egress access!)
-        res = requests.post(url, json=payload, timeout=30)
-        
-        # If Google returns an error (400/403), return it to the Agent so we can see why
-        if res.status_code != 200:
-            print(f"⚠️ Google API Error: {res.text}")
-            return res.json(), res.status_code
-
-        return res.json(), 200
-
-    except Exception as e:
-        print(f"🔥 Gateway Crash: {e}")
-        return {"error": str(e)}, 500
+    data = request.json
+    api_key = data.get('api_key') or os.getenv("GEMINI_API_KEY")
+    model = data.get('model', 'gemini-3-flash-preview')
+    
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    
+    # Mirror the Agent's payload exactly as it was in your base code
+    google_payload = {
+        "contents": data.get('contents', []),
+        "system_instruction": {"parts": [{"text": data.get('system_instruction', '')}]},
+        "generationConfig": data.get('generationConfig', {})
+    }
+    
+    res = requests.post(url, json=google_payload, timeout=60)
+    return res.json(), res.status_code
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
