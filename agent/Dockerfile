@@ -34,6 +34,9 @@ FROM python:3.11-slim-bookworm
 RUN groupadd -g 1000 agent && \
     useradd -u 1000 -g agent -m agent
 
+# Install git for DiffFile/DiffTool support
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /install /usr/local
 
 # TEMPORARY FLUSS PYTHON LIBRARY WORKAROUND START

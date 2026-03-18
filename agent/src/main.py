@@ -2,17 +2,34 @@ import os
 import signal
 import sys
 import time
+import subprocess
 import threading
 import asyncio
 import grpc
 import concurrent.futures
+from pathlib import Path
 from moderator import StageModerator, GeminiAgent
+from tools import (
+    ToolDispatcher, ProjectBoard,
+    ShellTool, FileReadTool, FileWriteTool, DiffTool,
+    TestRunnerTool, BoardTool,
+)
 import fluss
 import pyarrow as pa
 
 # Generated gRPC stubs
 import agent_pb2
 import agent_pb2_grpc
+
+# Language detection map for ReadFile
+LANG_MAP = {
+    ".py": "python", ".js": "javascript", ".ts": "typescript",
+    ".java": "java", ".go": "go", ".rs": "rust", ".rb": "ruby",
+    ".md": "markdown", ".json": "json", ".yaml": "yaml", ".yml": "yaml",
+    ".html": "html", ".css": "css", ".sh": "bash", ".sql": "sql",
+    ".txt": "plaintext", ".toml": "toml", ".xml": "xml",
+    ".c": "c", ".cpp": "cpp", ".h": "c", ".hpp": "cpp",
+}
 
 class AgentService(agent_pb2_grpc.AgentServiceServicer):
     def __init__(self, fluss_conn, table):
@@ -41,9 +58,40 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             GeminiAgent("David", "Software QA tester.", api_key),
             GeminiAgent("Eve", "Business user.", api_key)
         ]
-        
+
+        # ── ConchShell: Per-agent tool authorization ──
+        conchshell_enabled = os.getenv("CONCHSHELL_ENABLED", "true").lower() == "true"
+        tool_dispatcher = None
+
+        if conchshell_enabled:
+            board = ProjectBoard()
+
+            # Shared tool instances
+            shell = ShellTool()
+            file_read = FileReadTool()
+            file_write = FileWriteTool()
+            diff = DiffTool()
+            test_runner = TestRunnerTool()
+            board_rw = BoardTool(board, write_access=True)
+            board_ro = BoardTool(board, write_access=False)
+
+            toolsets = {
+                "Alice": [shell, file_read, file_write, diff],
+                "Bob":   [board_rw, file_read],
+                "Carol": [shell, file_read, file_write, test_runner, diff],
+                "David": [shell, file_read, file_write, test_runner, diff],
+                "Eve":   [file_read, board_ro],
+            }
+            tool_dispatcher = ToolDispatcher(toolsets)
+            print("🐚 [ConchShell] Tool dispatcher initialized with per-agent authorization.")
+        else:
+            print("🐚 [ConchShell] Disabled — agents will use text-only mode.")
+
         autonomous_steps = int(os.getenv("AUTONOMOUS_STEPS", "-1"))
-        self.moderator = StageModerator(self.table, agents, self._bridge_to_ui)
+        self.moderator = StageModerator(
+            self.table, agents, self._bridge_to_ui,
+            tool_dispatcher=tool_dispatcher,
+        )
         print("--- ⚖️ STAGE ACTIVE (Democratic Moderator) ---")
         self.loop.run_until_complete(self.moderator.run(autonomous_steps=autonomous_steps))
 
@@ -105,6 +153,90 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                     continue
         finally:
             print(f"🔌 Cleanly disconnected from session: {session_id}")
+
+    # ── Workspace Explorer gRPC Handlers ──
+
+    def ListWorkspace(self, request, context):
+        """Recursively list all files in /workspace."""
+        entries = []
+        workspace = Path("/workspace")
+        if not workspace.exists():
+            return agent_pb2.WorkspaceResponse(files=[])
+
+        for p in sorted(workspace.rglob("*")):
+            # Skip .git internals but keep .gitkeep
+            rel = str(p.relative_to(workspace))
+            if ".git" in rel.split(os.sep) and not rel.endswith(".gitkeep"):
+                continue
+            try:
+                entries.append(agent_pb2.FileEntry(
+                    path=rel,
+                    is_directory=p.is_dir(),
+                    size_bytes=p.stat().st_size if p.is_file() else 0,
+                    modified_at=time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ",
+                        time.gmtime(p.stat().st_mtime),
+                    ),
+                ))
+            except OSError:
+                continue  # Skip unreadable entries
+        return agent_pb2.WorkspaceResponse(files=entries)
+
+    def ReadFile(self, request, context):
+        """Read a single file from /workspace."""
+        path = Path("/workspace") / request.path
+        if not path.resolve().is_relative_to(Path("/workspace")):
+            context.abort(grpc.StatusCode.PERMISSION_DENIED, "Path traversal denied")
+        if not path.exists() or path.is_dir():
+            context.abort(grpc.StatusCode.NOT_FOUND, f"File not found: {request.path}")
+
+        lang = LANG_MAP.get(path.suffix, "plaintext")
+        try:
+            content = path.read_text(errors="replace")[:1_000_000]  # 1MB cap
+        except Exception as e:
+            context.abort(grpc.StatusCode.INTERNAL, f"Failed to read file: {e}")
+
+        return agent_pb2.FileResponse(content=content, language=lang, path=request.path)
+
+    def DiffFile(self, request, context):
+        """Generate a diff for a file (vs git HEAD or vs empty)."""
+        path = Path("/workspace") / request.path
+        if not path.resolve().is_relative_to(Path("/workspace")):
+            context.abort(grpc.StatusCode.PERMISSION_DENIED, "Path traversal denied")
+
+        modified = ""
+        if path.exists() and path.is_file():
+            try:
+                modified = path.read_text(errors="replace")
+            except Exception:
+                pass
+
+        # Try git diff if the workspace is a git repo
+        original = ""
+        diff_text = ""
+        try:
+            result = subprocess.run(
+                ["git", "show", f"HEAD:{request.path}"],
+                capture_output=True, text=True, cwd="/workspace", timeout=5,
+            )
+            if result.returncode == 0:
+                original = result.stdout
+        except Exception:
+            pass
+
+        try:
+            diff_result = subprocess.run(
+                ["git", "diff", "HEAD", "--", request.path],
+                capture_output=True, text=True, cwd="/workspace", timeout=5,
+            )
+            if diff_result.returncode == 0:
+                diff_text = diff_result.stdout
+        except Exception:
+            pass
+
+        return agent_pb2.DiffResponse(
+            original=original, modified=modified, diff_text=diff_text
+        )
 
 async def init_infrastructure():
     print("🛰️ Initializing Fluss Infrastructure...")

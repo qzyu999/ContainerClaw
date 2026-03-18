@@ -1174,15 +1174,15 @@ python run.py --dataset swebench_lite --timeout 600 --output results/
 
 ---
 
-## 9. Open Questions & Future Considerations
+## 9. Decisions (Agreed)
 
-| Question | Impact | Suggested Resolution |
+| Question | Resolution | Status |
 |---|---|---|
-| Should ConchShell persist terminal history to Fluss (not just in-memory)? | High — enables replay and audit | Yes, write a `conchshell.actions` Fluss table. But this is Phase 2+ |
-| Should agents be able to install pip packages at runtime? | Medium — needed for some SWE-bench instances | Yes, but only via `TestRunnerTool` which already has `/workspace` access. Add `pip install -e .` as a pre-configured command |
-| How do we handle multi-file patches in SWE-bench evaluation? | High — many instances require changes across 3+ files | `git diff` from workspace root captures all changes. No special handling needed |
-| Should the Explorer allow human editing (not just read-only)? | Medium — useful for human-in-the-loop workflows | Phase 2+ feature. For now, read-only + diff is sufficient |
-| How do we handle agent disagreement on tools? | Low — election already picks one winner per turn | The winner gets exclusive tool access per turn. No concurrent tool use |
+| Should ConchShell persist terminal history to Fluss? | **Yes** — write a `conchshell.actions` Fluss table for replay and audit. Deferred to Phase 2. | ✅ Agreed |
+| Should agents be able to install pip packages at runtime? | **Yes** — via `TestRunnerTool` or `ShellTool` with `pip install -e .` in `/workspace`. The existing Docker security model constrains blast radius. | ✅ Agreed |
+| How do we handle multi-file patches in SWE-bench evaluation? | `git diff` from workspace root captures all changes across all files. No special handling needed. | ✅ Agreed |
+| Should the Explorer allow human editing? | **Not yet** — read-only + diff is sufficient for Phase 1. Human editing is a Phase 2+ feature. | ✅ Agreed |
+| How do we handle agent disagreement on tools? | Election winner gets exclusive tool access per turn. No concurrent tool use — this is enforced by `ToolDispatcher`. | ✅ Agreed |
 
 ---
 

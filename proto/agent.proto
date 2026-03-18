@@ -11,6 +11,12 @@ service AgentService {
 
   // List files in the workspace
   rpc ListWorkspace (WorkspaceRequest) returns (WorkspaceResponse);
+
+  // Read a single file from the workspace
+  rpc ReadFile (FileRequest) returns (FileResponse);
+
+  // Get diff data for a file (vs git HEAD)
+  rpc DiffFile (DiffRequest) returns (DiffResponse);
 }
 
 message TaskRequest {
@@ -29,7 +35,7 @@ message ActivityRequest {
 
 message ActivityEvent {
   string timestamp = 1;
-  string type = 2; // "thought", "tool_call", "output", "error", "finish"
+  string type = 2; // "thought", "action", "output", "error", "finish"
   string content = 3;
   float risk_score = 4;
   string actor_id = 5;
@@ -40,5 +46,34 @@ message WorkspaceRequest {
 }
 
 message WorkspaceResponse {
-  repeated string files = 1;
+  repeated FileEntry files = 1;
+}
+
+message FileEntry {
+  string path = 1;
+  bool is_directory = 2;
+  int64 size_bytes = 3;
+  string modified_at = 4;
+}
+
+message FileRequest {
+  string session_id = 1;
+  string path = 2;
+}
+
+message FileResponse {
+  string content = 1;
+  string language = 2;
+  string path = 3;
+}
+
+message DiffRequest {
+  string session_id = 1;
+  string path = 2;
+}
+
+message DiffResponse {
+  string original = 1;
+  string modified = 2;
+  string diff_text = 3;
 }

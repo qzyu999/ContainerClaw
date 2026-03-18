@@ -89,14 +89,61 @@ def proxy_task():
 
 @app.route("/workspace/<session_id>")
 def list_workspace(session_id):
-    # Just return empty success for now
-    return {"status": "ok", "files": []}
-    # try:
-    #     stub = get_grpc_stub()
-    #     response = stub.ListWorkspace(agent_pb2.WorkspaceRequest(session_id=session_id))
-    #     return {"status": "ok", "files": list(response.files)}
-    # except Exception as e:
-    #     return {"status": "error", "message": str(e)}, 500
+    """List workspace files (backward compatible endpoint)."""
+    try:
+        stub = get_grpc_stub()
+        response = stub.ListWorkspace(agent_pb2.WorkspaceRequest(session_id=session_id))
+        files = [{"path": f.path, "is_directory": f.is_directory,
+                  "size_bytes": f.size_bytes, "modified_at": f.modified_at}
+                 for f in response.files]
+        return {"status": "ok", "files": files}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+
+@app.route("/workspace/<session_id>/tree")
+def workspace_tree(session_id):
+    """Recursive directory listing for Explorer file tree."""
+    try:
+        stub = get_grpc_stub()
+        response = stub.ListWorkspace(agent_pb2.WorkspaceRequest(session_id=session_id))
+        files = [{"path": f.path, "is_directory": f.is_directory,
+                  "size_bytes": f.size_bytes, "modified_at": f.modified_at}
+                 for f in response.files]
+        return {"status": "ok", "files": files}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+
+@app.route("/workspace/<session_id>/file")
+def workspace_file(session_id):
+    """Return file contents for Monaco editor."""
+    path = request.args.get("path", "")
+    if not path:
+        return {"status": "error", "message": "Missing 'path' query parameter"}, 400
+    try:
+        stub = get_grpc_stub()
+        response = stub.ReadFile(agent_pb2.FileRequest(session_id=session_id, path=path))
+        return {"status": "ok", "content": response.content,
+                "language": response.language, "path": response.path}
+    except grpc.RpcError as e:
+        return {"status": "error", "message": f"{e.code()}: {e.details()}"}, 404
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+
+@app.route("/workspace/<session_id>/diff")
+def workspace_diff(session_id):
+    """Return diff data for Monaco diff view."""
+    path = request.args.get("path", "")
+    if not path:
+        return {"status": "error", "message": "Missing 'path' query parameter"}, 400
+    try:
+        stub = get_grpc_stub()
+        response = stub.DiffFile(agent_pb2.DiffRequest(session_id=session_id, path=path))
+        return {"status": "ok", "original": response.original,
+                "modified": response.modified, "diff_text": response.diff_text}
+    except grpc.RpcError as e:
+        return {"status": "error", "message": f"{e.code()}: {e.details()}"}, 404
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001, threaded=True)
