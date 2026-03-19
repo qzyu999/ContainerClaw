@@ -21,6 +21,7 @@ export default function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>('chatroom');
   const [conchShellCollapsed, setConchShellCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
@@ -198,6 +199,8 @@ export default function App() {
           <>
             <ChatroomView 
               events={events} 
+              sidebarCollapsed={sidebarCollapsed}
+              onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
               onPromptClick={(content) => setPrompt(content)} 
             />
             <ProjectBoard sessionId={SESSION_ID} refreshKey={refreshKey} />

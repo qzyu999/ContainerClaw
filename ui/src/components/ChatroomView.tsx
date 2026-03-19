@@ -1,14 +1,21 @@
 import { useRef, useEffect } from 'react';
-import { History } from 'lucide-react';
+import { History, PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { ActivityEvent } from '../api';
 
 interface ChatroomViewProps {
   events: ActivityEvent[];
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
   onPromptClick: (content: string) => void;
 }
 
-export default function ChatroomView({ events, onPromptClick }: ChatroomViewProps) {
+export default function ChatroomView({ 
+  events, 
+  sidebarCollapsed, 
+  onToggleSidebar, 
+  onPromptClick 
+}: ChatroomViewProps) {
   const terminalRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -21,12 +28,21 @@ export default function ChatroomView({ events, onPromptClick }: ChatroomViewProp
   const chatEvents = events.filter(e => e.type !== 'action');
 
   return (
-    <div className="main-content">
+    <div className={`main-content ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <aside className="sidebar">
         <div className="card" style={{ height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-            <History size={16} color="#a1a1aa" />
-            <h3>Session History</h3>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <History size={16} color="#a1a1aa" />
+              <h3>Session History</h3>
+            </div>
+            <button 
+              onClick={onToggleSidebar}
+              className="sidebar-toggle-btn"
+              title="Collapse Sidebar"
+            >
+              <PanelLeftClose size={16} />
+            </button>
           </div>
           <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {events.filter(e => e.type === 'user' || e.type === 'thought').reverse().map((e, i) => (
@@ -37,6 +53,16 @@ export default function ChatroomView({ events, onPromptClick }: ChatroomViewProp
           </div>
         </div>
       </aside>
+
+      {sidebarCollapsed && (
+        <button 
+          className="sidebar-expand-btn"
+          onClick={onToggleSidebar}
+          title="Expand Sidebar"
+        >
+          <PanelLeftOpen size={18} />
+        </button>
+      )}
 
       <section className="terminal-container">
         <div className="terminal-header">
