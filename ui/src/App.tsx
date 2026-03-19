@@ -90,82 +90,119 @@ export default function App() {
         <p>Session <span style={{ color: '#fff', fontWeight: 600 }}>{SESSION_ID}</span> is isolated and ready.</p>
       </section>
 
-      <div className="stats-grid">
-        <div className="card">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-            <TerminalIcon size={16} color="#a1a1aa" />
-            <h3>Agent Status</h3>
+      <div className={`main-layout ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+        <aside className="sidebar">
+          {/* Agent Status Card */}
+          <div className="card">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+              <TerminalIcon size={14} color="#a1a1aa" />
+              <h3>Agent Status</h3>
+              <button 
+                onClick={() => setSidebarCollapsed(true)}
+                className="sidebar-toggle-btn"
+                style={{ marginLeft: 'auto' }}
+                title="Collapse Sidebar"
+              >
+                <MessageSquare size={14} />
+              </button>
+            </div>
+            <div className="stat-value" style={{ color: status === 'Idle' ? '#fff' : '#4ade80' }}>
+              {status}
+            </div>
           </div>
-          <div className="stat-value" style={{ color: status === 'Idle' ? '#fff' : '#4ade80' }}>
-            {status}
-          </div>
-          <p className="stat-desc">Execution lifecycle monitor.</p>
-        </div>
 
-        <div className="card">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-            <HardDrive size={16} color="#a1a1aa" />
-            <h3>Workspace</h3>
+          {/* Workspace Card */}
+          <div className="card">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+              <HardDrive size={14} color="#a1a1aa" />
+              <h3>Workspace</h3>
+            </div>
+            <div className="stat-value">
+              {fileCount}
+            </div>
+            <p className="stat-desc">{fileCount} files in sandbox.</p>
           </div>
-          <div className="stat-value" style={{ fontSize: '1.5rem' }}>
-            {fileCount}
-          </div>
-          <p className="stat-desc">{fileCount} files in sandbox.</p>
-        </div>
 
-        <div className="card">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-            <ShieldCheck size={16} color="#a1a1aa" />
-            <h3>Safety Check</h3>
+          {/* Safety Check Card */}
+          <div className="card">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+              <ShieldCheck size={14} color="#a1a1aa" />
+              <h3>Safety Check</h3>
+            </div>
+            <div className="stat-value" style={{ color: riskColor, fontSize: '1rem' }}>
+              {risk > 0.7 ? 'High Risk' : risk > 0.3 ? 'Medium Risk' : 'Low Risk'}
+            </div>
+            <div className="risk-bar">
+              <div 
+                className="risk-fill" 
+                style={{ width: `${risk * 100}%`, backgroundColor: riskColor }} 
+              />
+            </div>
           </div>
-          <div className="stat-value" style={{ color: riskColor }}>
-            {risk > 0.7 ? 'High Risk' : risk > 0.3 ? 'Medium Risk' : 'Low Risk'}
-          </div>
-          <div className="risk-bar">
-            <div 
-              className="risk-fill" 
-              style={{ width: `${risk * 100}%`, backgroundColor: riskColor }} 
-            />
-          </div>
-        </div>
-      </div>
 
-      {/* Tab Bar */}
-      <div className="tab-bar">
-        <button 
-          className={`tab-item ${activeTab === 'chatroom' ? 'active' : ''}`}
-          onClick={() => setActiveTab('chatroom')}
-        >
-          <MessageSquare size={14} />
-          <span>Chatroom</span>
-        </button>
-        <button 
-          className={`tab-item ${activeTab === 'explorer' ? 'active' : ''}`}
-          onClick={() => setActiveTab('explorer')}
-        >
-          <FolderOpen size={14} />
-          <span>Explorer</span>
-          {fileCount > 0 && <span className="tab-badge">{fileCount}</span>}
-        </button>
-      </div>
+          {/* Session History (Persistent in Sidebar) */}
+          <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+              <TerminalIcon size={14} color="#a1a1aa" />
+              <h3>Session History</h3>
+            </div>
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {events.filter(e => e.type === 'user' || e.type === 'thought' || e.type === 'output' || e.type === 'error').reverse().slice(0, 10).map((e, i) => (
+                <div key={i} className={`history-item history-${e.type}`} style={{ fontSize: '0.75rem', padding: '6px' }}>
+                  {e.content.slice(0, 40)}{e.content.length > 40 ? '...' : ''}
+                </div>
+              ))}
+            </div>
+          </div>
+        </aside>
 
-      {/* Tab Content */}
-      <div className="tab-content">
-        {activeTab === 'chatroom' && (
-          <>
-            <ChatroomView 
-              events={events} 
-              setEvents={setEvents}
-              sessionId={SESSION_ID}
-              sidebarCollapsed={sidebarCollapsed}
-              onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
-            />
-            <ProjectBoard sessionId={SESSION_ID} refreshKey={refreshKey} />
-          </>
+        {sidebarCollapsed && (
+          <button 
+            className="sidebar-expand-btn"
+            onClick={() => setSidebarCollapsed(false)}
+            title="Expand Sidebar"
+          >
+            <Box size={18} />
+          </button>
         )}
-        {activeTab === 'explorer' && (
-          <ExplorerView sessionId={SESSION_ID} refreshKey={refreshKey} />
-        )}
+
+        <main className="content" style={{ minHeight: 0 }}>
+          {/* Tab Bar */}
+          <div className="tab-bar">
+            <button 
+              className={`tab-item ${activeTab === 'chatroom' ? 'active' : ''}`}
+              onClick={() => setActiveTab('chatroom')}
+            >
+              <MessageSquare size={14} />
+              <span>Chatroom</span>
+            </button>
+            <button 
+              className={`tab-item ${activeTab === 'explorer' ? 'active' : ''}`}
+              onClick={() => setActiveTab('explorer')}
+            >
+              <FolderOpen size={14} />
+              <span>Explorer</span>
+              {fileCount > 0 && <span className="tab-badge">{fileCount}</span>}
+            </button>
+          </div>
+
+          {/* Tab Content */}
+          <div className="tab-content">
+            {activeTab === 'chatroom' && (
+              <>
+                <ChatroomView 
+                  events={events} 
+                  setEvents={setEvents}
+                  sessionId={SESSION_ID}
+                />
+                <ProjectBoard sessionId={SESSION_ID} refreshKey={refreshKey} />
+              </>
+            )}
+            {activeTab === 'explorer' && (
+              <ExplorerView sessionId={SESSION_ID} refreshKey={refreshKey} />
+            )}
+          </div>
+        </main>
       </div>
 
       {/* ConchShell Panel — always visible */}

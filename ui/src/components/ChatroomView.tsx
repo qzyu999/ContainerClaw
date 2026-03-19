@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { History, PanelLeftClose, PanelLeftOpen, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { ActivityEvent } from '../api';
 import { submitTask } from '../api';
@@ -8,16 +8,12 @@ interface ChatroomViewProps {
   events: ActivityEvent[];
   setEvents: React.Dispatch<React.SetStateAction<ActivityEvent[]>>;
   sessionId: string;
-  sidebarCollapsed: boolean;
-  onToggleSidebar: () => void;
 }
 
 export default function ChatroomView({ 
   events, 
   setEvents,
   sessionId,
-  sidebarCollapsed, 
-  onToggleSidebar, 
 }: ChatroomViewProps) {
   const [prompt, setPrompt] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -70,46 +66,7 @@ export default function ChatroomView({
   const chatEvents = events.filter(e => e.type !== 'action');
 
   return (
-    <div className={`main-content ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
-      <aside className="sidebar">
-        <div className="card" style={{ height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <History size={16} color="#a1a1aa" />
-              <h3>Session History</h3>
-            </div>
-            <button 
-              onClick={onToggleSidebar}
-              className="sidebar-toggle-btn"
-              title="Collapse Sidebar"
-            >
-              <PanelLeftClose size={16} />
-            </button>
-          </div>
-          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {events.filter(e => e.type === 'user' || e.type === 'thought' || e.type === 'output' || e.type === 'error').reverse().map((e, i) => (
-              <div key={i} className={`history-item history-${e.type}`} onClick={() => {
-                setPrompt(e.content);
-                inputRef.current?.focus();
-              }}>
-                {e.content.slice(0, 50)}{e.content.length > 50 ? '...' : ''}
-              </div>
-            ))}
-          </div>
-        </div>
-      </aside>
-
-      {sidebarCollapsed && (
-        <button 
-          className="sidebar-expand-btn"
-          onClick={onToggleSidebar}
-          title="Expand Sidebar"
-        >
-          <PanelLeftOpen size={18} />
-        </button>
-      )}
-
-      <section className="terminal-container">
+    <section className="terminal-container" style={{ height: '600px' }}>
         <div className="terminal-header">
           <div className="dot" style={{ backgroundColor: '#ff5f56' }} />
           <div className="dot" style={{ backgroundColor: '#ffbd2e' }} />
@@ -162,6 +119,5 @@ export default function ChatroomView({
           </form>
         </div>
       </section>
-    </div>
   );
 }
