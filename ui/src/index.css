@@ -238,7 +238,7 @@ h1, h2, h3 {
 
 .log-time { color: #6b7280; }
 .log-tag { font-weight: 600; }
-.log-content { flex: 1; word-break: break-all; }
+.log-content { flex: 1; word-break: break-all; white-space: pre-wrap; }
 .user-line .log-content { color: var(--primary); font-weight: 500; }
 
 .terminal-prompt-line {
@@ -280,6 +280,11 @@ h1, h2, h3 {
   background: rgba(255, 255, 255, 0.05);
   border-color: var(--card-border);
 }
+
+.history-user { border-left: 2px solid var(--secondary); }
+.history-thought { border-left: 2px solid var(--accent); }
+.history-output { border-left: 2px solid var(--primary); }
+.history-error { border-left: 2px solid var(--error); }
 
 .tag-thought { color: var(--accent); }
 .tag-user { color: var(--secondary); }
@@ -705,6 +710,7 @@ h1, h2, h3 {
 .conchshell-output {
   color: #a1a1aa;
   word-break: break-all;
+  white-space: pre-wrap;
 }
 
 /* ================================================

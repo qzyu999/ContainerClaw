@@ -80,6 +80,15 @@ export const submitTask = async (sessionId: string, prompt: string): Promise<Tas
   return resp.json();
 };
 
+export const fetchHistory = async (sessionId: string): Promise<ActivityEvent[]> => {
+  const resp = await fetch(`${BRIDGE_URL}/history/${sessionId}`);
+  const data = await resp.json();
+  if (data.status === 'ok') {
+    return data.events || [];
+  }
+  return [];
+};
+
 export const fetchWorkspace = async (sessionId: string): Promise<WorkspaceResponse> => {
   const resp = await fetch(`${BRIDGE_URL}/workspace/${sessionId}`);
   return resp.json();

@@ -238,6 +238,59 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             original=original, modified=modified, diff_text=diff_text
         )
 
+    def GetHistory(self, request, context):
+        """Fetch full chat history from Fluss."""
+        print(f"📜 [Agent] Fetching history for session: {request.session_id}")
+        future = asyncio.run_coroutine_threadsafe(self._fetch_history_async(), self.loop)
+        try:
+            events = future.result(timeout=10)
+            print(f"✅ [Agent] History fetched: {len(events)} messages.")
+            return agent_pb2.HistoryResponse(events=events)
+        except Exception as e:
+            import traceback
+            error_msg = f"GetHistory error: {e}\n{traceback.format_exc()}"
+            print(f"❌ {error_msg}")
+            context.abort(grpc.StatusCode.INTERNAL, error_msg)
+
+    async def _fetch_history_async(self):
+        # We use a scanner that starts at 0 and reads until the end
+        scanner = await self.table.new_scan().create_record_batch_log_scanner()
+        scanner.subscribe(bucket_id=0, start_offset=0)
+        
+        events = []
+        while True:
+            # Poll with a short timeout.
+            poll = scanner.poll_arrow(timeout_ms=500)
+            if poll.num_rows == 0:
+                break
+            
+            # Use raw Arrow columns (faster and avoids pandas dependency issues)
+            ts_arr = poll.column("ts")
+            actor_arr = poll.column("actor_id")
+            content_arr = poll.column("content")
+            
+            for i in range(poll.num_rows):
+                ts_ms = ts_arr[i].as_py()
+                actor_id = actor_arr[i].as_py()
+                content = content_arr[i].as_py()
+                
+                # Conversion to string if needed
+                if isinstance(actor_id, bytes): actor_id = actor_id.decode('utf-8')
+                if isinstance(content, bytes): content = content.decode('utf-8')
+
+                ts_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts_ms / 1000))
+                
+                # Determine type — match moderator.py behavior
+                e_type = "thought" if actor_id == "Moderator" else "output"
+                
+                events.append(agent_pb2.ActivityEvent(
+                    timestamp=ts_iso,
+                    type=e_type,
+                    content=content,
+                    actor_id=actor_id
+                ))
+        return events
+
 async def init_infrastructure():
     print("🛰️ Initializing Fluss Infrastructure...")
     config = fluss.Config({"bootstrap.servers": "coordinator-server:9123"})

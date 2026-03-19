@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Box, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { streamEvents, fetchWorkspace } from './api';
+import { streamEvents, fetchWorkspace, fetchHistory } from './api';
 import type { ActivityEvent } from './api';
 import ChatroomView from './components/ChatroomView';
 import ExplorerView from './components/ExplorerView';
@@ -23,6 +23,12 @@ export default function App() {
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
+    const init = async () => {
+      const history = await fetchHistory(SESSION_ID);
+      setEvents(history);
+      refreshWorkspace();
+    };
+
     const cleanup = streamEvents(SESSION_ID, (event) => {
       setEvents(prev => [...prev, event]);
       
@@ -43,7 +49,7 @@ export default function App() {
       }
     });
 
-    refreshWorkspace();
+    init();
     return cleanup;
   }, []);
 

@@ -87,8 +87,8 @@ export default function ChatroomView({
             </button>
           </div>
           <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {events.filter(e => e.type === 'user' || e.type === 'thought').reverse().map((e, i) => (
-              <div key={i} className="history-item" onClick={() => {
+            {events.filter(e => e.type === 'user' || e.type === 'thought' || e.type === 'output' || e.type === 'error').reverse().map((e, i) => (
+              <div key={i} className={`history-item history-${e.type}`} onClick={() => {
                 setPrompt(e.content);
                 inputRef.current?.focus();
               }}>

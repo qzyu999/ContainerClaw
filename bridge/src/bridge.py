@@ -87,6 +87,27 @@ def proxy_task():
         except Exception as e:
             return {"status": "error", "message": str(e)}, 500
 
+@app.route("/history/<session_id>")
+def history_stream(session_id):
+    """Fetch full chat history for a session."""
+    try:
+        stub = get_grpc_stub()
+        response = stub.GetHistory(agent_pb2.ActivityRequest(session_id=session_id))
+        events = [
+            {
+                "timestamp": event.timestamp,
+                "type": event.type,
+                "content": event.content,
+                "risk_score": event.risk_score,
+                "actor_id": event.actor_id
+            }
+            for event in response.events
+        ]
+        return {"status": "ok", "events": events}
+    except Exception as e:
+        print(f"Bridge: GetHistory Error: {e}")
+        return {"status": "error", "message": str(e)}, 500
+
 @app.route("/workspace/<session_id>")
 def list_workspace(session_id):
     """List workspace files (backward compatible endpoint)."""

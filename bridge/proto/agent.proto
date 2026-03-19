@@ -17,6 +17,13 @@ service AgentService {
 
   // Get diff data for a file (vs git HEAD)
   rpc DiffFile (DiffRequest) returns (DiffResponse);
+
+  // Get chat history from Fluss
+  rpc GetHistory (ActivityRequest) returns (HistoryResponse);
+}
+
+message HistoryResponse {
+  repeated ActivityEvent events = 1;
 }
 
 message TaskRequest {
