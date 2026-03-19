@@ -20,8 +20,17 @@ export default function ChatroomView({
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
+  const shouldAutoScroll = useRef(true);
+  const handleScroll = () => {
     if (terminalRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = terminalRef.current;
+      // If user is within 50px of the bottom, enable auto-scroll
+      shouldAutoScroll.current = scrollHeight - scrollTop - clientHeight < 50;
+    }
+  };
+
+  useEffect(() => {
+    if (terminalRef.current && shouldAutoScroll.current) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
   }, [events, isSubmitting]);
@@ -75,7 +84,7 @@ export default function ChatroomView({
             bash — containerclaw — 80x24
           </span>
         </div>
-        <div className="terminal-body" ref={terminalRef} onClick={() => inputRef.current?.focus()}>
+        <div className="terminal-body" ref={terminalRef} onScroll={handleScroll} onClick={() => inputRef.current?.focus()}>
           <div className="log-line">
             <span className="log-time">[{new Date().toLocaleTimeString()}]</span>
             <span className="log-tag" style={{ color: '#4ade80' }}>[SYSTEM]</span>

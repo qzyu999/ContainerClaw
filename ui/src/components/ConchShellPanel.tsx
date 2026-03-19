@@ -35,8 +35,16 @@ export default function ConchShellPanel({ events, collapsed, onToggle }: ConchSh
     }
   }
 
-  useEffect(() => {
+  const shouldAutoScroll = useRef(true);
+  const handleScroll = () => {
     if (termRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = termRef.current;
+      shouldAutoScroll.current = scrollHeight - scrollTop - clientHeight < 50;
+    }
+  };
+
+  useEffect(() => {
+    if (termRef.current && shouldAutoScroll.current) {
       termRef.current.scrollTop = termRef.current.scrollHeight;
     }
   }, [actionEvents.length, activeAgent]);
@@ -76,7 +84,7 @@ export default function ConchShellPanel({ events, collapsed, onToggle }: ConchSh
             ))}
           </div>
 
-          <div className="conchshell-terminal" ref={termRef}>
+          <div className="conchshell-terminal" ref={termRef} onScroll={handleScroll}>
             {actionEvents.length === 0 ? (
               <div className="conchshell-empty">
                 No actions from {activeAgent} yet.
