@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Box, Loader2, Send, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare } from 'lucide-react';
+import { Box, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { streamEvents, submitTask, fetchWorkspace } from './api';
+import { streamEvents, fetchWorkspace } from './api';
 import type { ActivityEvent } from './api';
 import ChatroomView from './components/ChatroomView';
 import ExplorerView from './components/ExplorerView';
@@ -14,11 +14,9 @@ type TabId = 'chatroom' | 'explorer';
 
 export default function App() {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
-  const [prompt, setPrompt] = useState('');
   const [status, setStatus] = useState('Idle');
   const [risk, setRisk] = useState(0.1);
   const [fileCount, setFileCount] = useState(0);
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [activeTab, setActiveTab] = useState<TabId>('chatroom');
   const [conchShellCollapsed, setConchShellCollapsed] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -58,40 +56,6 @@ export default function App() {
     }
   };
 
-  const handleExecute = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!prompt || isSubmitting) return;
-
-    setIsSubmitting(true);
-    setEvents(prev => [...prev, {
-      timestamp: new Date().toISOString(),
-      type: 'user',
-      content: prompt
-    }]);
-
-    const currentPrompt = prompt;
-    setPrompt('');
-
-    try {
-      const result = await submitTask(SESSION_ID, currentPrompt);
-      if (result.status === 'error') {
-        setEvents(prev => [...prev, {
-          timestamp: new Date().toISOString(),
-          type: 'error',
-          content: result.message
-        }]);
-      }
-    } catch {
-      setEvents(prev => [...prev, {
-        timestamp: new Date().toISOString(),
-        type: 'error',
-        content: 'Failed to send task to bridge.'
-      }]);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
   const riskColor = risk > 0.7 ? '#ef4444' : risk > 0.3 ? '#f59e0b' : '#4ade80';
   const actionCount = events.filter(e => e.type === 'action').length;
 
@@ -118,20 +82,6 @@ export default function App() {
           Secure Agent Sandbox
         </motion.h2>
         <p>Session <span style={{ color: '#fff', fontWeight: 600 }}>{SESSION_ID}</span> is isolated and ready.</p>
-        
-        <form onSubmit={handleExecute} className="task-form">
-          <input 
-            type="text" 
-            placeholder="Ask your agent (e.g. 'check my files')" 
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            autoComplete="off"
-            disabled={isSubmitting}
-          />
-          <button type="submit" disabled={isSubmitting}>
-            {isSubmitting ? <Loader2 className="animate-spin" size={20} /> : <Send size={20} />}
-          </button>
-        </form>
       </section>
 
       <div className="stats-grid">
@@ -199,9 +149,10 @@ export default function App() {
           <>
             <ChatroomView 
               events={events} 
+              setEvents={setEvents}
+              sessionId={SESSION_ID}
               sidebarCollapsed={sidebarCollapsed}
               onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
-              onPromptClick={(content) => setPrompt(content)} 
             />
             <ProjectBoard sessionId={SESSION_ID} refreshKey={refreshKey} />
           </>

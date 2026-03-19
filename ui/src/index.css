@@ -109,41 +109,7 @@ h1, h2, h3 {
 }
 
 .task-form {
-  display: flex;
-  gap: 1rem;
-  max-width: 600px;
-  margin: 0 auto;
-  padding: 0.5rem;
-  background: var(--card-bg);
-  border: 1px solid var(--card-border);
-  border-radius: 12px;
-  backdrop-filter: blur(8px);
-}
-
-.task-form input {
-  flex: 1;
-  background: transparent;
-  border: none;
-  color: white;
-  padding: 0.75rem 1rem;
-  font-size: 1rem;
-  outline: none;
-}
-
-.task-form button {
-  background: var(--primary);
-  color: #000;
-  border: none;
-  padding: 0.75rem 1.5rem;
-  border-radius: 8px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.task-form button:hover {
-  filter: brightness(1.1);
-  transform: translateY(-1px);
+  display: none; /* Hide old task form */
 }
 
 .stats-grid {
@@ -273,6 +239,32 @@ h1, h2, h3 {
 .log-time { color: #6b7280; }
 .log-tag { font-weight: 600; }
 .log-content { flex: 1; word-break: break-all; }
+.user-line .log-content { color: var(--primary); font-weight: 500; }
+
+.terminal-prompt-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 1rem;
+  padding-bottom: 2rem; /* Give some space at the bottom */
+}
+
+.terminal-prompt-prefix {
+  color: var(--primary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.terminal-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  outline: none;
+  width: 100%;
+}
 
 .history-item {
   padding: 0.75rem;
