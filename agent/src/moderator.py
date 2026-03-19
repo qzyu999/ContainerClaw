@@ -49,7 +49,9 @@ class GeminiAgent:
         if tools:
             payload["tools"] = tools
         try:
-            res = requests.post(self.gateway_url, json=payload, timeout=60)
+            res = await asyncio.to_thread(
+                requests.post, self.gateway_url, json=payload, timeout=60
+            )
             if res.status_code == 200:
                 return res.json()
             else:
@@ -226,7 +228,7 @@ class StageModerator:
         current_steps = 0
 
         while True:
-            poll = scanner.poll_arrow(timeout_ms=500)
+            poll = await asyncio.to_thread(scanner.poll_arrow, timeout_ms=500)
             human_interrupted = False
 
             if poll.num_rows > 0:

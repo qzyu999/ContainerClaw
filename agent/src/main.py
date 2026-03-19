@@ -243,7 +243,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         print(f"📜 [Agent] Fetching history for session: {request.session_id}")
         future = asyncio.run_coroutine_threadsafe(self._fetch_history_async(), self.loop)
         try:
-            events = future.result(timeout=10)
+            events = future.result(timeout=30)
             print(f"✅ [Agent] History fetched: {len(events)} messages.")
             return agent_pb2.HistoryResponse(events=events)
         except Exception as e:
@@ -260,7 +260,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         events = []
         while True:
             # Poll with a short timeout.
-            poll = scanner.poll_arrow(timeout_ms=500)
+            poll = await asyncio.to_thread(scanner.poll_arrow, timeout_ms=500)
             if poll.num_rows == 0:
                 break
             

@@ -197,7 +197,8 @@ class DiffTool(Tool):
     async def execute(self, agent_id: str, params: dict) -> ToolResult:
         rel_path = params.get("path", "")
         try:
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["git", "diff", "HEAD", "--", rel_path],
                 capture_output=True, text=True, cwd="/workspace", timeout=5,
             )
