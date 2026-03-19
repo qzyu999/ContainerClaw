@@ -23,7 +23,7 @@ export default function ChatroomView({ events, onPromptClick }: ChatroomViewProp
   return (
     <div className="main-content">
       <aside className="sidebar">
-        <div className="card" style={{ height: '100%', overflow: 'hidden', display: 'flex', flex: 1, flexDirection: 'column' }}>
+        <div className="card" style={{ height: '100%', overflow: 'hidden', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
             <History size={16} color="#a1a1aa" />
             <h3>Session History</h3>
