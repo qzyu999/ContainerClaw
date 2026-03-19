@@ -76,8 +76,8 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             board_ro = BoardTool(board, write_access=False)
 
             toolsets = {
-                "Alice": [shell, file_read, file_write, diff],
-                "Bob":   [board_rw, file_read],
+                "Alice": [shell, file_read, file_write, test_runner, diff],
+                "Bob":   [board_rw, file_read, diff],
                 "Carol": [shell, file_read, file_write, test_runner, diff],
                 "David": [shell, file_read, file_write, test_runner, diff],
                 "Eve":   [file_read, board_ro],

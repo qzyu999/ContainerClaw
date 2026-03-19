@@ -1,0 +1,12 @@
+# docker-compose.swebench.yml
+# Override for SWE-bench benchmarking mode.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.swebench.yml up --build
+
+services:
+  claw-agent:
+    environment:
+      - AUTONOMOUS_STEPS=-1
+      - CONCHSHELL_ENABLED=true
+      - SWE_BENCH_MODE=true
+    volumes:
+      - ${SWE_BENCH_WORKSPACE:-./workspace}:/workspace:rw

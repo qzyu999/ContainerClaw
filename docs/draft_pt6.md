@@ -997,7 +997,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 | `scripts/swe_bench/evaluator.py` | **[NEW]** | Run gold tests, diff against expected patch, compute metrics | Validation layer |
 | `scripts/swe_bench/results.py` | **[NEW]** | Aggregate per-instance results into JSON/CSV summary tables | Reporting |
 | `docker-compose.swebench.yml` | **[NEW]** | Override for SWE-bench mode: infinite autonomous steps, ConchShell enabled, configurable workspace path | Separation of benchmark config from production config |
-| `scripts/swe_bench/requirements.txt` | **[NEW]** | `datasets`, `gitpython`, `tabulate` | Harness-specific dependencies |
+| `scripts/swe_bench/requirements.txt` | **[NEW]** | `datasets`, `gitpython`, `tabulate` | Harness-specific dependencies, installed into a local venv (`python3 -m venv .venv`) to avoid polluting the system Python |
 
 ---
 
@@ -1153,6 +1153,8 @@ curl -X POST http://localhost:5001/task \
 #### Test 3.1: Single Instance End-to-End
 ```bash
 cd scripts/swe_bench
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
 python run.py --instance sympy__sympy-20154 --timeout 300
 
 # Expected output:
@@ -1167,6 +1169,7 @@ python run.py --instance sympy__sympy-20154 --timeout 300
 
 #### Test 3.2: Batch Run
 ```bash
+# (from within activated .venv)
 python run.py --dataset swebench_lite --timeout 600 --output results/
 
 # Expected: results/summary.csv with per-instance metrics
