@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Box, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { Box, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare, ChevronLeft, ChevronRight, User } from 'lucide-react';
+
 import { streamEvents, fetchWorkspace, fetchHistory } from './api';
 import type { ActivityEvent } from './api';
 import ChatroomView from './components/ChatroomView';
@@ -80,59 +80,50 @@ export default function App() {
         </div>
       </header>
 
-      <section className="hero">
-        <motion.h2
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-        >
-          Secure Agent Sandbox
-        </motion.h2>
-        <p>Session <span style={{ color: '#fff', fontWeight: 600 }}>{SESSION_ID}</span> is isolated and ready.</p>
-      </section>
+
 
       <div className={`main-layout ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
         <aside className="sidebar">
+          {/* Collapse button */}
+          <button 
+            onClick={() => setSidebarCollapsed(true)}
+            className="sidebar-toggle-btn"
+            title="Collapse Sidebar"
+          >
+            <ChevronLeft size={16} />
+          </button>
+
+          {/* Session Card */}
+          <div className="card card-compact">
+            <User size={14} color="#a1a1aa" />
+            <span className="compact-label">Session</span>
+            <span className="compact-value">{SESSION_ID}</span>
+          </div>
+
           {/* Agent Status Card */}
-          <div className="card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-              <TerminalIcon size={14} color="#a1a1aa" />
-              <h3>Agent Status</h3>
-              <button 
-                onClick={() => setSidebarCollapsed(true)}
-                className="sidebar-toggle-btn"
-                style={{ marginLeft: 'auto' }}
-                title="Collapse Sidebar"
-              >
-                <MessageSquare size={14} />
-              </button>
-            </div>
-            <div className="stat-value" style={{ color: status === 'Idle' ? '#fff' : '#4ade80' }}>
+          <div className="card card-compact">
+            <TerminalIcon size={14} color="#a1a1aa" />
+            <span className="compact-label">Status</span>
+            <span className="compact-value" style={{ color: status === 'Idle' ? '#fff' : '#4ade80' }}>
               {status}
-            </div>
+            </span>
           </div>
 
           {/* Workspace Card */}
-          <div className="card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-              <HardDrive size={14} color="#a1a1aa" />
-              <h3>Workspace</h3>
-            </div>
-            <div className="stat-value">
-              {fileCount}
-            </div>
-            <p className="stat-desc">{fileCount} files in sandbox.</p>
+          <div className="card card-compact">
+            <HardDrive size={14} color="#a1a1aa" />
+            <span className="compact-label">Files</span>
+            <span className="compact-value">{fileCount}</span>
           </div>
 
           {/* Safety Check Card */}
-          <div className="card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-              <ShieldCheck size={14} color="#a1a1aa" />
-              <h3>Safety Check</h3>
-            </div>
-            <div className="stat-value" style={{ color: riskColor, fontSize: '1rem' }}>
-              {risk > 0.7 ? 'High Risk' : risk > 0.3 ? 'Medium Risk' : 'Low Risk'}
-            </div>
-            <div className="risk-bar">
+          <div className="card card-compact">
+            <ShieldCheck size={14} color="#a1a1aa" />
+            <span className="compact-label">Safety</span>
+            <span className="compact-value" style={{ color: riskColor }}>
+              {risk > 0.7 ? 'High' : risk > 0.3 ? 'Medium' : 'Low'}
+            </span>
+            <div className="risk-bar-inline">
               <div 
                 className="risk-fill" 
                 style={{ width: `${risk * 100}%`, backgroundColor: riskColor }} 
@@ -140,15 +131,15 @@ export default function App() {
             </div>
           </div>
 
-          {/* Session History (Persistent in Sidebar) */}
+          {/* Session History */}
           <div className="card" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
               <TerminalIcon size={14} color="#a1a1aa" />
-              <h3>Session History</h3>
+              <h3>History</h3>
             </div>
-            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
               {events.filter(e => e.type === 'user' || e.type === 'thought' || e.type === 'output' || e.type === 'error').reverse().slice(0, 10).map((e, i) => (
-                <div key={i} className={`history-item history-${e.type}`} style={{ fontSize: '0.75rem', padding: '6px' }}>
+                <div key={i} className={`history-item history-${e.type}`} style={{ fontSize: '0.7rem', padding: '4px 6px' }}>
                   {e.content.slice(0, 40)}{e.content.length > 40 ? '...' : ''}
                 </div>
               ))}
@@ -162,7 +153,7 @@ export default function App() {
             onClick={() => setSidebarCollapsed(false)}
             title="Expand Sidebar"
           >
-            <Box size={18} />
+            <ChevronRight size={18} />
           </button>
         )}
 

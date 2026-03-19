@@ -89,24 +89,7 @@ h1, h2, h3 {
   100% { transform: scale(0.95); opacity: 0.8; }
 }
 
-.hero {
-  text-align: center;
-  margin-bottom: 3rem;
-}
 
-.hero h2 {
-  font-size: 2.5rem;
-  margin-bottom: 0.5rem;
-  background: linear-gradient(to right, #ffffff, #a1a1aa);
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
-
-.hero p {
-  color: #a1a1aa;
-  margin-bottom: 2rem;
-}
 
 .task-form {
   display: none; /* Hide old task form */
@@ -189,7 +172,7 @@ h1, h2, h3 {
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 6px;
   height: 100%;
   min-height: 0;
   transition: opacity 0.3s ease, transform 0.3s ease;
@@ -197,18 +180,56 @@ h1, h2, h3 {
   top: 2rem;
 }
 
+.sidebar .sidebar-toggle-btn {
+  align-self: flex-end;
+  margin-bottom: 2px;
+}
+
 .sidebar .card {
-  padding: 1rem;
-  border-radius: 12px;
+  padding: 8px 10px;
+  border-radius: 10px;
 }
 
 .sidebar .card h3 {
-  font-size: 0.75rem;
-  margin-bottom: 0.25rem;
+  font-size: 0.7rem;
+  margin-bottom: 0;
 }
 
 .sidebar .stat-value {
   font-size: 1.25rem;
+}
+
+/* Compact single-line card */
+.card.card-compact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+
+.compact-label {
+  font-size: 0.7rem;
+  color: #71717a;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+}
+
+.compact-value {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #fff;
+  margin-left: auto;
+}
+
+.risk-bar-inline {
+  width: 40px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-left: 4px;
 }
 
 .terminal-container {
@@ -313,7 +334,7 @@ h1, h2, h3 {
 .sidebar-toggle-btn {
   background: transparent;
   border: none;
-  color: #71717a;
+  color: #52525b;
   cursor: pointer;
   display: flex;
   align-items: center;
