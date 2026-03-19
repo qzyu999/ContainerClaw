@@ -6,14 +6,43 @@ export interface ActivityEvent {
   actor_id?: string;
 }
 
+export interface FileEntry {
+  path: string;
+  is_directory: boolean;
+  size_bytes: number;
+  modified_at: string;
+}
+
+export interface FileContent {
+  content: string;
+  language: string;
+  path: string;
+}
+
+export interface DiffData {
+  original: string;
+  modified: string;
+  diff_text: string;
+}
+
 export interface WorkspaceResponse {
   status: string;
-  files: string[];
+  files: FileEntry[];
 }
 
 export interface TaskResponse {
   status: string;
   message: string;
+}
+
+export interface BoardItem {
+  id: string;
+  type: string;
+  title: string;
+  description: string;
+  status: string;
+  assigned_to: string | null;
+  created_at: number;
 }
 
 const BRIDGE_URL = 'http://localhost:5001';
@@ -54,4 +83,35 @@ export const submitTask = async (sessionId: string, prompt: string): Promise<Tas
 export const fetchWorkspace = async (sessionId: string): Promise<WorkspaceResponse> => {
   const resp = await fetch(`${BRIDGE_URL}/workspace/${sessionId}`);
   return resp.json();
+};
+
+export const fetchFileTree = async (sessionId: string): Promise<FileEntry[]> => {
+  const resp = await fetch(`${BRIDGE_URL}/workspace/${sessionId}/tree`);
+  const data = await resp.json();
+  return data.files || [];
+};
+
+export const fetchFileContent = async (sessionId: string, path: string): Promise<FileContent> => {
+  const resp = await fetch(`${BRIDGE_URL}/workspace/${sessionId}/file?path=${encodeURIComponent(path)}`);
+  const data = await resp.json();
+  return { content: data.content, language: data.language, path: data.path };
+};
+
+export const fetchFileDiff = async (sessionId: string, path: string): Promise<DiffData> => {
+  const resp = await fetch(`${BRIDGE_URL}/workspace/${sessionId}/diff?path=${encodeURIComponent(path)}`);
+  const data = await resp.json();
+  return { original: data.original, modified: data.modified, diff_text: data.diff_text };
+};
+
+export const fetchBoardData = async (sessionId: string): Promise<BoardItem[]> => {
+  try {
+    const resp = await fetch(`${BRIDGE_URL}/workspace/${sessionId}/file?path=${encodeURIComponent('.conchshell/board.json')}`);
+    const data = await resp.json();
+    if (data.content) {
+      return JSON.parse(data.content);
+    }
+    return [];
+  } catch {
+    return [];
+  }
 };

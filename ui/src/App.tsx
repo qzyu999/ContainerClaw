@@ -1,20 +1,27 @@
-import { useState, useEffect, useRef } from 'react';
-import { Terminal as TerminalIcon, ShieldCheck, HardDrive, History, Send, Box, Loader2 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { useState, useEffect } from 'react';
+import { Box, Loader2, Send, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare } from 'lucide-react';
+import { motion } from 'framer-motion';
 import { streamEvents, submitTask, fetchWorkspace } from './api';
 import type { ActivityEvent } from './api';
+import ChatroomView from './components/ChatroomView';
+import ExplorerView from './components/ExplorerView';
+import ConchShellPanel from './components/ConchShellPanel';
+import ProjectBoard from './components/ProjectBoard';
 
 const SESSION_ID = 'user-session';
+
+type TabId = 'chatroom' | 'explorer';
 
 export default function App() {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [prompt, setPrompt] = useState('');
   const [status, setStatus] = useState('Idle');
   const [risk, setRisk] = useState(0.1);
-  const [files, setFiles] = useState<string[]>([]);
+  const [fileCount, setFileCount] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  
-  const terminalRef = useRef<HTMLDivElement>(null);
+  const [activeTab, setActiveTab] = useState<TabId>('chatroom');
+  const [conchShellCollapsed, setConchShellCollapsed] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     const cleanup = streamEvents(SESSION_ID, (event) => {
@@ -33,6 +40,7 @@ export default function App() {
       } else if (event.type === 'finish' || event.type === 'error') {
         setStatus('Idle');
         refreshWorkspace();
+        setRefreshKey(k => k + 1);
       }
     });
 
@@ -40,16 +48,10 @@ export default function App() {
     return cleanup;
   }, []);
 
-  useEffect(() => {
-    if (terminalRef.current) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-    }
-  }, [events]);
-
   const refreshWorkspace = async () => {
     try {
       const data = await fetchWorkspace(SESSION_ID);
-      if (data.status === 'ok') setFiles(data.files);
+      if (data.status === 'ok') setFileCount(data.files.length);
     } catch (e) {
       console.error('Failed to fetch workspace', e);
     }
@@ -78,7 +80,7 @@ export default function App() {
           content: result.message
         }]);
       }
-    } catch (err) {
+    } catch {
       setEvents(prev => [...prev, {
         timestamp: new Date().toISOString(),
         type: 'error',
@@ -90,6 +92,7 @@ export default function App() {
   };
 
   const riskColor = risk > 0.7 ? '#ef4444' : risk > 0.3 ? '#f59e0b' : '#4ade80';
+  const actionCount = events.filter(e => e.type === 'action').length;
 
   return (
     <div className="container">
@@ -147,10 +150,10 @@ export default function App() {
             <HardDrive size={16} color="#a1a1aa" />
             <h3>Workspace</h3>
           </div>
-          <div className="stat-value" style={{ fontSize: '1rem', height: '1.5rem', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {files.length > 0 ? files.join(', ') : 'Empty'}
+          <div className="stat-value" style={{ fontSize: '1.5rem' }}>
+            {fileCount}
           </div>
-          <p className="stat-desc">{files.length} files in sandbox.</p>
+          <p className="stat-desc">{fileCount} files in sandbox.</p>
         </div>
 
         <div className="card">
@@ -170,62 +173,49 @@ export default function App() {
         </div>
       </div>
 
-      <main className="main-content">
-        <aside className="sidebar">
-          <div className="card" style={{ height: '100%', overflow: 'hidden', display: 'flex', flex: 1, flexDirection: 'column' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-              <History size={16} color="#a1a1aa" />
-              <h3>Session History</h3>
-            </div>
-            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {events.filter(e => e.type === 'user' || e.type === 'thought').reverse().map((e, i) => (
-                <div key={i} className="history-item" onClick={() => setPrompt(e.content)}>
-                  {e.content.slice(0, 50)}{e.content.length > 50 ? '...' : ''}
-                </div>
-              ))}
-            </div>
-          </div>
-        </aside>
+      {/* Tab Bar */}
+      <div className="tab-bar">
+        <button 
+          className={`tab-item ${activeTab === 'chatroom' ? 'active' : ''}`}
+          onClick={() => setActiveTab('chatroom')}
+        >
+          <MessageSquare size={14} />
+          <span>Chatroom</span>
+        </button>
+        <button 
+          className={`tab-item ${activeTab === 'explorer' ? 'active' : ''}`}
+          onClick={() => setActiveTab('explorer')}
+        >
+          <FolderOpen size={14} />
+          <span>Explorer</span>
+          {fileCount > 0 && <span className="tab-badge">{fileCount}</span>}
+        </button>
+      </div>
 
-        <section className="terminal-container">
-          <div className="terminal-header">
-            <div className="dot" style={{ backgroundColor: '#ff5f56' }} />
-            <div className="dot" style={{ backgroundColor: '#ffbd2e' }} />
-            <div className="dot" style={{ backgroundColor: '#27c93f' }} />
-            <span style={{ marginLeft: '8px', fontSize: '0.75rem', color: '#6b7280', fontFamily: 'var(--font-mono)' }}>
-              bash — containerclaw — 80x24
-            </span>
-          </div>
-          <div className="terminal-body" ref={terminalRef}>
-            <div className="log-line">
-              <span className="log-time">[{new Date().toLocaleTimeString()}]</span>
-              <span className="log-tag" style={{ color: '#4ade80' }}>[SYSTEM]</span>
-              <span className="log-content">Ready for tasks.</span>
-            </div>
-            <AnimatePresence>
-              {events.map((event, i) => (
-                <motion.div 
-                  key={i} 
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  className="log-line"
-                >
-                  <span className="log-time">[{new Date(event.timestamp || Date.now()).toLocaleTimeString()}]</span>
-                  <span className={`log-tag tag-${event.type}`}>
-                    [{event.type.toUpperCase()}]
-                  </span>
-                  {event.actor_id && (
-                    <span className={`actor-badge actor-${event.actor_id}`}>
-                      {event.actor_id}
-                    </span>
-                  )}
-                  <span className="log-content">{event.content}</span>
-                </motion.div>
-              ))}
-            </AnimatePresence>
-          </div>
-        </section>
-      </main>
+      {/* Tab Content */}
+      <div className="tab-content">
+        {activeTab === 'chatroom' && (
+          <>
+            <ChatroomView 
+              events={events} 
+              onPromptClick={(content) => setPrompt(content)} 
+            />
+            <ProjectBoard sessionId={SESSION_ID} refreshKey={refreshKey} />
+          </>
+        )}
+        {activeTab === 'explorer' && (
+          <ExplorerView sessionId={SESSION_ID} refreshKey={refreshKey} />
+        )}
+      </div>
+
+      {/* ConchShell Panel — always visible */}
+      {actionCount > 0 && (
+        <ConchShellPanel
+          events={events}
+          collapsed={conchShellCollapsed}
+          onToggle={() => setConchShellCollapsed(!conchShellCollapsed)}
+        />
+      )}
     </div>
   );
 }
