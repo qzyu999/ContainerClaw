@@ -19,6 +19,7 @@ export default function App() {
   const [fileCount, setFileCount] = useState(0);
   const [activeTab, setActiveTab] = useState<TabId>('chatroom');
   const [conchShellCollapsed, setConchShellCollapsed] = useState(false);
+  const [projectBoardCollapsed, setProjectBoardCollapsed] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -63,7 +64,6 @@ export default function App() {
   };
 
   const riskColor = risk > 0.7 ? '#ef4444' : risk > 0.3 ? '#f59e0b' : '#4ade80';
-  const actionCount = events.filter(e => e.type === 'action').length;
 
   return (
     <div className="container">
@@ -186,7 +186,12 @@ export default function App() {
                   setEvents={setEvents}
                   sessionId={SESSION_ID}
                 />
-                <ProjectBoard sessionId={SESSION_ID} refreshKey={refreshKey} />
+                <ProjectBoard 
+                  sessionId={SESSION_ID} 
+                  refreshKey={refreshKey} 
+                  collapsed={projectBoardCollapsed}
+                  onToggle={() => setProjectBoardCollapsed(!projectBoardCollapsed)}
+                />
               </>
             )}
             {activeTab === 'explorer' && (
@@ -197,13 +202,11 @@ export default function App() {
       </div>
 
       {/* ConchShell Panel — always visible */}
-      {actionCount > 0 && (
-        <ConchShellPanel
-          events={events}
-          collapsed={conchShellCollapsed}
-          onToggle={() => setConchShellCollapsed(!conchShellCollapsed)}
-        />
-      )}
+      <ConchShellPanel
+        events={events}
+        collapsed={conchShellCollapsed}
+        onToggle={() => setConchShellCollapsed(!conchShellCollapsed)}
+      />
     </div>
   );
 }
