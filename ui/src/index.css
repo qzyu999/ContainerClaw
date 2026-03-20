@@ -151,6 +151,7 @@ h1, h2, h3 {
 .main-layout {
   display: grid;
   grid-template-columns: 320px 1fr;
+  grid-template-rows: auto;
   gap: 1rem;
   min-height: 0;
   position: relative;
@@ -167,13 +168,16 @@ h1, h2, h3 {
   opacity: 0;
   pointer-events: none;
   transform: translateX(-20px);
+  height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
 }
 
 .sidebar {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  height: 100%;
   min-height: 0;
   transition: opacity 0.3s ease, transform 0.3s ease;
   position: sticky;
@@ -240,6 +244,7 @@ h1, h2, h3 {
   border-radius: 12px;
   overflow: hidden;
   height: 100%;
+  max-height: 600px;
   min-height: 0;
 }
 
@@ -439,7 +444,7 @@ h1, h2, h3 {
 }
 
 .tab-content {
-  min-height: 500px;
+  min-height: 0;
 }
 
 /* ================================================
