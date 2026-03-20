@@ -10,6 +10,8 @@ from typing import List, Callable
 
 from tools import ToolDispatcher, ToolResult
 
+MAX_HISTORY_MESSAGES = 100
+
 
 class GeminiAgent:
     def __init__(self, agent_id, persona, api_key):
@@ -259,7 +261,7 @@ class StageModerator:
                     print(f"🤖 [Autonomous Turn] {current_steps if current_steps >= 0 else 'inf'} steps remaining...")
 
                 await asyncio.sleep(1.0)
-                context_window = self.all_messages[-20:]
+                context_window = self.all_messages[-MAX_HISTORY_MESSAGES:]
 
                 # Run the election
                 winner, election_log, is_job_done = await self.elect_leader(context_window)
@@ -292,7 +294,7 @@ class StageModerator:
                         self.emit_cb("Moderator", f"💤 {winner} is waiting. Nudging...", "thought")
                         nudge_text = f"@{winner}, you won the election but chose to WAIT. Could you briefly explain why so the team knows what you're waiting for?"
                         self.all_messages.append({"actor_id": "Moderator", "content": nudge_text})
-                        nudge_context = self.all_messages[-20:]
+                        nudge_context = self.all_messages[-MAX_HISTORY_MESSAGES:]
                         resp = await winning_agent._think(nudge_context)
 
                         if resp:
@@ -316,7 +318,7 @@ class StageModerator:
         Returns the agent's final text response (or None).
         """
         available_tools = self.tool_dispatcher.get_tools_for_agent(agent.agent_id)
-        updated_context = self.all_messages[-20:]
+        updated_context = self.all_messages[-MAX_HISTORY_MESSAGES:]
 
         final_text = None
 
@@ -375,13 +377,13 @@ class StageModerator:
                     ),
                 })
 
-            updated_context = self.all_messages[-20:]
+            updated_context = self.all_messages[-MAX_HISTORY_MESSAGES:]
 
         return final_text
 
     async def _execute_text_only(self, agent: GeminiAgent) -> str | None:
         """Execute the winning agent's turn without tools (backward-compatible)."""
-        updated_context = self.all_messages[-20:]
+        updated_context = self.all_messages[-MAX_HISTORY_MESSAGES:]
         return await agent._think(updated_context)
 
     async def elect_leader(self, history):
