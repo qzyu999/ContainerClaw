@@ -80,7 +80,7 @@ def proxy():
     
     try:
         # Use the resilient session (connection pooling + automatic retry on failure)
-        res = session.post(url, json=google_payload, timeout=90)
+        res = session.post(url, json=google_payload, timeout=300)
         return res.json(), res.status_code
     except Exception as e:
         return {"error": f"Gateway request failed: {str(e)}"}, 502
