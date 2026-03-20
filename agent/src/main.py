@@ -77,10 +77,10 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
             toolsets = {
                 "Alice": [shell, board_rw, file_read, file_write, test_runner, diff],
-                "Bob":   [board_rw, file_read, diff],
+                "Bob":   [shell, board_rw, file_read, file_write, test_runner, diff],
                 "Carol": [shell, board_rw, file_read, file_write, test_runner, diff],
                 "David": [shell, board_rw, file_read, file_write, test_runner, diff],
-                "Eve":   [file_read, board_ro],
+                "Eve":   [shell, board_rw, file_read, file_write, test_runner, diff],
             }
             tool_dispatcher = ToolDispatcher(toolsets)
             print("🐚 [ConchShell] Tool dispatcher initialized with per-agent authorization.")
