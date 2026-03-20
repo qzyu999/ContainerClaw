@@ -158,6 +158,196 @@ graph LR
 | **Debugging / Auditing** | Tool results only visible in Docker logs (stdout). Lost when container is removed. | All tool results persisted in Fluss, queryable via `GetHistory` RPC. |
 | **UI history on refresh** | `GetHistory` shows incomplete history (no tool results, no nudges). | `GetHistory` shows exactly what agents saw. |
 
+### 1.5 Broader Audit: Other Non-Scalable Patterns
+
+The `all_messages` list is the most critical scalability problem, but it is not the only one. This section catalogs **every** in-memory or non-durable state pattern in the codebase, assesses their severity, and recommends whether they should be migrated to Fluss.
+
+#### Weakness W-1: `event_queues` — In-Memory SSE Dispatch
+
+**File:** [main.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/main.py) lines 39, 108–112
+
+```python
+self.event_queues = {}   # dict[str, queue.Queue]
+
+def _get_queue(self, session_id):
+    if session_id not in self.event_queues:
+        self.event_queues[session_id] = queue.Queue()
+    return self.event_queues[session_id]
+```
+
+**What it does:** `_bridge_to_ui()` puts `ActivityEvent` objects into a per-session `queue.Queue`. The `StreamActivity` gRPC handler yields events from this queue to the bridge, which converts them to SSE for the UI.
+
+**Why it doesn't scale:**
+- The queue is **entirely in-memory**. If the agent restarts, queued events are lost. The UI must reconnect and has no way to replay missed events.
+- There is **one queue per session**, but since `CLAW_SESSION_ID` is hardcoded to `"default-session"`, only one queue ever exists.
+- If the UI disconnects and reconnects, events emitted during the gap are **lost forever** — there is no replay mechanism for SSE events.
+
+**Relationship to Fluss:** This is a **parallel dispatch path** that duplicates Fluss's role. The moderator writes to Fluss AND calls `emit_cb()` — two separate channels carrying the same information:
+
+```mermaid
+graph LR
+    Mod["StageModerator"] -->|"publish()"| Fluss["Fluss Log"]
+    Mod -->|"emit_cb()"| Queue["event_queues<br/>(queue.Queue)"]
+
+    Fluss -->|"GetHistory RPC<br/>(on refresh)"| UI["UI"]
+    Queue -->|"StreamActivity gRPC<br/>→ SSE stream"| UI
+
+    style Queue fill:#7f1d1d,stroke:#ef4444,color:#fff
+    style Fluss fill:#14532d,stroke:#4ade80,color:#fff
+```
+
+**Severity: 🟡 Medium** — The `GetHistory` RPC already provides crash-recovery for the UI (it reads from Fluss on page load). The real-time SSE stream via `event_queues` is a UX convenience, not a correctness requirement. But the dual-path architecture is needlessly complex.
+
+**Migration recommendation:** Replace the `emit_cb` → `queue.Queue` → `StreamActivity` path with a Fluss-backed scanner. The bridge would subscribe to the Fluss log via a dedicated scanner (similar to how the moderator poll loop works) and stream events to the UI in real-time. This eliminates the queue entirely and makes the SSE stream a simple Fluss reader.
+
+---
+
+#### Weakness W-2: `ProjectBoard` — JSON File Persistence
+
+**File:** [tools.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/tools.py) lines 286–340
+
+```python
+class ProjectBoard:
+    def __init__(self):
+        self.board_path = Path("/workspace/.conchshell/board.json")
+        self.items: list[dict] = []
+        self._load()
+
+    def _save(self):
+        self.board_path.parent.mkdir(parents=True, exist_ok=True)
+        self.board_path.write_text(json.dumps(self.items, indent=2))
+```
+
+**What it does:** The `ProjectBoard` persists task/story/epic items to a JSON file on the `/workspace` volume. Bob (project manager) creates items via `BoardTool`; all agents can read them.
+
+**Why it doesn't scale:**
+- **Single-writer assumption:** If two agents concurrently called `board.create_item()`, the last write wins (no locking). Currently mitigated by the election system (only one agent acts at a time), but this is a fragile invariant.
+- **No change history:** The JSON file is overwritten on every mutation. There's no audit trail of who changed what and when. In a MAS context, knowing which agent created or updated a task is important provenance.
+- **Coupled to filesystem:** The board is stored in `/workspace`, mixing project management data with the SWE-bench workspace files. A `git clean -fd` in the workspace could accidentally delete the board.
+
+**Severity: 🟡 Medium** — The single-writer invariant is currently upheld by the election system, so there's no immediate correctness bug. But the lack of an audit trail is a genuine gap for agent governance.
+
+**Migration recommendation:** Create a second Fluss table `containerclaw.board_events` as an append-only log of board mutations (create, update_status). The `ProjectBoard` class would then reconstruct its state by replaying this log on startup, and the UI could subscribe to board changes in real-time via a scanner. The JSON file becomes unnecessary.
+
+---
+
+#### Weakness W-3: `emit_cb` / `_bridge_to_ui` — Dual Event Dispatch
+
+**File:** [main.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/main.py) lines 99–106, [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) (18 callsites)
+
+```python
+def _bridge_to_ui(self, actor_id, content, e_type):
+    q = self._get_queue(self.session_id)
+    q.put(agent_pb2.ActivityEvent(
+        timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        type=e_type, content=content, actor_id=actor_id
+    ))
+```
+
+**What it does:** This is the callback that the moderator uses to push events to the UI in real-time. It's called for elections (`"thought"`), agent responses (`"output"`), tool actions (`"action"`), and cycle completion (`"finish"`).
+
+**Why it's a problem:**
+- `emit_cb` events carry **different information** than what's published to Fluss. For example, `emit_cb("Moderator", "🏆 Winner: Carol", "thought")` is never written to Fluss at all — it only goes to the SSE stream. If the UI reconnects, this event is gone.
+- The 18 `emit_cb` callsites in `moderator.py` are **not synchronized** with the `publish()` calls. Some events go to both channels (agent responses), some go only to `emit_cb` (election round tallies, winner announcements), and some go only to Fluss (election summary). This creates a confusing parity matrix.
+
+**Severity: 🟠 Medium-High** — This is architecturally the same problem as `all_messages` but on the output side. The dual-dispatch creates inconsistency between what the UI shows in real-time vs. what it shows after a page refresh.
+
+**Migration recommendation:** This is directly addressed by W-1's fix. Once the SSE stream reads from Fluss, all `emit_cb` calls can be replaced with `publish()` calls. The `emit_cb` callback, `_bridge_to_ui`, and `event_queues` can all be removed.
+
+---
+
+#### Weakness W-4: `history_keys` — Unbounded Deduplication Set
+
+**File:** [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) line 205
+
+```python
+self.history_keys = set()  # {"{ts}-{actor_id}", ...}
+```
+
+**What it does:** Prevents the poll loop from double-appending messages to `all_messages` when the same record is polled twice.
+
+**Why it doesn't scale:**
+- The set grows **forever** — every message ever polled adds one entry. In an infinite autonomous session, this is unbounded memory growth.
+- The key format `{ts}-{actor_id}` is **not collision-resistant**. If two messages from the same actor arrive in the same millisecond (e.g., two fast `publish()` calls), they'd have the same key and the second would be silently dropped.
+
+**Severity: 🟢 Low** — The memory grow rate is ~50 bytes per message (a short string + set overhead). At 1000 messages/hour, this is ~50KB/hour — negligible. The key collision is theoretical and hasn't been observed.
+
+**Migration recommendation:** When Phase 3's truncation guard trims `all_messages`, also trim `history_keys` by rebuilding it from the remaining messages. This caps memory. For the collision issue, add a monotonic counter or use the Fluss record offset as the key.
+
+---
+
+#### Weakness W-5: `ToolDispatcher.cycle_counter` — Ephemeral Rate Limit
+
+**File:** [tools.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/tools.py) lines 461, 475, 488
+
+```python
+self.cycle_counter = 0
+# ...
+if self.cycle_counter >= self.MAX_TOOLS_PER_CYCLE:
+    return ToolResult(success=False, ..., error="Tool rate limit exceeded ...")
+self.cycle_counter += 1
+```
+
+**What it does:** Limits total tool calls per election cycle to `MAX_TOOLS_PER_CYCLE` (20). Reset via `reset_cycle()` at the end of each moderation cycle.
+
+**Why it doesn't scale:** If the container restarts mid-cycle, the counter resets to 0, effectively giving agents a fresh budget. Not a correctness issue — just a defense-in-depth gap.
+
+**Severity: 🟢 Low** — This is intentionally ephemeral. The rate limit is a safety guard, not a business rule. Resetting on restart is acceptable and arguably desirable.
+
+**Migration recommendation:** None needed. This is appropriately ephemeral.
+
+---
+
+#### Summary of All Non-Scalable Patterns
+
+```mermaid
+graph TB
+    subgraph "🔴 Critical (Actively Migrating)"
+        W0["all_messages<br/>(Python list)"]
+    end
+
+    subgraph "🟠 Medium-High"
+        W3["emit_cb / _bridge_to_ui<br/>(dual event dispatch)"]
+    end
+
+    subgraph "🟡 Medium"
+        W1["event_queues<br/>(in-memory Queue dict)"]
+        W2["ProjectBoard<br/>(JSON file on /workspace)"]
+    end
+
+    subgraph "🟢 Low"
+        W4["history_keys<br/>(unbounded set)"]
+        W5["ToolDispatcher.cycle_counter<br/>(ephemeral counter)"]
+    end
+
+    W0 -->|"Phases 1–4<br/>(this document)"| Fluss["Fluss SST"]
+    W3 -->|"Future: replace emit_cb<br/>with publish()"| Fluss
+    W1 -->|"Future: Fluss-backed<br/>SSE scanner"| Fluss
+    W2 -->|"Future: board_events<br/>Fluss table"| Fluss
+    W4 -->|"Phase 3: trim with<br/>all_messages"| Fixed["Self-Contained Fix"]
+    W5 -->|"No migration needed"| OK["Appropriately Ephemeral"]
+
+    style W0 fill:#7f1d1d,stroke:#ef4444,color:#fff
+    style W3 fill:#7f1d1d,stroke:#f97316,color:#fff
+    style W1 fill:#92400e,stroke:#f59e0b,color:#fff
+    style W2 fill:#92400e,stroke:#f59e0b,color:#fff
+    style W4 fill:#14532d,stroke:#4ade80,color:#fff
+    style W5 fill:#14532d,stroke:#4ade80,color:#fff
+    style Fluss fill:#1e3a5f,stroke:#60a5fa,color:#fff
+```
+
+| ID | Pattern | Location | Severity | Migration Target |
+|---|---|---|---|---|
+| **W-0** | `all_messages` | `moderator.py` | 🔴 Critical | Fluss (Phases 1–4) |
+| **W-1** | `event_queues` | `main.py` | 🟡 Medium | Fluss scanner → SSE |
+| **W-2** | `ProjectBoard` | `tools.py` | 🟡 Medium | `containerclaw.board_events` Fluss table |
+| **W-3** | `emit_cb` / `_bridge_to_ui` | `main.py` + `moderator.py` | 🟠 Medium-High | Eliminated when W-1 is fixed |
+| **W-4** | `history_keys` | `moderator.py` | 🟢 Low | Trim alongside `all_messages` |
+| **W-5** | `cycle_counter` | `tools.py` | 🟢 Low | None needed |
+
+> [!NOTE]
+> W-1 and W-3 are **coupled** — fixing W-1 (replacing `event_queues` with a Fluss scanner) automatically eliminates W-3 (the `emit_cb` dual-dispatch). Together, they represent the largest remaining migration after `all_messages`.
+
 ---
 
 ## 2. Target Architecture: Fluss as Single Source of Truth
