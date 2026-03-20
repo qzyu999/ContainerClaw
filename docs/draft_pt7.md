@@ -231,6 +231,73 @@ class ProjectBoard:
 
 ---
 
+#### W-2 Post-Migration: UI Board Breakage & Fix
+
+> [!CAUTION]
+> After migrating `ProjectBoard` to Fluss (creating the `containerclaw.board_events` table and switching persistence), the **project board panel in the UI stopped populating**. This section documents the root cause and fix.
+
+**Root cause:** The UI's `fetchBoardData()` in [api.ts](file:///Users/jaredyu/Desktop/open_source/containerclaw/ui/src/api.ts) was still reading board data by fetching the old JSON file at `.conchshell/board.json` via the workspace file endpoint. But the migrated `ProjectBoard` only writes to Fluss when `board_table` is available — it no longer calls `_save()` to write `board.json`. The JSON file simply doesn't exist anymore.
+
+```mermaid
+graph LR
+    subgraph "BEFORE (broken)"
+        B_Board["ProjectBoard"] -->|"❌ no longer writes"| B_JSON[".conchshell/board.json"]
+        B_UI["UI fetchBoardData()"] -->|"reads empty/missing"| B_JSON
+    end
+
+    subgraph "AFTER (fixed)"
+        A_Board["ProjectBoard"] -->|"writes events"| A_Fluss["Fluss board_events"]
+        A_Fluss -->|"replay on startup"| A_Board
+        A_UI["UI fetchBoardData()"] -->|"GET /board/:session"| A_Bridge["Bridge"]
+        A_Bridge -->|"gRPC GetBoard"| A_Board
+    end
+
+    style B_JSON fill:#7f1d1d,stroke:#ef4444,color:#fff
+    style A_Fluss fill:#14532d,stroke:#4ade80,color:#fff
+```
+
+**Fix applied:**
+
+1. **Proto:** Added `GetBoard` RPC, `BoardItem` and `BoardResponse` messages to [agent.proto](file:///Users/jaredyu/Desktop/open_source/containerclaw/proto/agent.proto)
+2. **Agent:** Added `GetBoard` handler in [main.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/main.py) that reads from the in-memory `ProjectBoard.items` list
+3. **Bridge:** Added `/board/<session_id>` endpoint in [bridge.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/bridge/src/bridge.py) that proxies the gRPC call
+4. **UI:** Updated `fetchBoardData()` in [api.ts](file:///Users/jaredyu/Desktop/open_source/containerclaw/ui/src/api.ts) to call `/board/<session_id>` instead of reading the JSON file
+
+**How the board updates — lifecycle clarification:**
+
+The board does **not** poll Fluss regularly. Its update mechanism is:
+
+1. **Startup (crash recovery):** `ProjectBoard.__init__()` calls `_replay_from_fluss()`, which creates a one-time Fluss scanner, reads all `board_events` from offset 0, and reconstructs `self.items` by replaying create/update_status events. After replay, the scanner is discarded.
+
+2. **Runtime (agent-driven):** When an agent wins an election and calls `BoardTool.execute()` (e.g., `board create task "Fix login bug"`), the `ProjectBoard.create_item()` or `update_status()` method:
+   - Updates `self.items` in-memory **immediately**
+   - Publishes the mutation event to Fluss via `_publish_event()`
+
+3. **UI reads:** The UI calls `GetBoard` (via the bridge), which reads `self.items` — a point-in-time snapshot of the in-memory list. The UI triggers a refresh on `finish` events (when an election cycle completes).
+
+```mermaid
+sequenceDiagram
+    participant Fluss as Fluss board_events
+    participant Board as ProjectBoard (in-memory)
+    participant Agent as Winning Agent
+    participant UI as UI ProjectBoard
+
+    Note over Board,Fluss: Startup: one-time replay
+    Board->>Fluss: _replay_from_fluss() (offset 0 → head)
+    Fluss-->>Board: Reconstruct self.items
+
+    Note over Agent,Board: Runtime: agent-driven
+    Agent->>Board: create_item("Fix login bug")
+    Board->>Board: self.items.append(item)
+    Board->>Fluss: _publish_event("create", ...)
+
+    Note over UI,Board: UI: on-demand fetch
+    UI->>Board: GetBoard RPC
+    Board-->>UI: self.items snapshot
+```
+
+---
+
 #### Weakness W-3: `emit_cb` / `_bridge_to_ui` — Dual Event Dispatch
 
 **File:** [main.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/main.py) lines 99–106, [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) (18 callsites)

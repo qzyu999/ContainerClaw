@@ -20,6 +20,9 @@ service AgentService {
 
   // Get chat history from Fluss
   rpc GetHistory (ActivityRequest) returns (HistoryResponse);
+
+  // Get project board items (W-2: Fluss-backed)
+  rpc GetBoard (ActivityRequest) returns (BoardResponse);
 }
 
 message HistoryResponse {
@@ -83,4 +86,18 @@ message DiffResponse {
   string original = 1;
   string modified = 2;
   string diff_text = 3;
+}
+
+message BoardItem {
+  string id = 1;
+  string type = 2;
+  string title = 3;
+  string description = 4;
+  string status = 5;
+  string assigned_to = 6;
+  double created_at = 7;
+}
+
+message BoardResponse {
+  repeated BoardItem items = 1;
 }

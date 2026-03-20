@@ -114,10 +114,10 @@ export const fetchFileDiff = async (sessionId: string, path: string): Promise<Di
 
 export const fetchBoardData = async (sessionId: string): Promise<BoardItem[]> => {
   try {
-    const resp = await fetch(`${BRIDGE_URL}/workspace/${sessionId}/file?path=${encodeURIComponent('.conchshell/board.json')}`);
+    const resp = await fetch(`${BRIDGE_URL}/board/${sessionId}`);
     const data = await resp.json();
-    if (data.content) {
-      return JSON.parse(data.content);
+    if (data.status === 'ok') {
+      return data.items || [];
     }
     return [];
   } catch {

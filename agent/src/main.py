@@ -39,6 +39,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         self.fluss_conn = fluss_conn
         self.table = table
         self.board_table = board_table
+        self.board = None  # Set during moderator init
         
         # Start the Moderator in a background thread
         self.loop = asyncio.new_event_loop()
@@ -66,6 +67,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
         if conchshell_enabled:
             board = ProjectBoard(board_table=self.board_table)
+            self.board = board  # Expose for GetBoard RPC
 
             # Shared tool instances
             shell = ShellTool()
@@ -275,6 +277,24 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         return agent_pb2.DiffResponse(
             original=original, modified=modified, diff_text=diff_text
         )
+
+    def GetBoard(self, request, context):
+        """Return project board items from in-memory state (Fluss-backed)."""
+        if not self.board:
+            return agent_pb2.BoardResponse(items=[])
+        
+        proto_items = []
+        for item in self.board.items:
+            proto_items.append(agent_pb2.BoardItem(
+                id=item.get("id", ""),
+                type=item.get("type", ""),
+                title=item.get("title", ""),
+                description=item.get("description", ""),
+                status=item.get("status", ""),
+                assigned_to=item.get("assigned_to") or "",
+                created_at=item.get("created_at", 0.0),
+            ))
+        return agent_pb2.BoardResponse(items=proto_items)
 
     def GetHistory(self, request, context):
         """Fetch full chat history from Fluss."""

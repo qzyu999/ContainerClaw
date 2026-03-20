@@ -108,6 +108,29 @@ def history_stream(session_id):
         print(f"Bridge: GetHistory Error: {e}", flush=True)
         return {"status": "error", "message": str(e)}, 500
 
+@app.route("/board/<session_id>")
+def get_board(session_id):
+    """Fetch project board items from the agent."""
+    try:
+        stub = get_grpc_stub()
+        response = stub.GetBoard(agent_pb2.ActivityRequest(session_id=session_id))
+        items = [
+            {
+                "id": item.id,
+                "type": item.type,
+                "title": item.title,
+                "description": item.description,
+                "status": item.status,
+                "assigned_to": item.assigned_to or None,
+                "created_at": item.created_at,
+            }
+            for item in response.items
+        ]
+        return {"status": "ok", "items": items}
+    except Exception as e:
+        print(f"Bridge: GetBoard Error: {e}", flush=True)
+        return {"status": "error", "message": str(e)}, 500
+
 @app.route("/workspace/<session_id>")
 def list_workspace(session_id):
     """List workspace files (backward compatible endpoint)."""
