@@ -84,12 +84,12 @@ class GeminiAgent:
         except (KeyError, IndexError):
             return []
 
-    async def _vote(self, history, candidates, previous_votes=None):
+    async def _vote(self, history, roster, previous_votes=None):
         instr = (
             f"You are {self.agent_id}. Persona: {self.persona}.\n"
             f"You are in a voting phase. A new message has arrived in the chat.\n"
             f"You must review the history and vote for the ONE agent who is best suited to respond.\n"
-            f"Candidates: {candidates}.\n"
+            f"The team roster and roles are: {roster}.\n"
             "If someone specifically addressed an agent, vote for them. Otherwise, vote based on merit.\n"
             "You must also evaluate if the overall task is completely finished.\n"
             "Respond ONLY in valid JSON with the following keys:\n"
@@ -202,6 +202,7 @@ class StageModerator:
         self.emit_cb = emit_cb
         self.tool_dispatcher = tool_dispatcher
         self.agent_names = [a.agent_id for a in agents]
+        self.roster_str = ", ".join([f"{a.agent_id} ({a.persona})" for a in agents])
         self.all_messages = []  # PERSISTENT HISTORY across poll cycles
         self.history_keys = set()
         self.writer = table.new_append().create_writer()
@@ -398,7 +399,7 @@ class StageModerator:
             # Stagger votes with random jitter to avoid thundering-herd SSL drops
             async def _staggered_vote(agent, delay):
                 await asyncio.sleep(delay)
-                return await agent._vote(history, self.agent_names, previous_votes_context)
+                return await agent._vote(history, self.roster_str, previous_votes_context)
 
             jittered = [
                 _staggered_vote(a, random.uniform(0, 2.0))
