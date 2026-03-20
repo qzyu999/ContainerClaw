@@ -33,12 +33,12 @@ LANG_MAP = {
 }
 
 class AgentService(agent_pb2_grpc.AgentServiceServicer):
-    def __init__(self, fluss_conn, table):
+    def __init__(self, fluss_conn, table, board_table=None):
         self.session_id = config.CLAW_SESSION_ID
         self.is_running = True
-        self.event_queues = {} 
         self.fluss_conn = fluss_conn
         self.table = table
+        self.board_table = board_table
         
         # Start the Moderator in a background thread
         self.loop = asyncio.new_event_loop()
@@ -65,7 +65,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         tool_dispatcher = None
 
         if conchshell_enabled:
-            board = ProjectBoard()
+            board = ProjectBoard(board_table=self.board_table)
 
             # Shared tool instances
             shell = ShellTool()
@@ -90,37 +90,20 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
         autonomous_steps = config.AUTONOMOUS_STEPS
         self.moderator = StageModerator(
-            self.table, agents, self._bridge_to_ui,
+            self.table, agents,
             tool_dispatcher=tool_dispatcher,
         )
         print("--- ⚖️ STAGE ACTIVE (Democratic Moderator) ---")
         self.loop.run_until_complete(self.moderator.run(autonomous_steps=autonomous_steps))
 
-    def _bridge_to_ui(self, actor_id, content, e_type):
-        q = self._get_queue(self.session_id)
-        q.put(agent_pb2.ActivityEvent(
-            timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            type=e_type,
-            content=content,
-            actor_id=actor_id
-        ))
-
-    def _get_queue(self, session_id):
-        if session_id not in self.event_queues:
-            import queue
-            self.event_queues[session_id] = queue.Queue()
-        return self.event_queues[session_id]
-
     def ExecuteTask(self, request, context):
         print(f"📥 Received task from UI: {request.prompt}")
         
-        # We wrap this in a future so we can catch errors in the logs
         future = asyncio.run_coroutine_threadsafe(
             self.moderator.publish("Human", request.prompt), 
             self.loop
         )
         
-        # Add a logging callback
         def done_callback(f):
             try:
                 f.result()
@@ -132,10 +115,21 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         return agent_pb2.TaskStatus(accepted=True, message="Task received.")
 
     def StreamActivity(self, request, context):
+        """Stream real-time events from Fluss to the UI via gRPC.
+        
+        W-1: Replaces the old in-memory queue.Queue approach.
+        Creates a dedicated Fluss scanner that tails the log
+        and yields events as they arrive.
+        """
         session_id = request.session_id
-        q = self._get_queue(session_id)
         
         try:
+            # Create a Fluss scanner in the asyncio loop
+            future = asyncio.run_coroutine_threadsafe(
+                self._create_sse_scanner(), self.loop
+            )
+            scanner = future.result(timeout=10)
+
             # Send Handshake
             yield agent_pb2.ActivityEvent(
                 timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -144,16 +138,59 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             )
 
             while self.is_running:
-                # Check if the client is still there
                 if not context.is_active():
                     break
                 try:
-                    event = q.get(timeout=1.0)
-                    yield event
-                except:
+                    # Synchronous poll — this blocks for up to 500ms
+                    poll = scanner.poll_arrow(timeout_ms=500)
+                    if poll.num_rows == 0:
+                        continue
+
+                    ts_arr = poll.column("ts")
+                    actor_arr = poll.column("actor_id")
+                    content_arr = poll.column("content")
+                    type_arr = poll.column("type")
+
+                    for i in range(poll.num_rows):
+                        ts_ms = ts_arr[i].as_py()
+                        actor_id = actor_arr[i].as_py()
+                        content = content_arr[i].as_py()
+                        e_type = type_arr[i].as_py()
+
+                        if isinstance(actor_id, bytes): actor_id = actor_id.decode('utf-8')
+                        if isinstance(content, bytes): content = content.decode('utf-8')
+                        if isinstance(e_type, bytes): e_type = e_type.decode('utf-8')
+
+                        ts_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts_ms / 1000))
+
+                        yield agent_pb2.ActivityEvent(
+                            timestamp=ts_iso,
+                            type=e_type or "output",
+                            content=content,
+                            actor_id=actor_id
+                        )
+                except Exception as e:
+                    print(f"⚠️ [StreamActivity] Poll error: {e}")
                     continue
         finally:
             print(f"🔌 Cleanly disconnected from session: {session_id}")
+
+    async def _create_sse_scanner(self):
+        """Create a Fluss scanner positioned at the tail of the log.
+        
+        The scanner starts at offset 0 but quickly catches up to head.
+        New events appear in real-time as they are published.
+        """
+        scanner = await self.table.new_scan().create_record_batch_log_scanner()
+        # Subscribe starting at the current tail so we only see NEW events
+        # (GetHistory handles backfill on page load)
+        scanner.subscribe(bucket_id=0, start_offset=0)
+        # Drain existing records to reach the tail
+        while True:
+            poll = scanner.poll_arrow(timeout_ms=300)
+            if poll.num_rows == 0:
+                break
+        return scanner
 
     # ── Workspace Explorer gRPC Handlers ──
 
@@ -321,12 +358,14 @@ async def init_infrastructure():
     table_path = fluss.TablePath("containerclaw", "chatroom")
     await admin.create_database("containerclaw", ignore_if_exists=True)
     
-    # Define Schema
     schema = pa.schema([
-        pa.field("ts", pa.int64()), 
-        pa.field("actor_id", pa.string()), 
+        pa.field("ts", pa.int64()),
+        pa.field("actor_id", pa.string()),
         pa.field("content", pa.string()),
-        pa.field("type", pa.string())
+        pa.field("type", pa.string()),
+        pa.field("tool_name", pa.string()),
+        pa.field("tool_success", pa.bool_()),
+        pa.field("parent_actor", pa.string()),
     ])
     descriptor = fluss.TableDescriptor(fluss.Schema(schema), bucket_count=1)
 
@@ -359,22 +398,57 @@ async def init_infrastructure():
     try:
         table_info = table.get_table_info()
         column_count = table_info.get_column_count()
-        if column_count < 4:
-            print(f"⚠️ [Infrastructure] Fluss table has an OLD schema ({column_count} columns).")
+        if column_count < 7:
+            print(f"⚠️ [Infrastructure] Fluss table has an OLD schema ({column_count} columns, expected 7).")
             print("⚠️ [Infrastructure] PLEASE RUN: ./claw.sh clean && ./claw.sh up")
-            print("⚠️ [Infrastructure] This is required to apply the new 4-column schema (with 'type').")
+            print("⚠️ [Infrastructure] This is required to apply the new 7-column schema.")
     except Exception as e:
         print(f"⚠️ [Infrastructure] Could not verify schema: {e}")
+
+    # ── W-2: Board events table ──
+    board_path = fluss.TablePath("containerclaw", "board_events")
+    board_schema = pa.schema([
+        pa.field("ts", pa.int64()),
+        pa.field("action", pa.string()),         # "create" | "update_status"
+        pa.field("item_id", pa.string()),
+        pa.field("item_type", pa.string()),       # "epic" | "story" | "task"
+        pa.field("title", pa.string()),
+        pa.field("description", pa.string()),
+        pa.field("status", pa.string()),          # "todo" | "in_progress" | "done"
+        pa.field("assigned_to", pa.string()),
+        pa.field("actor", pa.string()),           # which agent made the change
+    ])
+    board_descriptor = fluss.TableDescriptor(fluss.Schema(board_schema), bucket_count=1)
+
+    for attempt in range(15):
+        try:
+            await admin.create_table(board_path, board_descriptor, ignore_if_exists=True)
+            print(f"✅ Coordinator confirmed: {board_path} exists.")
+            break
+        except Exception:
+            await asyncio.sleep(3)
+
+    board_table = None
+    for attempt in range(10):
+        try:
+            board_table = await conn.get_table(board_path)
+            print("🚀 Board table connected.")
+            break
+        except Exception:
+            await asyncio.sleep(2)
+
+    if not board_table:
+        print("⚠️ [Infrastructure] Board table not available — falling back to JSON persistence.")
         
-    return conn, table
+    return conn, table, board_table
 
 def serve():
     # 1. Block until Fluss is ready
-    conn, table = asyncio.run(init_infrastructure())
+    conn, table, board_table = asyncio.run(init_infrastructure())
     
     # 2. Start gRPC
     server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=10))
-    agent_service = AgentService(conn, table)
+    agent_service = AgentService(conn, table, board_table)
     agent_pb2_grpc.add_AgentServiceServicer_to_server(agent_service, server)
     server.add_insecure_port('0.0.0.0:50051')
     server.start()

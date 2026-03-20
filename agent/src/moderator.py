@@ -6,7 +6,7 @@ import time
 import fluss
 import pyarrow as pa
 import requests
-from typing import List, Callable
+from typing import List
 
 import config
 
@@ -193,23 +193,85 @@ class GeminiAgent:
 
 
 class StageModerator:
-    def __init__(self, table, agents: List[GeminiAgent], emit_cb: Callable,
+    def __init__(self, table, agents: List[GeminiAgent],
                  tool_dispatcher: ToolDispatcher | None = None):
         self.table = table
         self.agents = agents
-        self.emit_cb = emit_cb
         self.tool_dispatcher = tool_dispatcher
         self.agent_names = [a.agent_id for a in agents]
         self.roster_str = ", ".join([f"{a.agent_id} ({a.persona})" for a in agents])
-        self.all_messages = []  # PERSISTENT HISTORY across poll cycles
+        self.all_messages = []  # Read-cache rebuilt from Fluss on startup
         self.history_keys = set()
+        self.last_replayed_offset = 0
         self.writer = table.new_append().create_writer()
         self.pa_schema = pa.schema([
-            pa.field("ts", pa.int64()), 
-            pa.field("actor_id", pa.string()), 
+            pa.field("ts", pa.int64()),
+            pa.field("actor_id", pa.string()),
             pa.field("content", pa.string()),
-            pa.field("type", pa.string())
+            pa.field("type", pa.string()),
+            pa.field("tool_name", pa.string()),
+            pa.field("tool_success", pa.bool_()),
+            pa.field("parent_actor", pa.string()),
         ])
+
+    def _get_context_window(self, size: int | None = None) -> list[dict]:
+        """Return the most recent messages for LLM context.
+
+        Reads from self.all_messages (populated by the Fluss poll loop
+        and startup replay).
+        """
+        n = size or config.MAX_HISTORY_MESSAGES
+        return self.all_messages[-n:]
+
+    async def _replay_history(self):
+        """Replay the Fluss log from offset 0 to rebuild all_messages.
+
+        Provides crash recovery: if the agent container restarts,
+        the moderator reconstructs full conversation history from
+        the durable Fluss log before entering the main loop.
+        """
+        print("📜 [Moderator] Replaying Fluss history...")
+        replay_scanner = await self.table.new_scan().create_record_batch_log_scanner()
+        replay_scanner.subscribe(bucket_id=0, start_offset=0)
+
+        total_replayed = 0
+        while True:
+            poll = await asyncio.to_thread(replay_scanner.poll_arrow, timeout_ms=500)
+            if poll.num_rows == 0:
+                break  # Caught up to head of log
+
+            df = poll.to_pandas()
+            for _, row in df.iterrows():
+                key = f"{row['ts']}-{row['actor_id']}"
+                if key not in self.history_keys:
+                    self.history_keys.add(key)
+                    self.all_messages.append({
+                        "actor_id": row["actor_id"],
+                        "content": row["content"],
+                    })
+                    total_replayed += 1
+
+        self.last_replayed_offset = total_replayed
+        print(f"✅ [Moderator] Replayed {total_replayed} messages from Fluss.")
+
+    async def _poll_once(self):
+        """Poll the Fluss scanner once to pick up recently published messages.
+
+        Used inside _execute_with_tools and after nudge publishes to ensure
+        Fluss-written messages are available in all_messages before the next
+        LLM call.
+        """
+        poll = await asyncio.to_thread(self.scanner.poll_arrow, timeout_ms=600)
+        if poll.num_rows > 0:
+            df = poll.to_pandas()
+            for _, row in df.iterrows():
+                key = f"{row['ts']}-{row['actor_id']}"
+                if key not in self.history_keys:
+                    self.history_keys.add(key)
+                    self.all_messages.append({
+                        "actor_id": row["actor_id"],
+                        "content": row["content"],
+                    })
 
     async def run(self, autonomous_steps=0):
         """
@@ -217,20 +279,29 @@ class StageModerator:
         autonomous_steps: Number of turns to run without human input.
                           -1 for infinite. 0 to wait for human.
         """
-        scanner = await self.table.new_scan().create_record_batch_log_scanner()
-        scanner.subscribe(bucket_id=0, start_offset=0)
+        # Replay history from Fluss for crash recovery
+        await self._replay_history()
+
+        self.scanner = await self.table.new_scan().create_record_batch_log_scanner()
+        self.scanner.subscribe(bucket_id=0, start_offset=self.last_replayed_offset)
 
         conchshell_status = "enabled" if self.tool_dispatcher else "disabled"
-        self.emit_cb("Moderator", f"Multi-Agent System Online. ConchShell: {conchshell_status}.", "thought")
+        await self.publish("Moderator", f"Multi-Agent System Online. ConchShell: {conchshell_status}.", "thought")
         print(f"⚖️ [Moderator] Active with agents: {self.agent_names}")
         print(f"🐚 [Moderator] ConchShell: {conchshell_status}")
         if autonomous_steps != 0:
             print(f"🤖 [Moderator] Autonomous Mode: {autonomous_steps} steps.")
 
-        current_steps = 0
+        # After replay, if we have history context, resume autonomous mode
+        # immediately (no need to wait for a new Human message to trigger it).
+        if self.last_replayed_offset > 0 and autonomous_steps != 0:
+            current_steps = autonomous_steps
+            print(f"🔄 [Moderator] Resuming autonomous mode from replayed history ({self.last_replayed_offset} msgs).")
+        else:
+            current_steps = 0
 
         while True:
-            poll = await asyncio.to_thread(scanner.poll_arrow, timeout_ms=500)
+            poll = await asyncio.to_thread(self.scanner.poll_arrow, timeout_ms=500)
             human_interrupted = False
 
             if poll.num_rows > 0:
@@ -244,22 +315,24 @@ class StageModerator:
 
                         if row['actor_id'] == "Human":
                             print(f"📢 [Human said]: {row['content']}")
-                            self.emit_cb(row['actor_id'], row['content'], "output")
                             human_interrupted = True
                             current_steps = autonomous_steps  # Reset to initial value
                             if autonomous_steps != 0:
                                 print(f"🔄 [Moderator] Human input detected. Resetting autonomous steps to {autonomous_steps}.")
                         elif row['actor_id'] in self.agent_names:
                             print(f"👂 [Heard] [{row['actor_id']}]: {row['content']}")
-                            self.emit_cb(row['actor_id'], row['content'], "output")
-                        elif row['actor_id'] == "Moderator":
-                            # We hear our own system messages back from the log
-                            # This maintains the chronological order in all_messages
-                            pass
 
-                        # Periodically truncate in-memory history to prevent "explosion"
-                        if len(self.all_messages) > 1000:
-                            self.all_messages = self.all_messages[-config.MAX_HISTORY_MESSAGES*2:]
+
+                        # Memory management: trim in-memory cache.
+                        # Older messages are still in Fluss — _replay_history() can recover.
+                        max_in_memory = config.MAX_HISTORY_MESSAGES * 3
+                        if len(self.all_messages) > max_in_memory:
+                            self.all_messages = self.all_messages[-config.MAX_HISTORY_MESSAGES * 2:]
+                            # W-4: Clear history_keys to cap memory. The scanner offset
+                            # has moved past all processed messages, so they won't be
+                            # re-polled — dedup keys for trimmed messages are unnecessary.
+                            self.history_keys.clear()
+                            print(f"🧹 [Moderator] Trimmed in-memory history to {len(self.all_messages)} messages.")
 
             # Trigger if human spoke OR we still have autonomous steps to take
             if human_interrupted or (current_steps != 0):
@@ -269,7 +342,7 @@ class StageModerator:
                     print(f"🤖 [Autonomous Turn] {current_steps if current_steps >= 0 else 'inf'} steps remaining...")
 
                 await asyncio.sleep(1.0)
-                context_window = self.all_messages[-config.MAX_HISTORY_MESSAGES:]
+                context_window = self._get_context_window()
 
                 # Run the election
                 winner, election_log, is_job_done = await self.elect_leader(context_window)
@@ -280,13 +353,13 @@ class StageModerator:
                 # Terminate loop if consensus is reached
                 if is_job_done:
                     print("🎉 [Moderator] Job is complete! Terminating the multi-agent loop.")
-                    self.emit_cb("Moderator", "Consensus: Task Complete.", "finish")
+                    await self.publish("Moderator", "Consensus: Task Complete.", "finish")
                     break
 
                 if winner:
                     winning_agent = next(a for a in self.agents if a.agent_id == winner)
                     print(f"🧠 [Moderator] {winner} won the election. Executing...")
-                    self.emit_cb("Moderator", f"🏆 Winner: {winner}", "thought")
+                    await self.publish("Moderator", f"🏆 Winner: {winner}", "thought")
 
                     # ── ConchShell: tool-augmented execution ──
                     if self.tool_dispatcher:
@@ -299,10 +372,12 @@ class StageModerator:
                         await self.publish(winner, resp, "output")
                     else:
                         print(f"💤 [{winner}] chose to WAIT or failed to respond. Nudging...")
-                        self.emit_cb("Moderator", f"💤 {winner} is waiting. Nudging...", "thought")
+                        await self.publish("Moderator", f"💤 {winner} is waiting. Nudging...", "thought")
                         nudge_text = f"@{winner}, you won the election but chose to WAIT. Could you briefly explain why so the team knows what you're waiting for?"
-                        self.all_messages.append({"actor_id": "Moderator", "content": nudge_text})
-                        nudge_context = self.all_messages[-config.MAX_HISTORY_MESSAGES:]
+                        await self.publish("Moderator", nudge_text, "system")
+                        # Poll Fluss to pick up the nudge we just published
+                        await self._poll_once()
+                        nudge_context = self._get_context_window()
                         resp = await winning_agent._think(nudge_context)
 
                         if resp:
@@ -311,7 +386,7 @@ class StageModerator:
                         else:
                             print(f"❌ [{winner}] remains silent after nudge.")
 
-                self.emit_cb("Moderator", "Cycle complete.", "finish")
+                await self.publish("Moderator", "Cycle complete.", "finish")
 
                 # Reset per-cycle tool counter
                 if self.tool_dispatcher:
@@ -326,7 +401,7 @@ class StageModerator:
         Returns the agent's final text response (or None).
         """
         available_tools = self.tool_dispatcher.get_tools_for_agent(agent.agent_id)
-        updated_context = self.all_messages[-config.MAX_HISTORY_MESSAGES:]
+        updated_context = self._get_context_window()
 
         final_text = None
 
@@ -357,7 +432,7 @@ class StageModerator:
                 tool_name = call["name"]
                 tool_args = call["args"]
                 print(f"🔧 [{agent.agent_id}] Tool call: {tool_name}({json.dumps(tool_args)[:200]})")
-                self.emit_cb(
+                await self.publish(
                     agent.agent_id,
                     f"$ {tool_name} {json.dumps(tool_args)[:200]}",
                     "action",
@@ -368,32 +443,35 @@ class StageModerator:
                 # Log tool result
                 result_summary = result.output[:500] if result.success else f"ERROR: {result.error}"
                 print(f"  → {'✅' if result.success else '❌'} {result_summary[:200]}")
-                self.emit_cb(
+                await self.publish(
                     agent.agent_id,
                     f"{'✅' if result.success else '❌'} {result_summary[:500]}",
                     "action",
                 )
 
-                # Add tool result to history so the agent can reflect on it
-                self.all_messages.append({
-                    "actor_id": "Moderator",
-                    "content": (
-                        f"[Tool Result for {agent.agent_id}] {tool_name}: "
-                        f"{'SUCCESS' if result.success else 'FAILED'}\n"
-                        f"{result.output[:1000]}"
-                        f"{(' | Error: ' + result.error) if result.error else ''}"
-                    ),
-                })
-                # Also publish to Fluss so it's visible in System logs
-                await self.publish("Moderator", f"Tool Result ({agent.agent_id}): {tool_name}", "system")
+                # Publish full tool result to Fluss (single write target)
+                tool_result_content = (
+                    f"[Tool Result for {agent.agent_id}] {tool_name}: "
+                    f"{'SUCCESS' if result.success else 'FAILED'}\n"
+                    f"{result.output[:1000]}"
+                    f"{(' | Error: ' + result.error) if result.error else ''}"
+                )
+                await self.publish(
+                    "Moderator", tool_result_content, "action",
+                    tool_name=tool_name,
+                    tool_success=result.success,
+                    parent_actor=agent.agent_id,
+                )
 
-            updated_context = self.all_messages[-config.MAX_HISTORY_MESSAGES:]
+            # Poll Fluss to pick up tool results we just published
+            await self._poll_once()
+            updated_context = self._get_context_window()
 
         return final_text
 
     async def _execute_text_only(self, agent: GeminiAgent) -> str | None:
         """Execute the winning agent's turn without tools (backward-compatible)."""
-        updated_context = self.all_messages[-config.MAX_HISTORY_MESSAGES:]
+        updated_context = self._get_context_window()
         return await agent._think(updated_context)
 
     async def elect_leader(self, history):
@@ -403,7 +481,7 @@ class StageModerator:
 
         for r in range(1, 4):
             election_log_collector.append(f"--- Round {r} ---")
-            self.emit_cb("Moderator", f"🗳️ Election Round {r}...", "thought")
+            await self.publish("Moderator", f"🗳️ Election Round {r}...", "thought")
             print(f"🗳️ [Moderator] Election Round {r} starting...")
             # Stagger votes with random jitter to avoid thundering-herd SSL drops
             async def _staggered_vote(agent, delay):
@@ -451,7 +529,7 @@ class StageModerator:
 
             tally_str = f"Tally: {tally}"
             election_log_collector.append(tally_str)
-            self.emit_cb("Moderator", f"Round {r} {tally_str}", "thought")
+            await self.publish("Moderator", f"Round {r} {tally_str}", "thought")
             print(f"📊 [Moderator] Round {r} {tally_str}")
 
             # If everyone agrees the task is finished, return immediately
@@ -474,13 +552,17 @@ class StageModerator:
         print(f"🎲 [Moderator] Tie persists. Circuit breaker choosing: {choice}")
         return choice, "\n".join(election_log_collector), False
 
-    async def publish(self, actor_id, content, m_type="output"):
+    async def publish(self, actor_id, content, m_type="output",
+                      tool_name="", tool_success=False, parent_actor=""):
         try:
             batch = pa.RecordBatch.from_arrays([
                 pa.array([int(time.time() * 1000)], type=pa.int64()),
                 pa.array([actor_id], type=pa.string()),
                 pa.array([content], type=pa.string()),
-                pa.array([m_type], type=pa.string())
+                pa.array([m_type], type=pa.string()),
+                pa.array([tool_name], type=pa.string()),
+                pa.array([tool_success], type=pa.bool_()),
+                pa.array([parent_actor], type=pa.string()),
             ], schema=self.pa_schema)
             self.writer.write_arrow_batch(batch)
             await self.writer.flush()

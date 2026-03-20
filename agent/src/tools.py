@@ -9,6 +9,7 @@ import asyncio
 import json
 import subprocess
 import time
+import pyarrow as pa
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -284,14 +285,104 @@ class TestRunnerTool(Tool):
 # ---------------------------------------------------------------------------
 
 class ProjectBoard:
-    """In-memory project board persisted to /workspace/.conchshell/board.json."""
+    """Project board backed by Fluss board_events table.
+    
+    W-2: Replaces the old JSON file persistence. Mutations are stored
+    as append-only events in Fluss. State is rebuilt by replaying the
+    event log on startup (crash recovery).
+    
+    Falls back to JSON file if board_table is not available.
+    """
 
-    def __init__(self):
-        self.board_path = Path("/workspace/.conchshell/board.json")
+    def __init__(self, board_table=None):
+        self.board_table = board_table
+        self.board_path = Path("/workspace/.conchshell/board.json")  # Fallback only
         self.items: list[dict] = []
-        self._load()
+        self._writer = None
+        self._pa_schema = None
+
+        if self.board_table:
+            self._pa_schema = pa.schema([
+                pa.field("ts", pa.int64()),
+                pa.field("action", pa.string()),
+                pa.field("item_id", pa.string()),
+                pa.field("item_type", pa.string()),
+                pa.field("title", pa.string()),
+                pa.field("description", pa.string()),
+                pa.field("status", pa.string()),
+                pa.field("assigned_to", pa.string()),
+                pa.field("actor", pa.string()),
+            ])
+            self._writer = self.board_table.new_append().create_writer()
+            self._replay_from_fluss()
+        else:
+            self._load()
+
+    def _replay_from_fluss(self):
+        """Replay board_events log to rebuild self.items."""
+        import asyncio
+        try:
+            loop = asyncio.new_event_loop()
+            scanner = loop.run_until_complete(
+                self.board_table.new_scan().create_record_batch_log_scanner()
+            )
+            scanner.subscribe(bucket_id=0, start_offset=0)
+
+            while True:
+                poll = scanner.poll_arrow(timeout_ms=500)
+                if poll.num_rows == 0:
+                    break
+
+                for i in range(poll.num_rows):
+                    action = poll.column("action")[i].as_py()
+                    if action == "create":
+                        self.items.append({
+                            "id": poll.column("item_id")[i].as_py(),
+                            "type": poll.column("item_type")[i].as_py(),
+                            "title": poll.column("title")[i].as_py(),
+                            "description": poll.column("description")[i].as_py(),
+                            "status": poll.column("status")[i].as_py(),
+                            "assigned_to": poll.column("assigned_to")[i].as_py() or None,
+                            "created_at": poll.column("ts")[i].as_py() / 1000,
+                        })
+                    elif action == "update_status":
+                        item_id = poll.column("item_id")[i].as_py()
+                        new_status = poll.column("status")[i].as_py()
+                        for item in self.items:
+                            if item["id"] == item_id:
+                                item["status"] = new_status
+                                break
+            loop.close()
+            print(f"📋 [ProjectBoard] Replayed {len(self.items)} board items from Fluss.")
+        except Exception as e:
+            print(f"⚠️ [ProjectBoard] Fluss replay failed, falling back to JSON: {e}")
+            self._load()
+
+    def _publish_event(self, action, item_id, item_type="", title="",
+                       description="", status="", assigned_to="", actor="Moderator"):
+        """Write a board mutation event to Fluss."""
+        if not self._writer:
+            return
+        try:
+            batch = pa.RecordBatch.from_arrays([
+                pa.array([int(time.time() * 1000)], type=pa.int64()),
+                pa.array([action], type=pa.string()),
+                pa.array([item_id], type=pa.string()),
+                pa.array([item_type], type=pa.string()),
+                pa.array([title], type=pa.string()),
+                pa.array([description], type=pa.string()),
+                pa.array([status], type=pa.string()),
+                pa.array([assigned_to or ""], type=pa.string()),
+                pa.array([actor], type=pa.string()),
+            ], schema=self._pa_schema)
+            self._writer.write_arrow_batch(batch)
+            self._writer.flush()
+            print(f"📋 [ProjectBoard] Published {action} event for {item_id}")
+        except Exception as e:
+            print(f"⚠️ [ProjectBoard] Failed to write to Fluss: {e}")
 
     def _load(self):
+        """Fallback: load from JSON file."""
         try:
             if self.board_path.exists():
                 self.items = json.loads(self.board_path.read_text())
@@ -299,12 +390,14 @@ class ProjectBoard:
             self.items = []
 
     def _save(self):
+        """Fallback: save to JSON file (only used when Fluss unavailable)."""
         self.board_path.parent.mkdir(parents=True, exist_ok=True)
         self.board_path.write_text(json.dumps(self.items, indent=2))
 
     def create_item(
         self, item_type: str, title: str,
         description: str = "", assigned_to: str | None = None,
+        actor: str = "Moderator",
     ) -> dict:
         item = {
             "id": f"{item_type[:1].upper()}-{len(self.items) + 1:03d}",
@@ -316,14 +409,23 @@ class ProjectBoard:
             "created_at": time.time(),
         }
         self.items.append(item)
-        self._save()
+        if self.board_table:
+            self._publish_event(
+                "create", item["id"], item_type, title,
+                description, "todo", assigned_to or "", actor,
+            )
+        else:
+            self._save()
         return item
 
-    def update_status(self, item_id: str, status: str) -> dict | None:
+    def update_status(self, item_id: str, status: str, actor: str = "Moderator") -> dict | None:
         for item in self.items:
             if item["id"] == item_id:
                 item["status"] = status
-                self._save()
+                if self.board_table:
+                    self._publish_event("update_status", item_id, status=status, actor=actor)
+                else:
+                    self._save()
                 return item
         return None
 

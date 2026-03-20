@@ -74,9 +74,8 @@ export default function ChatroomView({
 
   // Filter events based on active tab
   const filteredEvents = events.filter(e => {
-    if (e.type === 'action') return false; // Actions always go to ConchShell
     if (activeTab === 'chat') {
-      return ['user', 'output', 'thought', 'error', 'finish'].includes(e.type);
+      return ['user', 'output', 'thought', 'error', 'finish', 'action'].includes(e.type);
     } else {
       return ['system', 'voting'].includes(e.type);
     }
