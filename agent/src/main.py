@@ -8,6 +8,7 @@ import asyncio
 import grpc
 import concurrent.futures
 from pathlib import Path
+import config
 from moderator import StageModerator, GeminiAgent
 from tools import (
     ToolDispatcher, ProjectBoard,
@@ -33,7 +34,7 @@ LANG_MAP = {
 
 class AgentService(agent_pb2_grpc.AgentServiceServicer):
     def __init__(self, fluss_conn, table):
-        self.session_id = os.getenv("CLAW_SESSION_ID", "default-session")
+        self.session_id = config.CLAW_SESSION_ID
         self.is_running = True
         self.event_queues = {} 
         self.fluss_conn = fluss_conn
@@ -60,7 +61,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         ]
 
         # ── ConchShell: Per-agent tool authorization ──
-        conchshell_enabled = os.getenv("CONCHSHELL_ENABLED", "true").lower() == "true"
+        conchshell_enabled = config.CONCHSHELL_ENABLED
         tool_dispatcher = None
 
         if conchshell_enabled:
@@ -87,7 +88,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         else:
             print("🐚 [ConchShell] Disabled — agents will use text-only mode.")
 
-        autonomous_steps = int(os.getenv("AUTONOMOUS_STEPS", "-1"))
+        autonomous_steps = config.AUTONOMOUS_STEPS
         self.moderator = StageModerator(
             self.table, agents, self._bridge_to_ui,
             tool_dispatcher=tool_dispatcher,
@@ -293,13 +294,13 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
 async def init_infrastructure():
     print("🛰️ Initializing Fluss Infrastructure...")
-    config = fluss.Config({"bootstrap.servers": "coordinator-server:9123"})
+    fluss_config = fluss.Config({"bootstrap.servers": config.FLUSS_BOOTSTRAP_SERVERS})
     
     # Retry connection — coordinator may not be listening yet
     conn = None
     for attempt in range(30):
         try:
-            conn = await fluss.FlussConnection.create(config)
+            conn = await fluss.FlussConnection.create(fluss_config)
             print("✅ Connected to Fluss Coordinator.")
             break
         except Exception as e:
