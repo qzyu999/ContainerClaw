@@ -143,6 +143,7 @@ services:
     network_mode: "service:claw-agent"
     environment:
       - AGENT_URL=localhost:50051
+      - PYTHONUNBUFFERED=1
     depends_on:
       claw-agent:
         condition: service_started

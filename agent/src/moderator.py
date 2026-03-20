@@ -207,7 +207,8 @@ class StageModerator:
         self.pa_schema = pa.schema([
             pa.field("ts", pa.int64()), 
             pa.field("actor_id", pa.string()), 
-            pa.field("content", pa.string())
+            pa.field("content", pa.string()),
+            pa.field("type", pa.string())
         ])
 
     async def run(self, autonomous_steps=0):
@@ -251,6 +252,14 @@ class StageModerator:
                         elif row['actor_id'] in self.agent_names:
                             print(f"👂 [Heard] [{row['actor_id']}]: {row['content']}")
                             self.emit_cb(row['actor_id'], row['content'], "output")
+                        elif row['actor_id'] == "Moderator":
+                            # We hear our own system messages back from the log
+                            # This maintains the chronological order in all_messages
+                            pass
+
+                        # Periodically truncate in-memory history to prevent "explosion"
+                        if len(self.all_messages) > 1000:
+                            self.all_messages = self.all_messages[-config.MAX_HISTORY_MESSAGES*2:]
 
             # Trigger if human spoke OR we still have autonomous steps to take
             if human_interrupted or (current_steps != 0):
@@ -265,8 +274,8 @@ class StageModerator:
                 # Run the election
                 winner, election_log, is_job_done = await self.elect_leader(context_window)
 
-                # Persist election context to in-memory history (NOT Fluss)
-                self.all_messages.append({"actor_id": "Moderator", "content": f"Election Summary:\n{election_log}"})
+                # Persist election context to Fluss (and thus in-memory history via the poll loop)
+                await self.publish("Moderator", f"Election Summary:\n{election_log}", "voting")
 
                 # Terminate loop if consensus is reached
                 if is_job_done:
@@ -287,7 +296,7 @@ class StageModerator:
 
                     if resp and "[WAIT]" not in resp:
                         print(f"📢 [{winner} says]: {resp}")
-                        await self.publish(winner, resp)
+                        await self.publish(winner, resp, "output")
                     else:
                         print(f"💤 [{winner}] chose to WAIT or failed to respond. Nudging...")
                         self.emit_cb("Moderator", f"💤 {winner} is waiting. Nudging...", "thought")
@@ -298,7 +307,7 @@ class StageModerator:
 
                         if resp:
                             print(f"📢 [{winner} explanation]: {resp}")
-                            await self.publish(winner, resp)
+                            await self.publish(winner, resp, "output")
                         else:
                             print(f"❌ [{winner}] remains silent after nudge.")
 
@@ -375,6 +384,8 @@ class StageModerator:
                         f"{(' | Error: ' + result.error) if result.error else ''}"
                     ),
                 })
+                # Also publish to Fluss so it's visible in System logs
+                await self.publish("Moderator", f"Tool Result ({agent.agent_id}): {tool_name}", "system")
 
             updated_context = self.all_messages[-config.MAX_HISTORY_MESSAGES:]
 
@@ -463,11 +474,18 @@ class StageModerator:
         print(f"🎲 [Moderator] Tie persists. Circuit breaker choosing: {choice}")
         return choice, "\n".join(election_log_collector), False
 
-    async def publish(self, actor_id, content):
-        batch = pa.RecordBatch.from_arrays([
-            pa.array([int(time.time() * 1000)], type=pa.int64()),
-            pa.array([actor_id], type=pa.string()),
-            pa.array([content], type=pa.string())
-        ], schema=self.pa_schema)
-        self.writer.write_arrow_batch(batch)
-        await self.writer.flush()
+    async def publish(self, actor_id, content, m_type="output"):
+        try:
+            batch = pa.RecordBatch.from_arrays([
+                pa.array([int(time.time() * 1000)], type=pa.int64()),
+                pa.array([actor_id], type=pa.string()),
+                pa.array([content], type=pa.string()),
+                pa.array([m_type], type=pa.string())
+            ], schema=self.pa_schema)
+            self.writer.write_arrow_batch(batch)
+            await self.writer.flush()
+            print(f"📝 [Moderator] Published to Fluss: {actor_id} ({m_type})")
+        except Exception as e:
+            print(f"❌ [Moderator] Failed to publish to Fluss: {e}")
+            import traceback
+            traceback.print_exc()

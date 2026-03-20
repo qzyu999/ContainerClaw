@@ -17,6 +17,7 @@ export default function ChatroomView({
 }: ChatroomViewProps) {
   const [prompt, setPrompt] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [activeTab, setActiveTab] = useState<'chat' | 'system'>('chat');
   const terminalRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -33,7 +34,7 @@ export default function ChatroomView({
     if (terminalRef.current && shouldAutoScroll.current) {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
     }
-  }, [events, isSubmitting]);
+  }, [events, isSubmitting, activeTab]);
 
   const handleExecute = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -71,8 +72,15 @@ export default function ChatroomView({
     }
   };
 
-  // Filter non-action events for the chatroom terminal
-  const chatEvents = events.filter(e => e.type !== 'action');
+  // Filter events based on active tab
+  const filteredEvents = events.filter(e => {
+    if (e.type === 'action') return false; // Actions always go to ConchShell
+    if (activeTab === 'chat') {
+      return ['user', 'output', 'thought', 'error', 'finish'].includes(e.type);
+    } else {
+      return ['system', 'voting'].includes(e.type);
+    }
+  });
 
   return (
     <section className="terminal-container" style={{ height: '600px' }}>
@@ -84,14 +92,37 @@ export default function ChatroomView({
             bash — containerclaw — 80x24
           </span>
         </div>
+        
+        <div className="chatroom-tabs">
+          <button 
+            className={`chatroom-tab ${activeTab === 'chat' ? 'active' : ''}`}
+            onClick={() => setActiveTab('chat')}
+          >
+            Chat
+          </button>
+          <button 
+            className={`chatroom-tab ${activeTab === 'system' ? 'active' : ''}`}
+            onClick={() => setActiveTab('system')}
+          >
+            System & Voting
+          </button>
+        </div>
+
         <div className="terminal-body" ref={terminalRef} onScroll={handleScroll} onClick={() => inputRef.current?.focus()}>
-          <div className="log-line">
-            <span className="log-time">[{new Date().toLocaleTimeString()}]</span>
-            <span className="log-tag" style={{ color: '#4ade80' }}>[SYSTEM]</span>
-            <span className="log-content">Ready for tasks.</span>
-          </div>
+          {filteredEvents.length === 0 && activeTab === 'system' && (
+            <div className="log-line" style={{ color: '#52525b', fontStyle: 'italic' }}>
+              No system logs yet.
+            </div>
+          )}
+          {filteredEvents.length === 0 && activeTab === 'chat' && (
+            <div className="log-line">
+              <span className="log-time">[{new Date().toLocaleTimeString()}]</span>
+              <span className="log-tag" style={{ color: '#4ade80' }}>[SYSTEM]</span>
+              <span className="log-content">Ready for tasks.</span>
+            </div>
+          )}
           <AnimatePresence>
-            {chatEvents.map((event, i) => (
+            {filteredEvents.map((event, i) => (
               <motion.div 
                 key={i} 
                 initial={{ opacity: 0, x: -10 }}

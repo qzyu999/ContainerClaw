@@ -1,6 +1,6 @@
 export interface ActivityEvent {
   timestamp: string;
-  type: 'thought' | 'action' | 'error' | 'finish' | 'user' | 'system' | 'output';
+  type: 'thought' | 'action' | 'error' | 'finish' | 'user' | 'system' | 'output' | 'voting';
   content: string;
   risk_score?: number;
   actor_id?: string;

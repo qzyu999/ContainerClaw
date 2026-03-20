@@ -282,7 +282,13 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 ts_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts_ms / 1000))
                 
                 # Determine type — match moderator.py behavior
-                e_type = "thought" if actor_id == "Moderator" else "output"
+                # Now we read it directly from Fluss!
+                try:
+                    e_type = poll.column("type")[i].as_py()
+                    if isinstance(e_type, bytes): e_type = e_type.decode('utf-8')
+                except (KeyError, ValueError, IndexError):
+                    # Fallback for old records without 'type'
+                    e_type = "thought" if actor_id == "Moderator" else "output"
                 
                 events.append(agent_pb2.ActivityEvent(
                     timestamp=ts_iso,
@@ -319,7 +325,8 @@ async def init_infrastructure():
     schema = pa.schema([
         pa.field("ts", pa.int64()), 
         pa.field("actor_id", pa.string()), 
-        pa.field("content", pa.string())
+        pa.field("content", pa.string()),
+        pa.field("type", pa.string())
     ])
     descriptor = fluss.TableDescriptor(fluss.Schema(schema), bucket_count=1)
 
@@ -347,6 +354,17 @@ async def init_infrastructure():
             
     if not table:
         raise Exception("❌ Failed to resolve Table Data Plane after 10 attempts.")
+    
+    # Check if schema needs update (migration/purge required)
+    try:
+        table_info = table.get_table_info()
+        column_count = table_info.get_column_count()
+        if column_count < 4:
+            print(f"⚠️ [Infrastructure] Fluss table has an OLD schema ({column_count} columns).")
+            print("⚠️ [Infrastructure] PLEASE RUN: ./claw.sh clean && ./claw.sh up")
+            print("⚠️ [Infrastructure] This is required to apply the new 4-column schema (with 'type').")
+    except Exception as e:
+        print(f"⚠️ [Infrastructure] Could not verify schema: {e}")
         
     return conn, table
 

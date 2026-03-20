@@ -42,7 +42,7 @@ def stream_events(session_id):
     target_session = "default-session" 
     print(f"DEBUG: Mapping UI session {session_id} -> Agent session {target_session}")
     def generate():
-        print(f"Bridge: Starting SSE stream for session {session_id}")
+        print(f"Bridge: Starting SSE stream for session {session_id}", flush=True)
         try:
             stub = get_grpc_stub()
             # Consume gRPC stream
@@ -80,7 +80,7 @@ def proxy_task():
             return {"status": "ok", "message": response.message}
         except grpc.RpcError as e:
             if e.code() == grpc.StatusCode.UNAVAILABLE and i < 2:
-                print(f"Bridge: Agent unavailable, retrying task {i+1}...")
+                print(f"Bridge: Agent unavailable, retrying task {i+1}...", flush=True)
                 time.sleep(2)
                 continue
             return {"status": "error", "message": f"gRPC Error: {e.code()} - {e.details()}"}, 500
@@ -105,7 +105,7 @@ def history_stream(session_id):
         ]
         return {"status": "ok", "events": events}
     except Exception as e:
-        print(f"Bridge: GetHistory Error: {e}")
+        print(f"Bridge: GetHistory Error: {e}", flush=True)
         return {"status": "error", "message": str(e)}, 500
 
 @app.route("/workspace/<session_id>")
