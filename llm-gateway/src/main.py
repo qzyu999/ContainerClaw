@@ -58,12 +58,23 @@ def proxy():
     model = data.get('model', 'gemini-3-flash-preview')
     
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-    
-    # Mirror the Agent's payload exactly as it was in your base code
+
+    # Extract config and ensure thinking is enabled for SWE-bench
+    gen_config = data.get('generationConfig', {})
+
+    # Force 'HIGH' thinking if not specified and using a Gemini 3 model
+    if 'gemini-3' in model:
+        # Set thinking_level if it isn't already there
+        if 'thinking_config' not in gen_config:
+            gen_config['thinking_config'] = {'thinking_level': 'HIGH'}
+        
+        # SWE-bench often needs more than the default 4k tokens for complex fixes
+        gen_config.setdefault('max_output_tokens', 8192)
+
     google_payload = {
         "contents": data.get('contents', []),
         "system_instruction": {"parts": [{"text": data.get('system_instruction', '')}]},
-        "generationConfig": data.get('generationConfig', {}),
+        "generationConfig": gen_config,
         "tools": data.get('tools', [])
     }
     
