@@ -100,6 +100,7 @@ class GeminiAgent:
             f"You are in a voting phase. A new message has arrived in the chat.\n"
             f"You must review the history and vote for the ONE agent who is best suited to respond.\n"
             f"The team roster and roles are: {roster}.\n"
+            f"Please collaborate together in an agile format, leveraging each others unique abilities and tools.\n"
             "If someone specifically addressed an agent, vote for them. Otherwise, vote based on merit.\n"
             "You must also evaluate if the overall task is completely finished.\n"
             "Respond ONLY in valid JSON with the following keys:\n"
