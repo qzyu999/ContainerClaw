@@ -57,8 +57,16 @@ case $COMMAND in
       $DOCKER_COMPOSE logs -f
     fi
     ;;
+  clear-workspace)
+    echo "Clearing /workspace contents..."
+    # Keep the directory but empty it. Handle hidden files too.
+    rm -rf workspace/* workspace/.[!.]* workspace/..?* 2>/dev/null || true
+    # Restore .gitkeep if it's tracked, otherwise just touch it
+    git checkout -- workspace/.gitkeep 2>/dev/null || touch workspace/.gitkeep 2>/dev/null
+    echo "Workspace cleared."
+    ;;
   *)
-    echo "Usage: $0 {up|down|purge|status|restart|clean|logs} [session_id]"
+    echo "Usage: $0 {up|down|purge|status|restart|clean|logs|clear-workspace} [session_id]"
     exit 1
     ;;
 esac
