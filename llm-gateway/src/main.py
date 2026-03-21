@@ -75,8 +75,11 @@ def proxy():
         "contents": data.get('contents', []),
         "system_instruction": {"parts": [{"text": data.get('system_instruction', '')}]},
         "generationConfig": gen_config,
-        "tools": data.get('tools', [])
+        "tools": data.get('tools', []),
     }
+    # Forward tool_config if present (function calling mode: ANY/AUTO/NONE/VALIDATED)
+    if data.get('tool_config'):
+        google_payload["tool_config"] = data['tool_config']
     
     try:
         # Use the resilient session (connection pooling + automatic retry on failure)

@@ -20,6 +20,7 @@ class GeminiAgent:
         self.api_key = api_key
         self.gateway_url = f"{config.LLM_GATEWAY_URL}/v1/chat/completions"
         self.model = config.DEFAULT_MODEL
+        self._api_turns = []  # Structured turns for Gemini function calling protocol
 
     def _format_history(self, raw_messages):
         """Tailors the history for this specific agent's perspective."""
@@ -42,14 +43,23 @@ class GeminiAgent:
             formatted.append({"role": role, "parts": [{"text": text}]})
         return formatted
 
-    async def _call_gateway(self, sys_instr, history, is_json=False, tools=None):
+    async def _call_gateway(self, sys_instr, history, is_json=False, 
+                             tools=None, tool_config=None, 
+                             extra_turns=None):
+        contents = self._format_history(history)
+        # Append structured API turns (functionCall/functionResponse) if present
+        if extra_turns:
+            contents.extend(extra_turns)
+
         payload = {
             "system_instruction": sys_instr,  # Raw string, Gateway wraps it
-            "contents": self._format_history(history),
+            "contents": contents,
             "generationConfig": {"response_mime_type": "application/json"} if is_json else {}
         }
         if tools:
             payload["tools"] = tools
+        if tool_config:
+            payload["tool_config"] = tool_config
         try:
             res = await asyncio.to_thread(
                 requests.post, self.gateway_url, json=payload, timeout=60
@@ -133,11 +143,11 @@ class GeminiAgent:
         return self._extract_text(raw_response)
 
     async def _think_with_tools(self, history, available_tools):
-        """Enhanced thinking that supports Gemini function calling.
+        """Enhanced thinking with Gemini native function calling protocol.
 
-        Returns:
-            tuple: (text_response: str | None, function_calls: list[dict])
-                   function_calls items have keys 'name' and 'args'.
+        Uses mode=ANY to force structured functionCall output when tools
+        are available. Returns (text, function_calls) where function_calls
+        include the 'id' field required for functionResponse mapping.
         """
         tool_names = ", ".join(t.name for t in available_tools)
         instr = (
@@ -146,9 +156,9 @@ class GeminiAgent:
             f"You have access to tools: [{tool_names}]. "
             "Use them when you need to take action — read files, write code, run commands, "
             "manage the project board, or run tests. "
-            "If no action is needed or you just spoke, respond with [WAIT].\n\n"
+            "If no action is needed, respond with text explaining why.\n\n"
             "CRITICAL: If the Moderator just announced you won the election, you SHOULD contribute. "
-            "Do not just [WAIT] if you were specifically chosen to speak."
+            "Do not skip your turn if you were specifically chosen to speak."
         )
 
         # Build Gemini function declarations
@@ -163,18 +173,127 @@ class GeminiAgent:
             ]
         }]
 
+        # Force function calling mode to ANY — model MUST emit functionCall parts
+        # or structured text, never text-formatted tool imitations
+        tool_config = {
+            "function_calling_config": {
+                "mode": "ANY"
+            }
+        }
+
         raw_response = await self._call_gateway(
-            instr, history, tools=tool_declarations
+            instr, history, 
+            tools=tool_declarations,
+            tool_config=tool_config,
+            extra_turns=self._api_turns,
         )
+
         text = self._extract_text(raw_response)
         fn_calls = self._extract_function_calls(raw_response)
 
-        # Normalize function calls to simple dicts
+        # Preserve the model's response turn for the function calling protocol.
+        # This includes thought_signature fields that Gemini 3 requires to be
+        # echoed back in subsequent turns.
+        if raw_response and fn_calls:
+            try:
+                model_turn = raw_response['candidates'][0]['content']
+                self._api_turns.append(model_turn)
+            except (KeyError, IndexError):
+                pass
+
+        # Normalize function calls — preserve 'id' for functionResponse mapping
         calls = []
         for fc in fn_calls:
             calls.append({
                 "name": fc.get("name", ""),
                 "args": fc.get("args", {}),
+                "id": fc.get("id", ""),  # Gemini 3 always returns an id
+            })
+
+        return text, calls
+
+    async def _send_function_responses(self, history, function_responses, 
+                                        available_tools):
+        """Send function execution results back to the model.
+
+        Implements Step 4 of the Gemini function calling protocol:
+        append functionResponse parts and request the model's next action.
+
+        Args:
+            history: The shared all_messages context (text format).
+            function_responses: List of dicts with keys:
+                'name' (str), 'response' (dict), 'id' (str)
+            available_tools: List of Tool objects (for continued tool use).
+
+        Returns:
+            tuple: (text_response, function_calls) — same shape as _think_with_tools().
+        """
+        # Build the functionResponse turn
+        response_parts = []
+        for fr in function_responses:
+            response_parts.append({
+                "functionResponse": {
+                    "name": fr["name"],
+                    "response": fr["response"],
+                    "id": fr["id"],
+                }
+            })
+
+        # Append the functionResponse turn to the per-agent buffer
+        self._api_turns.append({
+            "role": "user",
+            "parts": response_parts,
+        })
+
+        instr = (
+            f"You are {self.agent_id}. Persona: {self.persona}. "
+            "You executed tools and the results are provided. "
+            "Based on these results, decide your next action: "
+            "call more tools if needed, or provide a text summary of what you accomplished."
+        )
+
+        tool_declarations = [{
+            "function_declarations": [
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.get_schema(),
+                }
+                for tool in available_tools
+            ]
+        }]
+
+        # Use AUTO mode for follow-up — model can choose text OR more tool calls
+        tool_config = {
+            "function_calling_config": {
+                "mode": "AUTO"
+            }
+        }
+
+        raw_response = await self._call_gateway(
+            instr, history,
+            tools=tool_declarations,
+            tool_config=tool_config,
+            extra_turns=self._api_turns,
+        )
+
+        text = self._extract_text(raw_response)
+        fn_calls = self._extract_function_calls(raw_response)
+
+        # If more function calls, preserve this turn too
+        if raw_response and fn_calls:
+            try:
+                model_turn = raw_response['candidates'][0]['content']
+                self._api_turns.append(model_turn)
+            except (KeyError, IndexError):
+                pass
+
+        calls = []
+        for fc in fn_calls:
+            calls.append({
+                "name": fc.get("name", ""),
+                "args": fc.get("args", {}),
+                "id": fc.get("id", ""),
             })
 
         return text, calls
@@ -388,49 +507,70 @@ class StageModerator:
 
                 await self.publish("Moderator", "Cycle complete.", "finish")
 
-                # Reset per-cycle tool counter
-                if self.tool_dispatcher:
-                    self.tool_dispatcher.reset_cycle()
-
             await asyncio.sleep(1)
 
     async def _execute_with_tools(self, agent: GeminiAgent) -> str | None:
         """Execute the winning agent's turn with ConchShell tool support.
 
-        Uses a think→act→reflect loop, capped at config.MAX_TOOL_ROUNDS iterations.
+        Implements the full Gemini function calling protocol:
+        1. _think_with_tools() → model returns functionCall parts (forced via ANY mode)
+        2. Execute tools via ToolDispatcher
+        3. _send_function_responses() → model receives results, may request more tools
+        4. Loop until model returns text (final response) or max rounds exceeded
+
         Returns the agent's final text response (or None).
         """
         available_tools = self.tool_dispatcher.get_tools_for_agent(agent.agent_id)
-        updated_context = self._get_context_window()
+        shared_context = self._get_context_window()
+
+        # Clear the per-agent turn buffer for this execution cycle
+        agent._api_turns = []
 
         final_text = None
+        last_round_results = []
 
         for round_num in range(config.MAX_TOOL_ROUNDS):
             if round_num == 0:
-                text, fn_calls = await agent._think_with_tools(updated_context, available_tools)
+                text, fn_calls = await agent._think_with_tools(
+                    shared_context, available_tools
+                )
             else:
-                # Reflect on previous tool results
-                reflect_text = await agent._reflect(updated_context)
-                text = reflect_text
-                fn_calls = []  # Reflection is text-only for now
+                # Build functionResponse parts from the last round's results
+                function_responses = []
+                for call_result in last_round_results:
+                    function_responses.append({
+                        "name": call_result["name"],
+                        "response": {
+                            "result": call_result["output"],
+                            "success": call_result["success"],
+                            "error": call_result.get("error"),
+                        },
+                        "id": call_result["id"],
+                    })
+
+                text, fn_calls = await agent._send_function_responses(
+                    shared_context, function_responses, available_tools
+                )
 
             if text:
                 final_text = text
 
             if not fn_calls:
-                # No tool calls — agent is done acting
+                # Model chose text response — done with tools
                 break
 
-            # Execute each tool call
-            turn_tool_count = 0
+            # No artificial per-turn or per-cycle limits — the model self-regulates
+            # via the function calling protocol: it stops calling tools when it has
+            # enough results to produce a text summary. The MAX_TOOL_ROUNDS config
+            # (default: 30) serves as a safety backstop for runaway loops.
+            last_round_results = []
+
             for call in fn_calls:
-                if turn_tool_count >= self.tool_dispatcher.MAX_TOOLS_PER_TURN:
-                    print(f"⚠️ [{agent.agent_id}] Hit per-turn tool limit ({self.tool_dispatcher.MAX_TOOLS_PER_TURN})")
-                    break
-                turn_tool_count += 1
 
                 tool_name = call["name"]
                 tool_args = call["args"]
+                call_id = call["id"]  # Gemini 3 function call ID
+
                 print(f"🔧 [{agent.agent_id}] Tool call: {tool_name}({json.dumps(tool_args)[:200]})")
                 await self.publish(
                     agent.agent_id,
@@ -438,7 +578,9 @@ class StageModerator:
                     "action",
                 )
 
-                result = await self.tool_dispatcher.execute(agent.agent_id, tool_name, tool_args)
+                result = await self.tool_dispatcher.execute(
+                    agent.agent_id, tool_name, tool_args
+                )
 
                 # Log tool result
                 result_summary = result.output[:500] if result.success else f"ERROR: {result.error}"
@@ -449,7 +591,7 @@ class StageModerator:
                     "action",
                 )
 
-                # Publish full tool result to Fluss (single write target)
+                # Publish full tool result to Fluss
                 tool_result_content = (
                     f"[Tool Result for {agent.agent_id}] {tool_name}: "
                     f"{'SUCCESS' if result.success else 'FAILED'}\n"
@@ -463,9 +605,21 @@ class StageModerator:
                     parent_actor=agent.agent_id,
                 )
 
-            # Poll Fluss to pick up tool results we just published
+                # Accumulate results for functionResponse construction
+                last_round_results.append({
+                    "name": tool_name,
+                    "id": call_id,
+                    "output": result.output[:2000],
+                    "success": result.success,
+                    "error": result.error,
+                })
+
+            # Poll Fluss to pick up published messages
             await self._poll_once()
-            updated_context = self._get_context_window()
+            shared_context = self._get_context_window()
+
+        # Clear the per-agent turn buffer — cycle complete
+        agent._api_turns = []
 
         return final_text
 

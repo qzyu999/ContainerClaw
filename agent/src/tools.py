@@ -546,9 +546,6 @@ class ToolDispatcher:
     that are in their assigned ToolSet.
     """
 
-    MAX_TOOLS_PER_TURN = 5
-    MAX_TOOLS_PER_CYCLE = 20
-
     def __init__(self, toolsets: dict[str, list[Tool]]):
         """
         Args:
@@ -560,12 +557,6 @@ class ToolDispatcher:
         for agent_id, tools in toolsets.items():
             self._lookup[agent_id] = {t.name: t for t in tools}
 
-        self.cycle_counter = 0
-
-    def reset_cycle(self):
-        """Reset the per-cycle tool counter (call between autonomous cycles)."""
-        self.cycle_counter = 0
-
     def get_tools_for_agent(self, agent_id: str) -> list[Tool]:
         """Return the list of tools available to an agent."""
         return self.toolsets.get(agent_id, [])
@@ -573,13 +564,7 @@ class ToolDispatcher:
     async def execute(
         self, agent_id: str, tool_name: str, params: dict
     ) -> ToolResult:
-        """Execute a tool call for an agent, enforcing authorization + rate limits."""
-        if self.cycle_counter >= self.MAX_TOOLS_PER_CYCLE:
-            return ToolResult(
-                success=False, output="",
-                error="Tool rate limit exceeded for this cycle.",
-            )
-
+        """Execute a tool call for an agent, enforcing authorization."""
         agent_tools = self._lookup.get(agent_id, {})
         if tool_name not in agent_tools:
             return ToolResult(
@@ -587,7 +572,6 @@ class ToolDispatcher:
                 error=f"Agent {agent_id} is not authorized to use tool '{tool_name}'.",
             )
 
-        self.cycle_counter += 1
         tool = agent_tools[tool_name]
 
         try:
