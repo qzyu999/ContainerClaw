@@ -399,6 +399,9 @@ class StageModerator:
         autonomous_steps: Number of turns to run without human input.
                           -1 for infinite. 0 to wait for human.
         """
+        # Baseline Capture: Store the original budget to allow resets upon Human interaction
+        base_budget = autonomous_steps
+
         # Replay history from Fluss for crash recovery
         await self._replay_history()
 
@@ -409,13 +412,13 @@ class StageModerator:
         await self.publish("Moderator", f"Multi-Agent System Online. ConchShell: {conchshell_status}.", "thought")
         print(f"⚖️ [Moderator] Active with agents: {self.agent_names}")
         print(f"🐚 [Moderator] ConchShell: {conchshell_status}")
-        if autonomous_steps != 0:
-            print(f"🤖 [Moderator] Autonomous Mode: {autonomous_steps} steps.")
+        if base_budget != 0:
+            print(f"🤖 [Moderator] Autonomous Mode: {base_budget} steps.")
 
         # After replay, if we have history context, resume autonomous mode
         # immediately (no need to wait for a new Human message to trigger it).
-        if self.last_replayed_offset > 0 and autonomous_steps != 0:
-            current_steps = autonomous_steps
+        if self.last_replayed_offset > 0 and base_budget != 0:
+            current_steps = base_budget
             print(f"🔄 [Moderator] Resuming autonomous mode from replayed history ({self.last_replayed_offset} msgs).")
         else:
             current_steps = 0
@@ -436,9 +439,9 @@ class StageModerator:
                         if row['actor_id'] == "Human":
                             print(f"📢 [Human said]: {row['content']}")
                             human_interrupted = True
-                            current_steps = autonomous_steps  # Reset to initial value
-                            if autonomous_steps != 0:
-                                print(f"🔄 [Moderator] Human input detected. Resetting autonomous steps to {autonomous_steps}.")
+                            current_steps = base_budget  # Reset to captured baseline
+                            if base_budget != 0:
+                                print(f"🔄 [Moderator] Human input detected. Resetting budget to {base_budget} steps.")
                         elif row['actor_id'] in self.agent_names:
                             print(f"👂 [Heard] [{row['actor_id']}]: {row['content']}")
 
@@ -470,11 +473,13 @@ class StageModerator:
                 # Persist election context to Fluss (and thus in-memory history via the poll loop)
                 await self.publish("Moderator", f"Election Summary:\n{election_log}", "voting")
 
-                # Terminate loop if consensus is reached
+                # Transition to IDLE state if consensus is reached
                 if is_job_done:
-                    print("🎉 [Moderator] Job is complete! Terminating the multi-agent loop.")
+                    print("🎉 [Moderator] Job is complete! Pausing the multi-agent loop.")
                     await self.publish("Moderator", "Consensus: Task Complete.", "finish")
-                    break
+                    # Exhaust steps to stop LLM calls, but keep polling Fluss
+                    current_steps = 0
+                    continue
 
                 if winner:
                     winning_agent = next(a for a in self.agents if a.agent_id == winner)
