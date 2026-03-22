@@ -10,3 +10,8 @@ services:
       - SWE_BENCH_MODE=true
     volumes:
       - ${SWE_BENCH_WORKSPACE:-./workspace}:/workspace:rw
+      - ~/.cache/pip:/home/agent/.cache/pip
+    command: >
+      sh -c "pip install --upgrade pip && 
+             pip install -e /workspace && 
+             python main.py"
