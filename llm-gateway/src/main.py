@@ -66,7 +66,8 @@ def proxy():
     if 'gemini-3' in model:
         # Set thinking_level if it isn't already there
         if 'thinking_config' not in gen_config:
-            gen_config['thinking_config'] = {'thinking_level': 'HIGH'}
+            # gen_config['thinking_config'] = {'thinking_level': 'HIGH'}
+            gen_config['thinking_config'] = {'thinking_level': 'LOW'}
         
         # SWE-bench often needs more than the default 4k tokens for complex fixes
         gen_config.setdefault('max_output_tokens', 8192)

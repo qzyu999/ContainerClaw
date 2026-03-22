@@ -49,142 +49,16 @@ class Tool:
 
 
 # ---------------------------------------------------------------------------
-# ShellTool — Sandboxed command execution
-# ---------------------------------------------------------------------------
-
-class ShellTool(Tool):
-    name = "shell"
-    description = (
-        "Run a shell command in the /workspace directory. "
-        "The container has no internet access. Use this to list files, "
-        "inspect code, run scripts, or execute build commands."
-    )
-
-    BLOCKED_PATTERNS = {"rm -rf /", "dd if=", "mkfs", ":(){ :|:& };:"}
-    TIMEOUT = 30
-
-    def get_schema(self) -> dict:
-        return {
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "The shell command to execute in /workspace."
-                }
-            },
-            "required": ["command"]
-        }
-
-    async def execute(self, agent_id: str, params: dict) -> ToolResult:
-        command = params.get("command", "")
-        if not command:
-            return ToolResult(success=False, output="", error="No command provided.")
-
-        if any(blocked in command for blocked in self.BLOCKED_PATTERNS):
-            return ToolResult(success=False, output="", error="Blocked command.")
-
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd="/workspace",
-            )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=self.TIMEOUT
-            )
-            return ToolResult(
-                success=proc.returncode == 0,
-                output=stdout.decode(errors="replace")[:4096],
-                error=stderr.decode(errors="replace")[:2048] if stderr else None,
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            return ToolResult(
-                success=False, output="",
-                error=f"Command timed out after {self.TIMEOUT}s.",
-            )
-        except Exception as e:
-            return ToolResult(success=False, output="", error=str(e))
-
-
-# ---------------------------------------------------------------------------
-# FileReadTool / FileWriteTool — Workspace I/O
-# ---------------------------------------------------------------------------
-
-class FileReadTool(Tool):
-    name = "file_read"
-    description = "Read the contents of a file in /workspace."
-
-    def get_schema(self) -> dict:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "File path relative to /workspace."
-                }
-            },
-            "required": ["path"]
-        }
-
-    async def execute(self, agent_id: str, params: dict) -> ToolResult:
-        path = Path("/workspace") / params.get("path", "")
-        if not path.resolve().is_relative_to(Path("/workspace")):
-            return ToolResult(success=False, output="", error="Path traversal denied.")
-        if not path.exists():
-            return ToolResult(success=False, output="", error=f"File not found: {path}")
-        if path.is_dir():
-            entries = sorted(str(p.relative_to(path)) for p in path.iterdir())
-            return ToolResult(success=True, output="\n".join(entries))
-        content = path.read_text(errors="replace")[:8192]
-        return ToolResult(success=True, output=content)
-
-
-class FileWriteTool(Tool):
-    name = "file_write"
-    description = "Write content to a file in /workspace. Creates parent directories as needed."
-
-    def get_schema(self) -> dict:
-        return {
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "File path relative to /workspace."
-                },
-                "content": {
-                    "type": "string",
-                    "description": "The full content to write to the file."
-                }
-            },
-            "required": ["path", "content"]
-        }
-
-    async def execute(self, agent_id: str, params: dict) -> ToolResult:
-        path = Path("/workspace") / params.get("path", "")
-        if not path.resolve().is_relative_to(Path("/workspace")):
-            return ToolResult(success=False, output="", error="Path traversal denied.")
-        content = params.get("content", "")
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content)
-            return ToolResult(
-                success=True,
-                output=f"Wrote {len(content)} bytes to {path.relative_to('/workspace')}",
-                artifacts=[str(path)],
-            )
-        except Exception as e:
-            return ToolResult(success=False, output="", error=str(e))
-
-
-# ---------------------------------------------------------------------------
 # DiffTool — Git diff wrapper
 # ---------------------------------------------------------------------------
 
 class DiffTool(Tool):
     name = "diff"
     description = "Show the git diff for a file in /workspace (vs HEAD)."
+
+    def __init__(self, session_shell=None):
+        super().__init__()
+        self.session_shell = session_shell
 
     def get_schema(self) -> dict:
         return {
@@ -200,6 +74,12 @@ class DiffTool(Tool):
 
     async def execute(self, agent_id: str, params: dict) -> ToolResult:
         rel_path = params.get("path", "")
+        command = f"git diff HEAD -- {rel_path}"
+        
+        if self.session_shell:
+            # Route through the persistent shell to share environment/state
+            return await self.session_shell.execute(agent_id, {"command": command})
+            
         try:
             result = await asyncio.to_thread(
                 subprocess.run,
@@ -225,6 +105,10 @@ class TestRunnerTool(Tool):
         "generic commands. Use runner='pytest' with args like 'tests/' "
         "or runner='generic' with the full command."
     )
+
+    def __init__(self, session_shell=None):
+        super().__init__()
+        self.session_shell = session_shell
 
     SUPPORTED_RUNNERS = {
         "pytest": "python -m pytest {args} --tb=short -q",
@@ -257,6 +141,10 @@ class TestRunnerTool(Tool):
             return ToolResult(success=False, output="", error=f"Unknown runner: {runner}")
 
         command = self.SUPPORTED_RUNNERS[runner].format(args=args)
+
+        if self.session_shell:
+            # Route through the persistent shell to share environment (virtualenvs, PATH, etc)
+            return await self.session_shell.execute(agent_id, {"command": command, "timeout": self.TIMEOUT})
 
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -542,6 +430,46 @@ class BoardTool(Tool):
 # SWE-bench Advanced Tools
 # ---------------------------------------------------------------------------
 
+class CreateFileTool(Tool):
+    name = "create_file"
+    description = "Create a new file in /workspace. Fails if the file already exists."
+
+    def get_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File path relative to /workspace."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The initial content of the new file."
+                }
+            },
+            "required": ["path", "content"]
+        }
+
+    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+        path = Path("/workspace") / params.get("path", "")
+        if not path.resolve().is_relative_to(Path("/workspace")):
+            return ToolResult(success=False, output="", error="Path traversal denied.")
+        if path.exists():
+            return ToolResult(success=False, output="", error=f"File already exists: {params.get('path')}. Use surgical_edit to modify it.")
+            
+        content = params.get("content", "")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            return ToolResult(
+                success=True,
+                output=f"Successfully created {params.get('path')} ({len(content)} bytes).",
+                artifacts=[str(path)]
+            )
+        except Exception as e:
+            return ToolResult(success=False, output="", error=str(e))
+
+
 class SurgicalEditTool(Tool):
     name = "surgical_edit"
     description = "Edits a file by replacing a specific block of text with a new block."
@@ -571,6 +499,11 @@ class SurgicalEditTool(Tool):
 
         try:
             content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            try:
+                content = path.read_text(encoding="latin-1")
+            except Exception as e:
+                return ToolResult(success=False, output="", error=f"Failed to read file with utf-8 or latin-1: {e}")
         except Exception as e:
             return ToolResult(success=False, output="", error=f"Failed to read file: {e}")
 
@@ -819,17 +752,21 @@ class SessionShellTool(Tool):
                 pass
         self.sessions.clear()
 
+    DEFAULT_TIMEOUT = 60
+
     def get_schema(self) -> dict:
         return {
             "type": "object",
             "properties": {
-                "command": {"type": "string", "description": "Shell command to execute."}
+                "command": {"type": "string", "description": "Shell command to execute."},
+                "timeout": {"type": "integer", "description": "Optional timeout in seconds (default 60)."}
             },
             "required": ["command"]
         }
 
     async def execute(self, agent_id: str, params: dict) -> ToolResult:
         command = params.get("command", "")
+        timeout = params.get("timeout", self.DEFAULT_TIMEOUT)
         if not command:
             return ToolResult(success=False, output="", error="No command provided.")
 
@@ -855,7 +792,10 @@ class SessionShellTool(Tool):
             return_code = -1
             
             while True:
-                line_bytes = await asyncio.wait_for(proc.stdout.readline(), timeout=30)
+                # Per-line timeout to catch hangs; total command timeout handled by wait_for wrapper?
+                # Actually, simple per-line timeout is often enough to catch "dead" commands.
+                # If we want a total command timeout, we'd wrap the whole block.
+                line_bytes = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout)
                 if not line_bytes:
                     if proc.returncode is None:
                         await asyncio.sleep(0.1) # brief wait for OS buffer
@@ -878,7 +818,7 @@ class SessionShellTool(Tool):
         except asyncio.TimeoutError:
             proc.kill()
             del self.sessions[agent_id]
-            return ToolResult(success=False, output="Command timed out after 30s. Session killed.", error="Timeout")
+            return ToolResult(success=False, output=f"Command timed out after {timeout}s. Session killed.", error="Timeout")
         except Exception as e:
             return ToolResult(success=False, output="", error=str(e))
 
@@ -903,6 +843,17 @@ class ToolDispatcher:
         self._lookup: dict[str, dict[str, Tool]] = {}
         for agent_id, tools in toolsets.items():
             self._lookup[agent_id] = {t.name: t for t in tools}
+
+    def cleanup(self):
+        """Invoke cleanup on all tools that support it (e.g. closing background processes)."""
+        seen_tools = set()
+        for agent_tools in self._lookup.values():
+            for tool in agent_tools.values():
+                if tool not in seen_tools:
+                    if hasattr(tool, "cleanup"):
+                        tool.cleanup()
+                    seen_tools.add(tool)
+        print(f"🐚 [ConchShell] Cleanup completed for {len(seen_tools)} tools.")
 
     def get_tools_for_agent(self, agent_id: str) -> list[Tool]:
         """Return the list of tools available to an agent."""

@@ -12,8 +12,10 @@ import config
 from moderator import StageModerator, GeminiAgent
 from tools import (
     ToolDispatcher, ProjectBoard,
-    ShellTool, FileReadTool, FileWriteTool, DiffTool,
-    TestRunnerTool, BoardTool,
+    DiffTool, TestRunnerTool, BoardTool,
+    SurgicalEditTool, AdvancedReadTool, RepoMapTool,
+    StructuredSearchTool, LinterTool, SessionShellTool,
+    CreateFileTool,
 )
 import fluss
 import pyarrow as pa
@@ -69,21 +71,31 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             board = ProjectBoard(board_table=self.board_table)
             self.board = board  # Expose for GetBoard RPC
 
-            # Shared tool instances
-            shell = ShellTool()
-            file_read = FileReadTool()
-            file_write = FileWriteTool()
-            diff = DiffTool()
-            test_runner = TestRunnerTool()
+            session_shell = SessionShellTool()
+            test_runner = TestRunnerTool(session_shell=session_shell)
+            diff = DiffTool(session_shell=session_shell)
             board_rw = BoardTool(board, write_access=True)
-            board_ro = BoardTool(board, write_access=False)
+
+            # SWE-bench Advanced Tools
+            surgical_edit = SurgicalEditTool()
+            advanced_read = AdvancedReadTool()
+            repo_map = RepoMapTool()
+            structured_search = StructuredSearchTool()
+            linter = LinterTool()
+            create_file = CreateFileTool()
+
+            common_tools = [
+                board_rw, test_runner, diff,
+                surgical_edit, advanced_read, repo_map, structured_search,
+                linter, session_shell, create_file
+            ]
 
             toolsets = {
-                "Alice": [shell, board_rw, file_read, file_write, test_runner, diff],
-                "Bob":   [shell, board_rw, file_read, file_write, test_runner, diff],
-                "Carol": [shell, board_rw, file_read, file_write, test_runner, diff],
-                "David": [shell, board_rw, file_read, file_write, test_runner, diff],
-                "Eve":   [shell, board_rw, file_read, file_write, test_runner, diff],
+                "Alice": common_tools,
+                "Bob":   common_tools,
+                "Carol": common_tools,
+                "David": common_tools,
+                "Eve":   common_tools,
             }
             tool_dispatcher = ToolDispatcher(toolsets)
             print("🐚 [ConchShell] Tool dispatcher initialized with per-agent authorization.")

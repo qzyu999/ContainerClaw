@@ -60,18 +60,29 @@ class GeminiAgent:
             payload["tools"] = tools
         if tool_config:
             payload["tool_config"] = tool_config
-        try:
-            res = await asyncio.to_thread(
-                requests.post, self.gateway_url, json=payload, timeout=60
-            )
-            if res.status_code == 200:
-                return res.json()
-            else:
-                print(f"❌ [{self.agent_id}] API Error {res.status_code}: {res.text}")
+        for attempt in range(3):
+            try:
+                res = await asyncio.to_thread(
+                    requests.post, self.gateway_url, json=payload, timeout=60
+                )
+                if res.status_code == 200:
+                    return res.json()
+                elif res.status_code in [500, 502, 503, 504] and attempt < 2:
+                    wait = (attempt + 1) * 2
+                    print(f"⚠️ [{self.agent_id}] Gateway error {res.status_code}. Retrying in {wait}s...")
+                    await asyncio.sleep(wait)
+                    continue
+                else:
+                    print(f"❌ [{self.agent_id}] API Error {res.status_code}: {res.text}")
+                    return None
+            except Exception as e:
+                if attempt < 2:
+                    wait = (attempt + 1) * 2
+                    print(f"⚠️ [{self.agent_id}] Gateway call failed: {e}. Retrying in {wait}s...")
+                    await asyncio.sleep(wait)
+                    continue
+                print(f"❌ [{self.agent_id}] Gateway call failed after 3 attempts: {e}")
                 return None
-        except Exception as e:
-            print(f"❌ [{self.agent_id}] Gateway call failed: {e}")
-            return None
 
     def _extract_text(self, response) -> str | None:
         """Extract text content from a Gemini API response."""
@@ -341,7 +352,25 @@ class StageModerator:
         and startup replay).
         """
         n = size or config.MAX_HISTORY_MESSAGES
-        return self.all_messages[-n:]
+        messages = self.all_messages[-n:]
+        
+        # Token Guard: Enforce a character-based budget (proxy for token limit)
+        # to prevent context drift in models with ~128k context windows.
+        char_limit = config.MAX_HISTORY_CHARS
+        budget = char_limit
+        final_msgs = []
+        
+        # Walk backwards until budget is exhausted
+        for msg in reversed(messages):
+            content = msg.get("content", "")
+            msg_len = len(content)
+            if budget - msg_len < 0:
+                print(f"⚠️ [Moderator] Token Guard triggered. Truncating history at {len(final_msgs)} msgs.")
+                break
+            final_msgs.insert(0, msg)
+            budget -= msg_len
+            
+        return final_msgs
 
     async def _replay_history(self):
         """Replay the Fluss log from offset 0 to rebuild all_messages.
@@ -477,6 +506,8 @@ class StageModerator:
                 if is_job_done:
                     print("🎉 [Moderator] Job is complete! Pausing the multi-agent loop.")
                     await self.publish("Moderator", "Consensus: Task Complete.", "finish")
+                    if self.tool_dispatcher:
+                        self.tool_dispatcher.cleanup()
                     # Exhaust steps to stop LLM calls, but keep polling Fluss
                     current_steps = 0
                     continue
@@ -612,10 +643,18 @@ class StageModerator:
                 )
 
                 # Accumulate results for functionResponse construction
+                # Adaptive Verbosity: allow more context for read-heavy tools
+                read_tools = ["repo_map", "structured_search", "advanced_read"]
+                limit = 8000 if tool_name in read_tools else 2000
+                
+                output = result.output
+                if len(output) > limit:
+                    output = output[:limit] + "\n\n[TRUNCATED: Result too large for context window. Narrow your search or use pagination.]"
+
                 last_round_results.append({
                     "name": tool_name,
                     "id": call_id,
-                    "output": result.output[:2000],
+                    "output": output,
                     "success": result.success,
                     "error": result.error,
                 })
