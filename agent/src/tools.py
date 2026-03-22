@@ -10,6 +10,9 @@ import json
 import subprocess
 import time
 import pyarrow as pa
+import ast
+import os
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -534,6 +537,350 @@ class BoardTool(Tool):
 
         return ToolResult(success=False, output="", error=f"Unknown action: {action}")
 
+
+# ---------------------------------------------------------------------------
+# SWE-bench Advanced Tools
+# ---------------------------------------------------------------------------
+
+class SurgicalEditTool(Tool):
+    name = "surgical_edit"
+    description = "Edits a file by replacing a specific block of text with a new block."
+
+    def get_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path relative to /workspace."},
+                "old_str": {"type": "string", "description": "The exact string block to replace."},
+                "new_str": {"type": "string", "description": "The new string block to insert."}
+            },
+            "required": ["path", "old_str", "new_str"]
+        }
+
+    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+        path = Path("/workspace") / params.get("path", "")
+        if not path.resolve().is_relative_to(Path("/workspace")):
+            return ToolResult(success=False, output="", error="Path traversal denied.")
+        if not path.exists():
+            return ToolResult(success=False, output="", error=f"File not found: {path}")
+
+        old_str = params.get("old_str", "")
+        new_str = params.get("new_str", "")
+        if not old_str:
+            return ToolResult(success=False, output="", error="old_str cannot be empty.")
+
+        try:
+            content = path.read_text(encoding="utf-8")
+        except Exception as e:
+            return ToolResult(success=False, output="", error=f"Failed to read file: {e}")
+
+        # Detect original line ending to prevent Line-Ending Clobber
+        newline = "\r\n" if "\r\n" in content else "\n"
+
+        # Normalize line endings to avoid Whitespace Traps
+        content_norm = content.replace("\r\n", "\n")
+        old_str_norm = old_str.replace("\r\n", "\n")
+        
+        # Normalize new_str to prevent Frankenstein mixed line endings
+        new_str_norm = new_str.replace("\r\n", "\n")
+
+        count = content_norm.count(old_str_norm)
+        if count == 0:
+            return ToolResult(success=False, output="", error="old_str not found in the file. Please provide more context or check exact spelling.")
+        if count > 1:
+            return ToolResult(success=False, output="", error="old_str appears multiple times. Please provide more context to make it unique.")
+        
+        try:
+            # Replace on the normalized content to enforce exact matches
+            new_content = content_norm.replace(old_str_norm, new_str_norm)
+            if newline == "\r\n":
+                new_content = new_content.replace("\n", "\r\n")
+            path.write_text(new_content, encoding="utf-8", newline="")
+            return ToolResult(success=True, output=f"Successfully replaced 1 occurrence in {path.relative_to('/workspace')}", artifacts=[str(path)])
+        except Exception as e:
+            return ToolResult(success=False, output="", error=str(e))
+
+
+class AdvancedReadTool(Tool):
+    name = "advanced_read"
+    description = "Reads a specific window of lines from a file with prepended line numbers."
+
+    def get_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path relative to /workspace."},
+                "start_line": {"type": "integer", "description": "1-indexed start line."},
+                "end_line": {"type": "integer", "description": "1-indexed end line (inclusive)."}
+            },
+            "required": ["path", "start_line", "end_line"]
+        }
+
+    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+        path = Path("/workspace") / params.get("path", "")
+        if not path.resolve().is_relative_to(Path("/workspace")):
+            return ToolResult(success=False, output="", error="Path traversal denied.")
+        if not path.exists():
+            return ToolResult(success=False, output="", error=f"File not found: {path}")
+
+        start_line = params.get("start_line", 1)
+        end_line = params.get("end_line", 1)
+        if start_line < 1 or end_line < start_line:
+            return ToolResult(success=False, output="", error="Invalid line range.")
+
+        try:
+            lines = path.read_text(errors="replace").splitlines()
+        except Exception as e:
+            return ToolResult(success=False, output="", error=str(e))
+            
+        extracted = []
+        for i in range(start_line - 1, min(end_line, len(lines))):
+            extracted.append(f"{i+1}: {lines[i]}")
+        
+        return ToolResult(success=True, output="\n".join(extracted))
+
+
+class RepoMapTool(Tool):
+    name = "repo_map"
+    description = "Generates a Table of Contents of the repository using AST (file paths, classes, functions)."
+
+    def get_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+
+    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+        base_dir = Path("/workspace")
+        output_lines = []
+        parsed_files = 0
+        max_files = 500
+        
+        try:
+            for root, dirs, files in os.walk(base_dir):
+                # skip hidden and unwanted dirs (Performance Wall fix)
+                dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('venv', '__pycache__', 'node_modules', 'tests', 'docs')]
+                for file in files:
+                    if parsed_files >= max_files:
+                        output_lines.append(f"\n... Reached max_files limit ({max_files}). Stopping map generation.")
+                        return ToolResult(success=True, output="\n".join(output_lines))
+                        
+                    if not file.endswith(".py"):
+                        continue
+                    file_path = Path(root) / file
+                    parsed_files += 1
+                    try:
+                        content = file_path.read_text(errors="ignore")
+                        tree = ast.parse(content)
+                        rel_path = file_path.relative_to(base_dir)
+                        
+                        class MapVisitor(ast.NodeVisitor):
+                            def __init__(self):
+                                self.lines = []
+                                self.indent = "  "
+                            def visit_ClassDef(self, node):
+                                self.lines.append(f"{self.indent}class {node.name}:")
+                                old_indent = self.indent
+                                self.indent += "  "
+                                self.generic_visit(node)
+                                self.indent = old_indent
+                            def visit_FunctionDef(self, node):
+                                self.lines.append(f"{self.indent}def {node.name}(...):")
+                            def visit_AsyncFunctionDef(self, node):
+                                self.lines.append(f"{self.indent}async def {node.name}(...):")
+                                
+                        visitor = MapVisitor()
+                        visitor.visit(tree)
+                        if visitor.lines:
+                            output_lines.append(f"\n{rel_path}:")
+                            output_lines.extend(visitor.lines)
+                    except Exception:
+                        pass # Ignore AST parse errors for robust mapping
+            return ToolResult(success=True, output="\n".join(output_lines) if output_lines else "No Python files with classes/functions found.")
+        except Exception as e:
+            return ToolResult(success=False, output="", error=f"Repo map failed: {e}")
+
+
+class StructuredSearchTool(Tool):
+    name = "structured_search"
+    description = "A wrapper for grep with result limits preventing 'grep bombs'."
+
+    def get_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The term/regex to search for."},
+                "include_glob": {"type": "string", "description": "Optional glob like '*.py'."},
+                "page": {"type": "integer", "description": "1-indexed page number (50 results/page)."}
+            },
+            "required": ["query"]
+        }
+
+    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+        query = params.get("query", "")
+        if not query:
+            return ToolResult(success=False, output="", error="Query cannot be empty.")
+        
+        include_glob = params.get("include_glob")
+        page = params.get("page", 1)
+        limit = 50
+        
+        # Capping the max initial search results to prevent inefficiency at scale
+        cmd = ["grep", "-rnI", "-m", "500"]
+        if include_glob:
+            cmd.extend(["--include", include_glob])
+        cmd.append(query)
+        cmd.append(".")
+        
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd="/workspace"
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+            if proc.returncode not in (0, 1):
+                return ToolResult(success=False, output="", error=f"Grep failed with code {proc.returncode}")
+            
+            lines = stdout.decode(errors="replace").splitlines()
+            if not lines:
+                return ToolResult(success=True, output="No matches found.")
+            
+            start_idx = (page - 1) * limit
+            end_idx = start_idx + limit
+            page_lines = lines[start_idx:end_idx]
+            
+            output = "\n".join(page_lines)
+            if len(lines) > end_idx:
+                output += f"\n\n... Total matches: {len(lines)}. Call again with page={page+1} to see more."
+                
+            return ToolResult(success=True, output=output)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return ToolResult(success=False, output="", error="Grep timed out.")
+        except Exception as e:
+            return ToolResult(success=False, output="", error=str(e))
+
+
+class LinterTool(Tool):
+    name = "linter"
+    description = "Quickly checks a python file for syntax or indentation errors using py_compile."
+
+    def get_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path relative to /workspace to lint."}
+            },
+            "required": ["path"]
+        }
+
+    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+        rel_path = params.get("path", "")
+        path = Path("/workspace") / rel_path
+        if not path.resolve().is_relative_to(Path("/workspace")):
+            return ToolResult(success=False, output="", error="Path traversal denied.")
+            
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "python", "-m", "py_compile", str(path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd="/workspace"
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+            if proc.returncode == 0:
+                return ToolResult(success=True, output=f"Syntax OK: {rel_path}")
+            else:
+                return ToolResult(success=False, output=stdout.decode(errors="replace"), error=stderr.decode(errors="replace"))
+        except asyncio.TimeoutError:
+            proc.kill()
+            return ToolResult(success=False, output="", error="Linter timed out.")
+        except Exception as e:
+            return ToolResult(success=False, output="", error=str(e))
+
+
+class SessionShellTool(Tool):
+    name = "session_shell"
+    description = "A persistent shell tool maintaining state (cd, export) across calls."
+    
+    def __init__(self):
+        super().__init__()
+        self.sessions: dict[str, asyncio.subprocess.Process] = {}
+
+    def cleanup(self):
+        """Close persistent background processes (e.g. when agent session is destroyed)."""
+        for agent_id, proc in list(self.sessions.items()):
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        self.sessions.clear()
+
+    def get_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "Shell command to execute."}
+            },
+            "required": ["command"]
+        }
+
+    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+        command = params.get("command", "")
+        if not command:
+            return ToolResult(success=False, output="", error="No command provided.")
+
+        if agent_id not in self.sessions or self.sessions[agent_id].returncode is not None:
+            proc = await asyncio.create_subprocess_shell(
+                "/bin/bash",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd="/workspace"
+            )
+            self.sessions[agent_id] = proc
+            
+        proc = self.sessions[agent_id]
+        boundary = f"---CONCHSHELL-DONE-{uuid.uuid4()}---"
+        full_command = f"{command}\necho \"{boundary}\" $?\n"
+        
+        try:
+            proc.stdin.write(full_command.encode())
+            await proc.stdin.drain()
+            
+            output_lines = []
+            return_code = -1
+            
+            while True:
+                line_bytes = await asyncio.wait_for(proc.stdout.readline(), timeout=30)
+                if not line_bytes:
+                    if proc.returncode is None:
+                        await asyncio.sleep(0.1) # brief wait for OS buffer
+                    if proc.returncode is not None:
+                        return_code = proc.returncode
+                    break
+                line = line_bytes.decode(errors="replace").rstrip('\n\r')
+                if boundary in line:
+                    parts = line.split(boundary)
+                    if parts[0]:
+                        output_lines.append(parts[0])
+                    if len(parts) > 1 and parts[1].strip().lstrip('-').isdigit():
+                        return_code = int(parts[1].strip())
+                    break
+                output_lines.append(line)
+                
+            out_str = "\n".join(output_lines)
+            return ToolResult(success=(return_code == 0), output=out_str[:8192])
+            
+        except asyncio.TimeoutError:
+            proc.kill()
+            del self.sessions[agent_id]
+            return ToolResult(success=False, output="Command timed out after 30s. Session killed.", error="Timeout")
+        except Exception as e:
+            return ToolResult(success=False, output="", error=str(e))
 
 # ---------------------------------------------------------------------------
 # ToolDispatcher — Routes tool calls + enforces rate limits
