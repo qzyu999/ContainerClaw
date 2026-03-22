@@ -182,6 +182,7 @@ h1, h2, h3 {
   transition: opacity 0.3s ease, transform 0.3s ease;
   position: sticky;
   top: 2rem;
+  height: calc(100vh - 8rem);
 }
 
 .sidebar .sidebar-toggle-btn {

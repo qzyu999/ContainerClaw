@@ -138,7 +138,7 @@ export default function App() {
               <h3>History</h3>
             </div>
             <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-              {events.filter(e => e.type === 'user' || e.type === 'thought' || e.type === 'output' || e.type === 'error').reverse().slice(0, 10).map((e, i) => (
+              {events.filter(e => e.type === 'user' || e.type === 'thought' || e.type === 'output' || e.type === 'error').reverse().map((e, i) => (
                 <div key={i} className={`history-item history-${e.type}`} style={{ fontSize: '0.7rem', padding: '4px 6px' }}>
                   {e.content.slice(0, 40)}{e.content.length > 40 ? '...' : ''}
                 </div>
