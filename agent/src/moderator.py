@@ -542,7 +542,7 @@ class StageModerator:
                         else:
                             print(f"❌ [{winner}] remains silent after nudge.")
 
-                await self.publish("Moderator", "Cycle complete.", "finish")
+                await self.publish("Moderator", "Cycle complete.", "checkpoint")
 
             await asyncio.sleep(1)
 
