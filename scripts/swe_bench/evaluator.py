@@ -101,6 +101,10 @@ def evaluate_patch(instance: dict, agent_patch: str,
         test_output = test_result.stdout + test_result.stderr
         result["test_output"] = test_output[:5000]  # Cap output size
 
+        if test_result.returncode != 0 and "passed" not in test_output.lower():
+            print(f"❌ Pytest failed during collection or execution!")
+            print(f"--- START RAW OUTPUT ---\n{test_output[:2000]}\n--- END RAW OUTPUT ---")
+
         # Parse pytest output for pass/fail counts
         passed, failed, total = _parse_pytest_output(test_output)
         result["tests_passed"] = passed
