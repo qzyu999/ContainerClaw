@@ -4,14 +4,15 @@
 
 services:
   claw-agent:
+    user: root
     environment:
       - AUTONOMOUS_STEPS=-1
       - CONCHSHELL_ENABLED=true
       - SWE_BENCH_MODE=true
+      - HOME=/tmp
     volumes:
       - ${SWE_BENCH_WORKSPACE:-./workspace}:/workspace:rw
-      - ~/.cache/pip:/home/agent/.cache/pip
+      - ~/.cache/pip:/tmp/pip-cache
     command: >
-      sh -c "pip install --upgrade pip && 
-             pip install -e /workspace && 
-             python main.py"
+      sh -c "pip install --cache-dir /tmp/pip-cache --break-system-packages -e /workspace && 
+             python src/main.py"

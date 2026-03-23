@@ -1,34 +1,34 @@
 # Use a minimal Python base image
-FROM python:3.11-slim-bookworm as builder
+FROM python:3.12-slim-bookworm as builder
 
-# TEMPORARY FLUSS PYTHON LIBRARY WORKAROUND START
-# Install Rust and System Build Tools
+# --- FLUSS BUILD TOOLS ---
 RUN apt-get update && apt-get install -y \
     curl build-essential pkg-config libssl-dev protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust via rustup
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
-# TEMPORARY FLUSS PYTHON LIBRARY WORKAROUND END
+# Explicitly set Rust environment variables
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+# Install Rust to the explicit location
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
 
 WORKDIR /app
 
-# TEMPORARY FLUSS PYTHON LIBRARY WORKAROUND START
-# Compile your custom Fluss-Rust bindings
-# Assumes you added the submodule at vendor/fluss-rust
+# Compile Fluss-Rust bindings
 COPY vendor/fluss-rust /opt/fluss-rust
 WORKDIR /opt/fluss-rust/bindings/python
 RUN pip install maturin
-# This creates a Linux-compatible .whl file in /wheels
+# Now maturin will find cargo in /usr/local/cargo/bin
 RUN maturin build --release --out /wheels
-# TEMPORARY FLUSS PYTHON LIBRARY WORKAROUND END
+# --- END FLUSS BUILD ---
 
 COPY agent/requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # Final stage
-FROM python:3.11-slim-bookworm
+FROM python:3.12-slim-bookworm
 
 # Create a non-root user
 RUN groupadd -g 1000 agent && \
