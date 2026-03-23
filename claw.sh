@@ -20,7 +20,7 @@ case $COMMAND in
       mkdir -p secrets
       touch secrets/gemini_api_key.txt secrets/anthropic_api_key.txt secrets/openai_api_key.txt
     fi
-    mkdir -p workspace
+    mkdir -p workspace .zk_data/data .zk_data/datalog .fluss_data
     $DOCKER_COMPOSE up -d --build --remove-orphans
     ;;
   down)
@@ -31,6 +31,8 @@ case $COMMAND in
   purge)
     echo "Purging state for session: $SESSION_ID"
     rm -rf ".claw_state/$SESSION_ID"
+    rm -rf ".fluss_data"
+    rm -rf ".zk_data"
     echo "State cleared."
     ;;
   status)

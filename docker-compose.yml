@@ -74,6 +74,9 @@ services:
     restart: always
     networks:
       - internal
+    volumes:
+      - ${PROJECT_DIR:-.}/.zk_data/data:/data
+      - ${PROJECT_DIR:-.}/.zk_data/datalog:/datalog
     healthcheck:
       test: [ "CMD", "zkServer.sh", "status" ]
       interval: 5s
@@ -99,6 +102,8 @@ services:
         remote.data.dir: /tmp/fluss/remote-data
     ports:
       - "9123:9123"
+    volumes:
+      - ${PROJECT_DIR:-.}/.fluss_data:/tmp/fluss
 
   tablet-server:
     image: apache/fluss:0.9.0-incubating
@@ -122,7 +127,7 @@ services:
     ports:
       - "9124:9123"
     volumes:
-      - shared-tmpfs:/tmp/fluss
+      - ${PROJECT_DIR:-.}/.fluss_data:/tmp/fluss
 
   ui:
     build:
@@ -155,13 +160,6 @@ networks:
     driver: bridge
   egress:
     driver: bridge
-
-volumes:
-  shared-tmpfs:
-    driver: local
-    driver_opts:
-      type: "tmpfs"
-      device: "tmpfs"
 
 secrets:
   gemini_api_key:

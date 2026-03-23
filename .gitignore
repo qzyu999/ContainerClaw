@@ -29,7 +29,8 @@ build/
 # Docker
 .docker/
 # If we store fluss data locally
-fluss_data/
+.fluss_data/
+.zk_data/
 
 # ContainerClaw Specific
 .claw_state/
