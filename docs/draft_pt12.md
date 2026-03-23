@@ -134,3 +134,44 @@ Currently, all chat interaction flows through the existing UI and agent logic in
 1. **Fluss Schema Updates**: The streaming tables must be updated to inherently trace messages via a `session_id` UUID attribute. This introduces multi-tenancy logic to the data persistence layer.
 2. **UI & UX Navigation**: The frontend web application must offer features akin to modern LLM interfaces (e.g., ChatGPT's left sidebar) to toggle between distinct session histories.
 3. **Agent State Hydration**: Agents spinning up in existing `/workspace/` directories with historical `.claw_state` files must cleanly deserialize and hydrate their working memory using the matched `session_id` retrieved via the UI.
+
+---
+
+## 5. Addendum: Resolving Board Persistence Racing
+
+Following the transition to persistent bind mounts, an issue was uncovered where the `ProjectBoard` (and potentially full chat history) failed to load the existing data after a `./claw.sh down`/`up` cycle.
+
+### The Root Cause: Impatient Polling
+In a distributed streaming backend like Apache Fluss, fetching from a table's log scanner takes varying amounts of time. When the Agent process boots up, the `ProjectBoard` class synchronously executes `_replay_from_fluss()` to hydrate its in-memory state:
+```python
+    while True:
+        poll = scanner.poll_arrow(timeout_ms=500)
+        if poll.num_rows == 0:
+            break  # Falsely assumes End of Stream
+```
+During a "cold start" where Docker spins up Zookeeper and Fluss simultaneously, the Tablet Server takes several seconds to mount persistent volumes, read Zookeeper metadata, and warm up partitions for serving. Thus, the very first `poll_arrow` call times out after `500ms` and returns `0` rows. The Agent erroneously assumes this physical timeout equates to the logical End Of Stream (EOS), bails out of the replay loop, and incorrectly assumes the board is empty.
+
+### Proposed Solution: Robust Replay
+To correctly reconstruct application state from an append-only log, the replay logic must overcome two hurdles:
+1. **Network Latency**: Differentiate between a "starting up" delay and an "empty log" by using a retry threshold.
+2. **Concurrency Conflicts**: Ensure the replay task has a dedicated, clean event loop to avoid `no running event loop` errors during Agent initialization.
+
+We implement a dedicated `asyncio.run()` block with a 60-second retry threshold:
+
+```python
+    # agent/src/tools.py -> ProjectBoard._replay_from_fluss
+    async def _run_replay():
+        scanner = await self.board_table.new_scan().create_record_batch_log_scanner()
+        empty_polls = 0
+        while empty_polls < 60: # 60s timeout
+            poll = await asyncio.to_thread(scanner.poll_arrow, timeout_ms=1000)
+            if poll.num_rows == 0:
+                empty_polls += 1
+                continue
+            empty_polls = 0
+            # ... process rows ...
+
+    asyncio.run(_run_replay())
+```
+
+By isolating the replay in its own event loop and allowing the cluster up to 60 seconds to warm up, the Agent guarantees that the Project Board state is fully hydrated even after a full cold start of the infrastructure.
