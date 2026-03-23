@@ -164,7 +164,7 @@ def run_single(instance_id: str, args) -> dict:
             print(f"❌ Docker Compose failed: {result.stderr[:500]}")
             return {"instance_id": instance_id, "error": "Docker failed to start"}
 
-        if not wait_for_health():
+        if not wait_for_health(max_wait=600):
             return {"instance_id": instance_id, "error": "Health check timeout"}
     else:
         print("⏭️  Skipping Docker (using running instance)")
