@@ -45,6 +45,13 @@ export interface BoardItem {
   created_at: number;
 }
 
+export interface Session {
+  session_id: string;
+  title: string;
+  created_at: number;
+  last_active_at: number;
+}
+
 const BRIDGE_URL = 'http://localhost:5001';
 
 export const streamEvents = (sessionId: string, onEvent: (event: ActivityEvent) => void) => {
@@ -122,5 +129,31 @@ export const fetchBoardData = async (sessionId: string): Promise<BoardItem[]> =>
     return [];
   } catch {
     return [];
+  }
+};
+
+export const fetchSessions = async (): Promise<Session[]> => {
+  try {
+    const resp = await fetch(`${BRIDGE_URL}/sessions`);
+    const data = await resp.json();
+    if (data.status === 'ok') return data.sessions;
+    return [];
+  } catch {
+    return [];
+  }
+};
+
+export const createSession = async (title?: string): Promise<Session | null> => {
+  try {
+    const resp = await fetch(`${BRIDGE_URL}/sessions/new`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    });
+    const data = await resp.json();
+    if (data.status === 'ok') return data.session;
+    return null;
+  } catch {
+    return null;
   }
 };

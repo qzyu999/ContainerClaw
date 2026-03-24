@@ -325,9 +325,11 @@ class GeminiAgent:
 
 class StageModerator:
     def __init__(self, table, agents: List[GeminiAgent],
+                 session_id: str,
                  tool_dispatcher: ToolDispatcher | None = None):
         self.table = table
         self.agents = agents
+        self.session_id = session_id
         self.tool_dispatcher = tool_dispatcher
         self.agent_names = [a.agent_id for a in agents]
         self.roster_str = ", ".join([f"{a.agent_id} ({a.persona})" for a in agents])
@@ -336,6 +338,7 @@ class StageModerator:
         self.last_replayed_offset = 0
         self.writer = table.new_append().create_writer()
         self.pa_schema = pa.schema([
+            pa.field("session_id", pa.string()),
             pa.field("ts", pa.int64()),
             pa.field("actor_id", pa.string()),
             pa.field("content", pa.string()),
@@ -379,18 +382,23 @@ class StageModerator:
         the moderator reconstructs full conversation history from
         the durable Fluss log before entering the main loop.
         """
-        print("📜 [Moderator] Replaying Fluss history...")
-        replay_scanner = await self.table.new_scan().create_record_batch_log_scanner()
-        replay_scanner.subscribe(bucket_id=0, start_offset=0)
+        print(f"📜 [Moderator] Replaying Fluss history for session: {self.session_id}...")
+        self.scanner = await self.table.new_scan().create_record_batch_log_scanner()
+        for b in range(16):
+            self.scanner.subscribe(bucket_id=b, start_offset=0)
 
         total_replayed = 0
         while True:
-            poll = await asyncio.to_thread(replay_scanner.poll_arrow, timeout_ms=500)
+            poll = await asyncio.to_thread(self.scanner.poll_arrow, timeout_ms=500)
             if poll.num_rows == 0:
                 break  # Caught up to head of log
 
             df = poll.to_pandas()
             for _, row in df.iterrows():
+                # Filter by session_id
+                if row.get("session_id") != self.session_id:
+                    continue
+
                 key = f"{row['ts']}-{row['actor_id']}"
                 if key not in self.history_keys:
                     self.history_keys.add(key)
@@ -414,6 +422,10 @@ class StageModerator:
         if poll.num_rows > 0:
             df = poll.to_pandas()
             for _, row in df.iterrows():
+                # Filter by session_id
+                if row.get("session_id") != self.session_id:
+                    continue
+
                 key = f"{row['ts']}-{row['actor_id']}"
                 if key not in self.history_keys:
                     self.history_keys.add(key)
@@ -433,9 +445,7 @@ class StageModerator:
 
         # Replay history from Fluss for crash recovery
         await self._replay_history()
-
-        self.scanner = await self.table.new_scan().create_record_batch_log_scanner()
-        self.scanner.subscribe(bucket_id=0, start_offset=self.last_replayed_offset)
+        # self.scanner is now positioned at the tail!
 
         conchshell_status = "enabled" if self.tool_dispatcher else "disabled"
         await self.publish("Moderator", f"Multi-Agent System Online. ConchShell: {conchshell_status}.", "thought")
@@ -459,6 +469,10 @@ class StageModerator:
             if poll.num_rows > 0:
                 df = poll.to_pandas()
                 for _, row in df.iterrows():
+                    # Filter by session_id
+                    if row.get("session_id") != self.session_id:
+                        continue
+
                     key = f"{row['ts']}-{row['actor_id']}"
                     if key not in self.history_keys:
                         self.history_keys.add(key)
@@ -755,6 +769,7 @@ class StageModerator:
                       tool_name="", tool_success=False, parent_actor=""):
         try:
             batch = pa.RecordBatch.from_arrays([
+                pa.array([self.session_id], type=pa.string()),
                 pa.array([int(time.time() * 1000)], type=pa.int64()),
                 pa.array([actor_id], type=pa.string()),
                 pa.array([content], type=pa.string()),
@@ -764,7 +779,10 @@ class StageModerator:
                 pa.array([parent_actor], type=pa.string()),
             ], schema=self.pa_schema)
             self.writer.write_arrow_batch(batch)
-            await self.writer.flush()
+            # Ensure each published message is immediately committed to the Fluss log.
+            # This ensures that history is available for instant retrieval on refresh.
+            if hasattr(self.writer, "flush"):
+                self.writer.flush()
             print(f"📝 [Moderator] Published to Fluss: {actor_id} ({m_type})")
         except Exception as e:
             print(f"❌ [Moderator] Failed to publish to Fluss: {e}")

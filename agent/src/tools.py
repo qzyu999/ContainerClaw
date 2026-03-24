@@ -185,15 +185,18 @@ class ProjectBoard:
     Falls back to JSON file if board_table is not available.
     """
 
-    def __init__(self, board_table=None):
+    def __init__(self, session_id: str, board_table=None):
+        self.session_id = session_id
         self.board_table = board_table
-        self.board_path = Path("/workspace/.conchshell/board.json")  # Fallback only
+        self.board_dir = Path("/workspace/.claw_state")
+        self.board_path = self.board_dir / f"{session_id}_board.json"  # Fallback only
         self.items: list[dict] = []
         self._writer = None
         self._pa_schema = None
 
         if self.board_table:
             self._pa_schema = pa.schema([
+                pa.field("session_id", pa.string()),
                 pa.field("ts", pa.int64()),
                 pa.field("action", pa.string()),
                 pa.field("item_id", pa.string()),
@@ -214,7 +217,8 @@ class ProjectBoard:
         async def _run_replay():
             try:
                 scanner = await self.board_table.new_scan().create_record_batch_log_scanner()
-                scanner.subscribe(bucket_id=0, start_offset=0)
+                for b in range(16):
+                    scanner.subscribe(bucket_id=b, start_offset=0)
                 
                 empty_polls = 0
                 while empty_polls < 60:
@@ -225,6 +229,9 @@ class ProjectBoard:
                     
                     empty_polls = 0
                     for i in range(poll.num_rows):
+                        # Filter by session_id
+                        if poll.column("session_id")[i].as_py() != self.session_id:
+                            continue
                         action = poll.column("action")[i].as_py()
                         if action == "create":
                             self.items.append({
@@ -260,6 +267,7 @@ class ProjectBoard:
             return
         try:
             batch = pa.RecordBatch.from_arrays([
+                pa.array([self.session_id], type=pa.string()),
                 pa.array([int(time.time() * 1000)], type=pa.int64()),
                 pa.array([action], type=pa.string()),
                 pa.array([item_id], type=pa.string()),
@@ -285,9 +293,11 @@ class ProjectBoard:
             self.items = []
 
     def _save(self):
-        """Fallback: save to JSON file (only used when Fluss unavailable)."""
+        """Fallback: atomic save to JSON file (only used when Fluss unavailable)."""
         self.board_path.parent.mkdir(parents=True, exist_ok=True)
-        self.board_path.write_text(json.dumps(self.items, indent=2))
+        tmp_path = self.board_path.with_suffix(".tmp")
+        tmp_path.write_text(json.dumps(self.items, indent=2))
+        tmp_path.replace(self.board_path)
 
     def create_item(
         self, item_type: str, title: str,

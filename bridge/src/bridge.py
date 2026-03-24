@@ -37,10 +37,49 @@ def get_grpc_stub():
     
     raise Exception("❌ Bridge: Timeout waiting for Agent.")
 
+@app.route("/sessions")
+def list_sessions():
+    """List available sessions from the agent registry."""
+    try:
+        stub = get_grpc_stub()
+        response = stub.ListSessions(agent_pb2.Empty())
+        sessions = [
+            {
+                "session_id": s.session_id,
+                "title": s.title,
+                "created_at": s.created_at,
+                "last_active_at": s.last_active_at
+            }
+            for s in response.sessions
+        ]
+        return {"status": "ok", "sessions": sessions}
+    except Exception as e:
+        print(f"Bridge: ListSessions Error: {e}")
+        return {"status": "error", "message": str(e)}, 500
+
+@app.route("/sessions/new", methods=["POST"])
+def create_session():
+    """Create a new session via the agent."""
+    data = request.json or {}
+    title = data.get("title", "")
+    try:
+        stub = get_grpc_stub()
+        s = stub.CreateSession(agent_pb2.CreateSessionRequest(title=title))
+        return {
+            "status": "ok",
+            "session": {
+                "session_id": s.session_id,
+                "title": s.title,
+                "created_at": s.created_at,
+                "last_active_at": s.last_active_at
+            }
+        }
+    except Exception as e:
+        print(f"Bridge: CreateSession Error: {e}")
+        return {"status": "error", "message": str(e)}, 500
+
 @app.route("/events/<session_id>")
 def stream_events(session_id):
-    target_session = "default-session" 
-    print(f"DEBUG: Mapping UI session {session_id} -> Agent session {target_session}")
     def generate():
         print(f"Bridge: Starting SSE stream for session {session_id}", flush=True)
         try:

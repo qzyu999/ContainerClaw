@@ -49,6 +49,7 @@ case $COMMAND in
   clean)
     echo "Deep cleaning ContainerClaw environment..."
     $DOCKER_COMPOSE down -v --remove-orphans
+    rm -rf .fluss_data .zk_data
     docker network prune -f
     ;;
   logs)

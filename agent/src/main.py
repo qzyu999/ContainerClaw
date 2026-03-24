@@ -35,20 +35,35 @@ LANG_MAP = {
 }
 
 class AgentService(agent_pb2_grpc.AgentServiceServicer):
-    def __init__(self, fluss_conn, table, board_table=None):
-        self.session_id = config.CLAW_SESSION_ID
+    def __init__(self, fluss_conn, chat_table, board_table=None, sessions_table=None):
         self.is_running = True
         self.fluss_conn = fluss_conn
-        self.table = table
+        self.table = chat_table
         self.board_table = board_table
-        self.board = None  # Set during moderator init
+        self.sessions_table = sessions_table
+        self.moderators = {}  # session_id -> StageModerator
         
-        # Start the Moderator in a background thread
+        # Start a dedicated event loop for all moderators
         self.loop = asyncio.new_event_loop()
-        threading.Thread(target=self._run_moderator_thread, daemon=True).start()
+        threading.Thread(target=self._run_event_loop, daemon=True).start()
 
-    def _run_moderator_thread(self):
+    def _run_event_loop(self):
         asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+
+    def _get_moderator(self, session_id):
+        if session_id in self.moderators:
+            return self.moderators[session_id]
+
+        # Initialize moderator in the event loop if it's the first time
+        future = asyncio.run_coroutine_threadsafe(self._init_moderator_async(session_id), self.loop)
+        return future.result(timeout=30)
+
+    async def _init_moderator_async(self, session_id):
+        if session_id in self.moderators:
+            return self.moderators[session_id]
+            
+        print(f"🧠 [Agent] Initializing new session context: {session_id}")
         # Load API Key
         try:
             api_key = open("/run/secrets/gemini_api_key", "r").read().strip()
@@ -67,10 +82,9 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         conchshell_enabled = config.CONCHSHELL_ENABLED
         tool_dispatcher = None
 
-        if conchshell_enabled:
-            board = ProjectBoard(board_table=self.board_table)
-            self.board = board  # Expose for GetBoard RPC
+        board = ProjectBoard(session_id=session_id, board_table=self.board_table)
 
+        if conchshell_enabled:
             session_shell = SessionShellTool()
             test_runner = TestRunnerTool(session_shell=session_shell)
             diff = DiffTool(session_shell=session_shell)
@@ -98,23 +112,27 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 "Eve":   common_tools,
             }
             tool_dispatcher = ToolDispatcher(toolsets)
-            print("🐚 [ConchShell] Tool dispatcher initialized with per-agent authorization.")
+            print(f"🐚 [ConchShell] Tool dispatcher initialized for session {session_id}.")
         else:
             print("🐚 [ConchShell] Disabled — agents will use text-only mode.")
 
         autonomous_steps = config.AUTONOMOUS_STEPS
-        self.moderator = StageModerator(
-            self.table, agents,
-            tool_dispatcher=tool_dispatcher,
-        )
-        print("--- ⚖️ STAGE ACTIVE (Democratic Moderator) ---")
-        self.loop.run_until_complete(self.moderator.run(autonomous_steps=autonomous_steps))
+        moderator = StageModerator(self.table, agents, session_id=session_id, tool_dispatcher=tool_dispatcher)
+        moderator.board = board
+        # Re-check to avoid race condition
+        if session_id not in self.moderators:
+            self.moderators[session_id] = moderator
+            # Start the moderator loop in the shared event loop
+            asyncio.create_task(moderator.run(autonomous_steps=int(os.getenv("AUTONOMOUS_STEPS", "-1"))))
+            
+        return self.moderators[session_id]
 
     def ExecuteTask(self, request, context):
-        print(f"📥 Received task from UI: {request.prompt}")
+        print(f"📥 Received task from UI: {request.prompt} (Session: {request.session_id})")
         
+        moderator = self._get_moderator(request.session_id)
         future = asyncio.run_coroutine_threadsafe(
-            self.moderator.publish("Human", request.prompt), 
+            moderator.publish("Human", request.prompt), 
             self.loop
         )
         
@@ -136,27 +154,33 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         and yields events as they arrive.
         """
         session_id = request.session_id
+        start_ts = int(time.time() * 1000) - 2000 # Buffer for clock skew/overlap
+        seen_keys = set()
         
         try:
-            # Create a Fluss scanner in the asyncio loop
-            future = asyncio.run_coroutine_threadsafe(
-                self._create_sse_scanner(), self.loop
-            )
-            scanner = future.result(timeout=10)
-
-            # Send Handshake
+            # 1. Send Handshake IMMEDIATELY to confirm connection
             yield agent_pb2.ActivityEvent(
                 timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 type="thought",
                 content=f"Connected to session: {session_id}"
             )
 
+            # 2. Create and drain scanner (catch up to head)
+            future = asyncio.run_coroutine_threadsafe(
+                self._create_sse_scanner(), self.loop
+            )
+            scanner = future.result(timeout=10)
+
             while self.is_running:
                 if not context.is_active():
                     break
                 try:
-                    # Synchronous poll — this blocks for up to 500ms
-                    poll = scanner.poll_arrow(timeout_ms=500)
+                    # Poll via the event loop to avoid "no running event loop" errors
+                    future = asyncio.run_coroutine_threadsafe(
+                        asyncio.to_thread(scanner.poll_arrow, timeout_ms=500),
+                        self.loop
+                    )
+                    poll = future.result(timeout=10)
                     if poll.num_rows == 0:
                         continue
 
@@ -166,10 +190,23 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                     type_arr = poll.column("type")
 
                     for i in range(poll.num_rows):
+                        # Filter by session_id
+                        if poll.column("session_id")[i].as_py() != session_id:
+                            continue
+
                         ts_ms = ts_arr[i].as_py()
+                        if ts_ms < start_ts:
+                            continue
+
                         actor_id = actor_arr[i].as_py()
                         content = content_arr[i].as_py()
                         e_type = type_arr[i].as_py()
+
+                        # Per-connection deduplication
+                        key = f"{ts_ms}-{actor_id}-{content[:50]}"
+                        if key in seen_keys:
+                            continue
+                        seen_keys.add(key)
 
                         if isinstance(actor_id, bytes): actor_id = actor_id.decode('utf-8')
                         if isinstance(content, bytes): content = content.decode('utf-8')
@@ -190,20 +227,10 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             print(f"🔌 Cleanly disconnected from session: {session_id}")
 
     async def _create_sse_scanner(self):
-        """Create a Fluss scanner positioned at the tail of the log.
-        
-        The scanner starts at offset 0 but quickly catches up to head.
-        New events appear in real-time as they are published.
-        """
+        """Create a Fluss scanner to tail the log."""
         scanner = await self.table.new_scan().create_record_batch_log_scanner()
-        # Subscribe starting at the current tail so we only see NEW events
-        # (GetHistory handles backfill on page load)
-        scanner.subscribe(bucket_id=0, start_offset=0)
-        # Drain existing records to reach the tail
-        while True:
-            poll = scanner.poll_arrow(timeout_ms=300)
-            if poll.num_rows == 0:
-                break
+        for b in range(16):
+            scanner.subscribe(bucket_id=b, start_offset=0)
         return scanner
 
     # ── Workspace Explorer gRPC Handlers ──
@@ -292,11 +319,12 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
     def GetBoard(self, request, context):
         """Return project board items from in-memory state (Fluss-backed)."""
-        if not self.board:
+        moderator = self._get_moderator(request.session_id)
+        if not moderator or not moderator.board:
             return agent_pb2.BoardResponse(items=[])
         
         proto_items = []
-        for item in self.board.items:
+        for item in moderator.board.items:
             proto_items.append(agent_pb2.BoardItem(
                 id=item.get("id", ""),
                 type=item.get("type", ""),
@@ -308,10 +336,112 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             ))
         return agent_pb2.BoardResponse(items=proto_items)
 
+    # ── Phase 13: Session Management ──
+    def ListSessions(self, request, context):
+        """List historical sessions from the Fluss PK table."""
+        if not self.sessions_table:
+            return agent_pb2.SessionListResponse(sessions=[])
+        
+        try:
+            # For PK tables, we can scan or just use a snapshot.
+            # Using a simple record batch scanner since we want to list all.
+            future = asyncio.run_coroutine_threadsafe(self._list_sessions_async(), self.loop)
+            sessions = future.result(timeout=10)
+            return agent_pb2.SessionListResponse(sessions=sessions)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"❌ [Agent] ListSessions Error: {e}")
+            context.abort(grpc.StatusCode.INTERNAL, str(e))
+
+    async def _list_sessions_async(self):
+        scanner = await self.sessions_table.new_scan().create_record_batch_log_scanner()
+        for b in range(16):
+            scanner.subscribe(bucket_id=b, start_offset=0)
+        
+        sessions = []
+        # PK tables might have multiple snapshots; for MVP we just scan the log.
+        empty_polls = 0
+        while empty_polls < 5: # Tolerate a few empty polls before giving up
+            poll = await asyncio.to_thread(scanner.poll_arrow, timeout_ms=500)
+            if poll.num_rows == 0:
+                empty_polls += 1
+                continue
+            
+            empty_polls = 0
+            # Use raw Arrow columns
+            id_arr = poll.column("session_id")
+            title_arr = poll.column("title")
+            created_arr = poll.column("created_at")
+            active_arr = poll.column("last_active_at")
+
+            for i in range(poll.num_rows):
+                sessions.append(agent_pb2.SessionEntry(
+                    session_id=id_arr[i].as_py(),
+                    title=title_arr[i].as_py(),
+                    created_at=int(created_arr[i].as_py()),
+                    last_active_at=int(active_arr[i].as_py())
+                ))
+        return sessions
+
+    def CreateSession(self, request, context):
+        """Register a new session in the Fluss PK table."""
+        import uuid
+        session_id = str(uuid.uuid4())
+        now = int(time.time() * 1000)
+        title = request.title or f"Chat {session_id[:8]}"
+        
+        print(f"🆕 [Agent] Creating session: {title} ({session_id})")
+        
+        future = asyncio.run_coroutine_threadsafe(self._create_session_async(session_id, title, now), self.loop)
+        try:
+            future.result(timeout=10)
+            return agent_pb2.SessionEntry(
+                session_id=session_id,
+                title=title,
+                created_at=now,
+                last_active_at=now
+            )
+        except Exception as e:
+            print(f"❌ [Agent] CreateSession Error: {e}")
+            context.abort(grpc.StatusCode.INTERNAL, str(e))
+
+    async def _create_session_async(self, session_id, title, now):
+        try:
+            batch = pa.RecordBatch.from_arrays([
+                pa.array([session_id], type=pa.string()),
+                pa.array([title], type=pa.string()),
+                pa.array([now], type=pa.int64()),
+                pa.array([now], type=pa.int64()),
+            ], schema=pa.schema([
+                pa.field("session_id", pa.string()),
+                pa.field("title", pa.string()),
+                pa.field("created_at", pa.int64()),
+                pa.field("last_active_at", pa.int64()),
+            ]))
+            
+            # Use append to register in PK table
+            writer = self.sessions_table.new_append().create_writer()
+            writer.write_arrow_batch(batch)
+            if hasattr(writer, "flush"):
+                writer.flush()
+            if hasattr(writer, "close"):
+                writer.close()
+
+            return agent_pb2.SessionEntry(
+                session_id=session_id,
+                title=title,
+                created_at=now,
+                last_active_at=now
+            )
+        except Exception as e:
+            print(f"❌ [Agent] CreateSession Error: {e}")
+            context.abort(grpc.StatusCode.INTERNAL, str(e))
+
     def GetHistory(self, request, context):
         """Fetch full chat history from Fluss."""
         print(f"📜 [Agent] Fetching history for session: {request.session_id}")
-        future = asyncio.run_coroutine_threadsafe(self._fetch_history_async(), self.loop)
+        future = asyncio.run_coroutine_threadsafe(self._fetch_history_async(request.session_id), self.loop)
         try:
             events = future.result(timeout=30)
             print(f"✅ [Agent] History fetched: {len(events)} messages.")
@@ -322,24 +452,31 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             print(f"❌ {error_msg}")
             context.abort(grpc.StatusCode.INTERNAL, error_msg)
 
-    async def _fetch_history_async(self):
+    async def _fetch_history_async(self, session_id):
         # We use a scanner that starts at 0 and reads until the end
         scanner = await self.table.new_scan().create_record_batch_log_scanner()
-        scanner.subscribe(bucket_id=0, start_offset=0)
+        for b in range(16):
+            scanner.subscribe(bucket_id=b, start_offset=0)
         
         events = []
-        while True:
-            # Poll with a short timeout.
+        empty_polls = 0
+        while empty_polls < 10: # Increased tolerance for chat history
             poll = await asyncio.to_thread(scanner.poll_arrow, timeout_ms=500)
             if poll.num_rows == 0:
-                break
+                empty_polls += 1
+                continue
             
+            empty_polls = 0
             # Use raw Arrow columns (faster and avoids pandas dependency issues)
+            session_arr = poll.column("session_id")
             ts_arr = poll.column("ts")
             actor_arr = poll.column("actor_id")
             content_arr = poll.column("content")
             
             for i in range(poll.num_rows):
+                if session_arr[i].as_py() != session_id:
+                    continue
+
                 ts_ms = ts_arr[i].as_py()
                 actor_id = actor_arr[i].as_py()
                 content = content_arr[i].as_py()
@@ -371,116 +508,90 @@ async def init_infrastructure():
     print("🛰️ Initializing Fluss Infrastructure...")
     fluss_config = fluss.Config({"bootstrap.servers": config.FLUSS_BOOTSTRAP_SERVERS})
     
-    # Retry connection — coordinator may not be listening yet
-    conn = None
+    global chat_table, sessions_table, board_table
+    
     for attempt in range(30):
         try:
             conn = await fluss.FlussConnection.create(fluss_config)
-            print("✅ Connected to Fluss Coordinator.")
-            break
-        except Exception as e:
-            print(f"⏳ Waiting for Fluss Coordinator (attempt {attempt+1}/30)... {e}")
-            await asyncio.sleep(2)
-    
-    if not conn:
-        raise Exception("❌ Failed to connect to Fluss Coordinator after 30 attempts.")
-    
-    admin = await conn.get_admin()
-    
-    table_path = fluss.TablePath("containerclaw", "chatroom")
-    await admin.create_database("containerclaw", ignore_if_exists=True)
-    
-    schema = pa.schema([
-        pa.field("ts", pa.int64()),
-        pa.field("actor_id", pa.string()),
-        pa.field("content", pa.string()),
-        pa.field("type", pa.string()),
-        pa.field("tool_name", pa.string()),
-        pa.field("tool_success", pa.bool_()),
-        pa.field("parent_actor", pa.string()),
-    ])
-    descriptor = fluss.TableDescriptor(fluss.Schema(schema), bucket_count=1)
-
-    # 1. Wait for Metadata/Creation
-    print("⏳ Waiting for Table Creation...")
-    for attempt in range(15):
-        try:
-            await admin.create_table(table_path, descriptor, ignore_if_exists=True)
-            print(f"✅ Coordinator confirmed: {table_path} exists.")
-            break
-        except Exception as e:
-            await asyncio.sleep(3)
-
-    # 2. Wait for Data Plane Visibility (THE FIX)
-    print("💎 Attempting to connect to Data Plane...")
-    table = None
-    for attempt in range(10):
-        try:
-            table = await conn.get_table(table_path)
-            print("🚀 Successfully connected to Table Data Plane.")
-            break
-        except Exception as e:
-            print(f"⏳ Table not found in local metadata yet (attempt {attempt+1}/10)...")
-            await asyncio.sleep(2)
+            print("✅ Connected to Fluss.")
+            admin = await conn.get_admin()
             
-    if not table:
-        raise Exception("❌ Failed to resolve Table Data Plane after 10 attempts.")
-    
-    # Check if schema needs update (migration/purge required)
-    try:
-        table_info = table.get_table_info()
-        column_count = table_info.get_column_count()
-        if column_count < 7:
-            print(f"⚠️ [Infrastructure] Fluss table has an OLD schema ({column_count} columns, expected 7).")
-            print("⚠️ [Infrastructure] PLEASE RUN: ./claw.sh clean && ./claw.sh up")
-            print("⚠️ [Infrastructure] This is required to apply the new 7-column schema.")
-    except Exception as e:
-        print(f"⚠️ [Infrastructure] Could not verify schema: {e}")
-
-    # ── W-2: Board events table ──
-    board_path = fluss.TablePath("containerclaw", "board_events")
-    board_schema = pa.schema([
-        pa.field("ts", pa.int64()),
-        pa.field("action", pa.string()),         # "create" | "update_status"
-        pa.field("item_id", pa.string()),
-        pa.field("item_type", pa.string()),       # "epic" | "story" | "task"
-        pa.field("title", pa.string()),
-        pa.field("description", pa.string()),
-        pa.field("status", pa.string()),          # "todo" | "in_progress" | "done"
-        pa.field("assigned_to", pa.string()),
-        pa.field("actor", pa.string()),           # which agent made the change
-    ])
-    board_descriptor = fluss.TableDescriptor(fluss.Schema(board_schema), bucket_count=1)
-
-    for attempt in range(15):
-        try:
+            # Database
+            await admin.create_database("containerclaw", ignore_if_exists=True)
+            
+            # 1. Chatroom Table
+            table_path = fluss.TablePath("containerclaw", "chatroom")
+            schema = pa.schema([
+                pa.field("session_id", pa.string()),
+                pa.field("ts", pa.int64()),
+                pa.field("actor_id", pa.string()),
+                pa.field("content", pa.string()),
+                pa.field("type", pa.string()),
+                pa.field("tool_name", pa.string()),
+                pa.field("tool_success", pa.bool_()),
+                pa.field("parent_actor", pa.string()),
+            ])
+            descriptor = fluss.TableDescriptor(
+                fluss.Schema(schema),
+                hash_keys=["session_id"],
+                bucket_count=16
+            )
+            await admin.create_table(table_path, descriptor, ignore_if_exists=True)
+            chat_table = await conn.get_table(table_path)
+            
+            # 2. Sessions Table
+            sessions_path = fluss.TablePath("containerclaw", "sessions")
+            sessions_schema = pa.schema([
+                pa.field("session_id", pa.string()),
+                pa.field("title", pa.string()),
+                pa.field("created_at", pa.int64()),
+                pa.field("last_active_at", pa.int64()),
+            ])
+            sessions_descriptor = fluss.TableDescriptor(
+                fluss.Schema(sessions_schema),
+                primary_key=["session_id"]
+            )
+            await admin.create_table(sessions_path, sessions_descriptor, ignore_if_exists=True)
+            sessions_table = await conn.get_table(sessions_path)
+            
+            # 3. Board Events Table
+            board_path = fluss.TablePath("containerclaw", "board_events")
+            board_schema = pa.schema([
+                pa.field("session_id", pa.string()),
+                pa.field("ts", pa.int64()),
+                pa.field("action", pa.string()),
+                pa.field("item_id", pa.string()),
+                pa.field("item_type", pa.string()),
+                pa.field("title", pa.string()),
+                pa.field("description", pa.string()),
+                pa.field("status", pa.string()),
+                pa.field("assigned_to", pa.string()),
+                pa.field("actor", pa.string()),
+            ])
+            board_descriptor = fluss.TableDescriptor(
+                fluss.Schema(board_schema),
+                hash_keys=["session_id"],
+                bucket_count=16
+            )
             await admin.create_table(board_path, board_descriptor, ignore_if_exists=True)
-            print(f"✅ Coordinator confirmed: {board_path} exists.")
-            break
-        except Exception:
-            await asyncio.sleep(3)
-
-    board_table = None
-    for attempt in range(10):
-        try:
             board_table = await conn.get_table(board_path)
-            print("🚀 Board table connected.")
-            break
-        except Exception:
-            await asyncio.sleep(2)
+            
+            print("🚀 All Fluss tables connected and ready.")
+            return conn, chat_table, board_table, sessions_table
 
-    if not board_table:
-        print("⚠️ [Infrastructure] Board table not available — falling back to JSON persistence.")
-        
-    return conn, table, board_table
+        except Exception as e:
+            print(f"⏳ Fluss initialization failed (attempt {attempt+1}/30): {e}")
+            await asyncio.sleep(3)
+    
+    raise Exception("❌ Failed to initialize Fluss after 30 attempts.")
 
 def serve():
     # 1. Block until Fluss is ready
-    conn, table, board_table = asyncio.run(init_infrastructure())
+    conn, chat_table, board_table, sessions_table = asyncio.run(init_infrastructure())
     
     # 2. Start gRPC
     server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=10))
-    agent_service = AgentService(conn, table, board_table)
+    agent_service = AgentService(conn, chat_table, board_table, sessions_table)
     agent_pb2_grpc.add_AgentServiceServicer_to_server(agent_service, server)
     server.add_insecure_port('0.0.0.0:50051')
     server.start()

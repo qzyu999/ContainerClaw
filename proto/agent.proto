@@ -23,6 +23,27 @@ service AgentService {
 
   // Get project board items (W-2: Fluss-backed)
   rpc GetBoard (ActivityRequest) returns (BoardResponse);
+
+  // Phase 13: Session Management
+  rpc ListSessions (Empty) returns (SessionListResponse);
+  rpc CreateSession (CreateSessionRequest) returns (SessionEntry);
+}
+
+message Empty {}
+
+message CreateSessionRequest {
+  string title = 1;
+}
+
+message SessionListResponse {
+  repeated SessionEntry sessions = 1;
+}
+
+message SessionEntry {
+  string session_id = 1;
+  string title = 2;
+  int64 created_at = 3;
+  int64 last_active_at = 4;
 }
 
 message HistoryResponse {
