@@ -208,53 +208,46 @@ class ProjectBoard:
                 pa.field("actor", pa.string()),
             ])
             self._writer = self.board_table.new_append().create_writer()
-            self._replay_from_fluss()
         else:
             self._load()
 
-    def _replay_from_fluss(self):
-        """Replay board_events log to rebuild self.items."""
-        async def _run_replay():
-            try:
-                scanner = await self.board_table.new_scan().create_record_batch_log_scanner()
-                for b in range(16):
-                    scanner.subscribe(bucket_id=b, start_offset=0)
-                
-                empty_polls = 0
-                while empty_polls < 60:
-                    poll = await asyncio.to_thread(scanner.poll_arrow, timeout_ms=1000)
-                    if poll.num_rows == 0:
-                        empty_polls += 1
-                        continue
-                    
-                    empty_polls = 0
-                    for i in range(poll.num_rows):
-                        # Filter by session_id
-                        if poll.column("session_id")[i].as_py() != self.session_id:
-                            continue
-                        action = poll.column("action")[i].as_py()
-                        if action == "create":
-                            self.items.append({
-                                "id": poll.column("item_id")[i].as_py(),
-                                "type": poll.column("item_type")[i].as_py(),
-                                "title": poll.column("title")[i].as_py(),
-                                "description": poll.column("description")[i].as_py(),
-                                "status": poll.column("status")[i].as_py(),
-                                "assigned_to": poll.column("assigned_to")[i].as_py() or None,
-                                "created_at": poll.column("ts")[i].as_py() / 1000,
-                            })
-                        elif action == "update_status":
-                            item_id = poll.column("item_id")[i].as_py()
-                            new_status = poll.column("status")[i].as_py()
-                            for item in self.items:
-                                if item["id"] == item_id:
-                                    item["status"] = new_status
-                                    break
-            except Exception as e:
-                print(f"⚠️ [ProjectBoard] Internal Replay Error: {e}")
-
+    async def initialize(self):
+        """Async initialization: Replay board_events log to rebuild self.items."""
+        if not self.board_table:
+            return
+            
         try:
-            asyncio.run(_run_replay())
+            scanner = await self.board_table.new_scan().create_record_batch_log_scanner()
+            for b in range(16):
+                scanner.subscribe(bucket_id=b, start_offset=0)
+            
+            while True:
+                poll = await asyncio.to_thread(scanner.poll_arrow, timeout_ms=500)
+                if poll.num_rows == 0:
+                    break
+                
+                for i in range(poll.num_rows):
+                    # Filter by session_id
+                    if poll.column("session_id")[i].as_py() != self.session_id:
+                        continue
+                    action = poll.column("action")[i].as_py()
+                    if action == "create":
+                        self.items.append({
+                            "id": poll.column("item_id")[i].as_py(),
+                            "type": poll.column("item_type")[i].as_py(),
+                            "title": poll.column("title")[i].as_py(),
+                            "description": poll.column("description")[i].as_py(),
+                            "status": poll.column("status")[i].as_py(),
+                            "assigned_to": poll.column("assigned_to")[i].as_py() or None,
+                            "created_at": poll.column("ts")[i].as_py() / 1000,
+                        })
+                    elif action == "update_status":
+                        item_id = poll.column("item_id")[i].as_py()
+                        new_status = poll.column("status")[i].as_py()
+                        for item in self.items:
+                            if item["id"] == item_id:
+                                item["status"] = new_status
+                                break
             print(f"📋 [ProjectBoard] Replayed {len(self.items)} board items from Fluss.")
         except Exception as e:
             print(f"⚠️ [ProjectBoard] Fluss replay failed, falling back to JSON: {e}")

@@ -89,6 +89,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         tool_dispatcher = None
 
         board = ProjectBoard(session_id=session_id, board_table=self.board_table)
+        await board.initialize()
 
         if conchshell_enabled:
             session_shell = SessionShellTool()

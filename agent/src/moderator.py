@@ -341,6 +341,7 @@ class StageModerator:
         self.history_keys = set()
         self.last_replayed_offset = 0
         self.writer = table.new_append().create_writer()
+
         self.pa_schema = pa.schema([
             pa.field("session_id", pa.string()),
             pa.field("ts", pa.int64()),
@@ -446,45 +447,89 @@ class StageModerator:
                 actor_id = actor_arr[i].as_py()
                 content = content_arr[i].as_py()
 
-                key = f"{ts}-{actor_id}"
-                if key not in self.history_keys:
-                    self.history_keys.add(key)
-                    self.all_messages.append({
-                        "actor_id": actor_id,
-                        "content": content,
-                        "ts": ts
-                    })
-                    total_replayed += 1
+                await self._handle_single_message(actor_id, content, ts)
+                total_replayed += 1
 
         self.all_messages.sort(key=lambda x: x["ts"])
         self.last_replayed_offset = total_replayed
         print(f"✅ [Moderator] Replayed {total_replayed} messages from Fluss.")
 
-    async def _poll_once(self):
-        """Poll the Fluss scanner once to pick up recently published messages.
+    async def _handle_single_message(self, actor_id, content, ts) -> bool:
+        """Process a single message. Returns True if human message (non-command)."""
+        key = f"{ts}-{actor_id}"
+        if key in self.history_keys:
+            return False
+            
+        self.history_keys.add(key)
+        msg_obj = {"actor_id": actor_id, "content": content, "ts": ts}
+        self.all_messages.append(msg_obj)
 
-        Used inside _execute_with_tools and after nudge publishes to ensure
-        Fluss-written messages are available in all_messages before the next
-        LLM call.
+        human_was_message = False
+        if actor_id == "Human":
+            print(f"📢 [Human said]: {content}")
+            
+            # Phase 14: Command Interception Layer
+            if content.startswith("/"):
+                if content.startswith("/stop"):
+                    self.base_budget = 0
+                    self.current_steps = 0
+                    print("🛑 [Moderator] /stop received. Halting autonomy.")
+                    await self.publish("Moderator", "🛑 Automation halted by user demand.", "system")
+                elif content.startswith("/automation="):
+                    try:
+                        val = int(content.split("=")[1])
+                        self.base_budget = val
+                        self.current_steps = val
+                        print(f"🤖 [Moderator] /automation={val} received. Budget updated.")
+                        await self.publish("Moderator", f"🤖 Step budget updated to: {val}", "system")
+                    except (IndexError, ValueError):
+                        print("⚠️ [Moderator] Invalid /automation command format.")
+            else:
+                # Regular human message: trigger an interrupt/turn
+                human_was_message = True
+                # Reset to captured baseline
+                if hasattr(self, 'base_budget'):
+                    self.current_steps = self.base_budget
+                    if self.base_budget != 0:
+                        print(f"🔄 [Moderator] Human input detected. Resetting budget to {self.base_budget} steps.")
+        elif actor_id in self.agent_names:
+            print(f"👂 [Heard] [{actor_id}]: {content}")
+            
+        return human_was_message
+
+    async def _process_poll_result(self, poll) -> bool:
+        """Process a RecordBatch poll, update history, and handle command interception.
+        
+        Returns:
+            bool: True if a human message was detected (triggering an interrupt/budget reset).
         """
-        poll = await asyncio.to_thread(self.scanner.poll_arrow, timeout_ms=600)
+        any_human_interrupted = False
         if poll.num_rows > 0:
             df = poll.to_pandas()
             for _, row in df.iterrows():
-                # Filter by session_id
-                if row.get("session_id") != self.session_id:
+                sid = row.get("session_id")
+                if sid != self.session_id:
                     continue
 
-                key = f"{row['ts']}-{row['actor_id']}"
-                if key not in self.history_keys:
-                    self.history_keys.add(key)
-                    self.all_messages.append({
-                        "actor_id": row["actor_id"],
-                        "content": row["content"],
-                        "ts": row["ts"]
-                    })
+                if await self._handle_single_message(row['actor_id'], row['content'], row['ts']):
+                    any_human_interrupted = True
+
             # Ensure context maintains strict chronological order
             self.all_messages.sort(key=lambda x: x["ts"])
+            
+            # Trim in-memory cache
+            max_in_memory = config.MAX_HISTORY_MESSAGES * 3
+            if len(self.all_messages) > max_in_memory:
+                self.all_messages = self.all_messages[-config.MAX_HISTORY_MESSAGES * 2:]
+                self.history_keys.clear()
+                print(f"Sweep: Trimmed in-memory history to {len(self.all_messages)} messages.")
+                
+        return any_human_interrupted
+
+    async def _poll_once(self) -> bool:
+        """Poll the Fluss scanner once and process. Returns True if human interrupted."""
+        poll = await asyncio.to_thread(self.scanner.poll_arrow, timeout_ms=600)
+        return await self._process_poll_result(poll)
 
     async def run(self, autonomous_steps=0):
         """
@@ -492,8 +537,9 @@ class StageModerator:
         autonomous_steps: Number of turns to run without human input.
                           -1 for infinite. 0 to wait for human.
         """
-        # Baseline Capture: Store the original budget to allow resets upon Human interaction
-        base_budget = autonomous_steps
+        # Initialize self attributes for command interception BEFORE replay
+        self.base_budget = autonomous_steps
+        self.current_steps = 0
 
         # Replay history from Fluss for crash recovery
         await self._replay_history()
@@ -503,64 +549,27 @@ class StageModerator:
         await self.publish("Moderator", f"Multi-Agent System Online. ConchShell: {conchshell_status}.", "thought")
         print(f"⚖️ [Moderator] Active with agents: {self.agent_names}")
         print(f"🐚 [Moderator] ConchShell: {conchshell_status}")
-        if base_budget != 0:
-            print(f"🤖 [Moderator] Autonomous Mode: {base_budget} steps.")
-
+        if self.base_budget != 0:
+            print(f"🤖 [Moderator] Autonomous Mode: {self.base_budget} steps.")
+        
         # After replay, if we have history context, resume autonomous mode
         # immediately (no need to wait for a new Human message to trigger it).
-        if self.last_replayed_offset > 0 and base_budget != 0:
-            current_steps = base_budget
+        if self.last_replayed_offset > 0 and self.base_budget != 0:
+            self.current_steps = self.base_budget
             print(f"🔄 [Moderator] Resuming autonomous mode from replayed history ({self.last_replayed_offset} msgs).")
         else:
-            current_steps = 0
+            self.current_steps = 0
 
         while True:
             poll = await asyncio.to_thread(self.scanner.poll_arrow, timeout_ms=500)
-            human_interrupted = False
-
-            if poll.num_rows > 0:
-                df = poll.to_pandas()
-                for _, row in df.iterrows():
-                    # Filter by session_id
-                    if row.get("session_id") != self.session_id:
-                        continue
-
-                    key = f"{row['ts']}-{row['actor_id']}"
-                    if key not in self.history_keys:
-                        self.history_keys.add(key)
-                        msg_obj = {"actor_id": row['actor_id'], "content": row['content'], "ts": row['ts']}
-                        self.all_messages.append(msg_obj)
-
-                        if row['actor_id'] == "Human":
-                            print(f"📢 [Human said]: {row['content']}")
-                            human_interrupted = True
-                            current_steps = base_budget  # Reset to captured baseline
-                            if base_budget != 0:
-                                print(f"🔄 [Moderator] Human input detected. Resetting budget to {base_budget} steps.")
-                        elif row['actor_id'] in self.agent_names:
-                            print(f"👂 [Heard] [{row['actor_id']}]: {row['content']}")
-
-
-                        # Memory management: trim in-memory cache.
-                        # Older messages are still in Fluss — _replay_history() can recover.
-                        max_in_memory = config.MAX_HISTORY_MESSAGES * 3
-                        if len(self.all_messages) > max_in_memory:
-                            self.all_messages = self.all_messages[-config.MAX_HISTORY_MESSAGES * 2:]
-                            # W-4: Clear history_keys to cap memory. The scanner offset
-                            # has moved past all processed messages, so they won't be
-                            # re-polled — dedup keys for trimmed messages are unnecessary.
-                            self.history_keys.clear()
-                            print(f"🧹 [Moderator] Trimmed in-memory history to {len(self.all_messages)} messages.")
-
-                # Ensure context maintains strict chronological order after polling new batches
-                self.all_messages.sort(key=lambda x: x["ts"])
+            human_interrupted = await self._process_poll_result(poll)
 
             # Trigger if human spoke OR we still have autonomous steps to take
-            if human_interrupted or (current_steps != 0):
+            if human_interrupted or (self.current_steps != 0):
                 if not human_interrupted:
-                    if current_steps > 0:
-                        current_steps -= 1
-                    print(f"🤖 [Autonomous Turn] {current_steps if current_steps >= 0 else 'inf'} steps remaining...")
+                    if self.current_steps > 0:
+                        self.current_steps -= 1
+                    print(f"🤖 [Autonomous Turn] {self.current_steps if self.current_steps >= 0 else 'inf'} steps remaining...")
 
                 await asyncio.sleep(1.0)
                 context_window = self._get_context_window()
@@ -578,7 +587,7 @@ class StageModerator:
                     if self.tool_dispatcher:
                         self.tool_dispatcher.cleanup()
                     # Exhaust steps to stop LLM calls, but keep polling Fluss
-                    current_steps = 0
+                    self.current_steps = 0
                     continue
 
                 if winner:
@@ -611,6 +620,10 @@ class StageModerator:
                         else:
                             print(f"❌ [{winner}] remains silent after nudge.")
 
+                # Sync back to locals in case they changed
+                base_budget = self.base_budget
+                current_steps = self.current_steps
+
                 await self.publish("Moderator", "Cycle complete.", "checkpoint")
 
             await asyncio.sleep(1)
@@ -634,6 +647,7 @@ class StageModerator:
 
         final_text = None
         last_round_results = []
+        consecutive_failures = 0
 
         for round_num in range(config.MAX_TOOL_ROUNDS):
             if round_num == 0:
@@ -688,6 +702,18 @@ class StageModerator:
                     agent.agent_id, tool_name, tool_args
                 )
 
+                # Phase 14: Circuit Breaker logic
+                if not result.success:
+                    consecutive_failures += 1
+                else:
+                    consecutive_failures = 0
+                
+                if consecutive_failures >= 3:
+                    msg = f"🛑 Circuit Breaker: {agent.agent_id} halted after 3 consecutive tool failures."
+                    print(f"⚠️ [Circuit Breaker] {msg}")
+                    await self.publish("Moderator", msg, "system")
+                    return "🛑 Execution stopped due to consecutive tool failures."
+
                 # Log tool result
                 result_summary = result.output[:500] if result.success else f"ERROR: {result.error}"
                 print(f"  → {'✅' if result.success else '❌'} {result_summary[:200]}")
@@ -729,7 +755,10 @@ class StageModerator:
                 })
 
             # Poll Fluss to pick up published messages
-            await self._poll_once()
+            interrupted = await self._poll_once()
+            if interrupted and self.current_steps == 0:
+                print(f"🛑 [Moderator] {agent.agent_id} execution halted mid-turn by user command.")
+                return "🛑 Turn aborted by user command."
             shared_context = self._get_context_window()
 
         # Clear the per-agent turn buffer — cycle complete
@@ -837,7 +866,7 @@ class StageModerator:
             # Ensure each published message is immediately committed to the Fluss log.
             # This ensures that history is available for instant retrieval on refresh.
             if hasattr(self.writer, "flush"):
-                self.writer.flush()
+                await self.writer.flush()
             print(f"📝 [Moderator] Published to Fluss: {actor_id} ({m_type})")
         except Exception as e:
             print(f"❌ [Moderator] Failed to publish to Fluss: {e}")
