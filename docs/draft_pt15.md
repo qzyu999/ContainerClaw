@@ -27,8 +27,10 @@ Instead of giving agents a generic `curl` tool that could exfiltrate the workspa
 
 To prove the RipCurrent model, we propose a two-way sync between a ContainerClaw session and a Discord Server.
 
-### 3.1. Egress: Agents to Discord (Webhooks)
-When an agent (e.g., Alice) speaks, her message is published to the Fluss `chatroom` stream. A standalone `RipCurrent-Discord` worker subscribes to this stream. When it detects an `Agent` message, it fires an Incoming Webhook to Discord (`POST /webhooks/{webhook.id}/{webhook.token}`). Using webhooks instead of the standard bot API allows us to dynamically pass `username` and `avatar_url` parameters in the JSON payload per request. This satisfies the UX requirement of visualizing distinct agents (e.g., making it appear as though "Alice" natively sent the message) without needing to provision and manage multiple bot tokens.
+### 3.1. Egress: Agents & Human (Webapp) to Discord (Webhooks)
+When an actor (Agent or Human via Web UI) speaks, the message is published to the Fluss `chatroom` stream. The `RipCurrent-Discord` worker tails this stream. 
+- **Agent Messages:** Fired to the Discord Webhook (`POST /webhooks/{id}/{token}`) with the agent's specific `username` and `avatar_url`.
+- **Human (Webapp) Messages:** Also fired to the Discord Webhook. To distinguish webapp users from Discord users and avoid "Echo Loops," these messages are formatted with a unique `[Web]` prefix or specific CSS-colored embeds, allowing Discord participants to see the full context of the session.
 
 ### 3.2. Ingress: Discord to Agents (Bot Listener)
 To allow human users on Discord to participate in the ContainerClaw session, we run a Discord Bot instance. The bot connects to the Discord Gateway (WebSocket API) and authenticates using its bot token in the `Authorization: Bot <token>` header. When a user types in the designated Discord channel, the bot intercepts the event. The Bot acts as an ingress buoy: it sanitizes the message, maps the Discord User ID (a Snowflake) to a ContainerClaw Human Actor, and publishes the message to the Fluss `chatroom` stream. The `StageModerator` then natively picks up this message exactly as it would from the UI Bridge.
@@ -56,7 +58,7 @@ sequenceDiagram
     participant A as Agent Cluster
 
     %% Ingress Flow (Human -> Agent)
-    Note over D, F: Ingress Flow
+    Note over D, F: Ingress Flow (Discord -> ContainerClaw)
     D->>RC: User types message in channel
     RC->>RC: [Buoy] Sanitize & Map User ID
     RC->>F: Publish event (actor_id="Discord_User")
@@ -64,12 +66,13 @@ sequenceDiagram
     M->>A: Append to context window
     A-->>M: Process human input
 
-    %% Egress Flow (Agent -> Human)
-    Note over M, D: Egress Flow
-    M->>F: Publish event (actor_id="Alice")
+    %% Egress Flow (All Actors -> Discord)
+    Note over M, D: Egress Flow (ContainerClaw -> Discord)
+    M->>F: Publish event (actor_id="Alice" OR "Human")
     F-->>RC: Stream subscription push
+    RC->>RC: [Buoy] Filter out "Discord_User" to prevent loops
     RC->>RC: [Buoy] Apply Webhook formatting
-    RC->>D: POST /webhooks/{id} (username="Alice")
+    RC->>D: POST /webhooks/{id} (username="Alice" / "Human [Web]")
 ```
 
 ### Architectural Deployment Model
@@ -120,7 +123,11 @@ To ensure systemic stability, all architectural decisions regarding this integra
 
 ### 5.4. Mitigating Egress Flooding (The Rate-Limiter Buoy)
 **Proposal:** RipCurrent must maintain an internal token bucket for egress webhooks.
-**Defense:** 5 ContainerClaw agents talking to each other can rapidly generate 10+ messages per second during high-speed elections. Discord's webhook rate limits are strict (typically 5 requests per 2 seconds). The RipCurrent Egress Buoy must buffer and potentially batch agent chatter, or apply a leaky bucket algorithm to prevent `429 Too Many Requests` errors from Discord, which could otherwise cause the worker to fall permanently behind the stream tail.
+**Defense:** 5 ContainerClaw agents plus a talkative human can rapidly generate 10+ messages per second. Discord's webhook rate limits are strict. The Egress Buoy must buffer/batch or apply a leaky bucket algorithm to prevent `429` errors.
+
+### 5.5. Preventing Echo Loops (The Deduplication Buoy)
+**Proposal:** The Egress logic must explicitly ignore messages where `actor_id` matches the Discord Ingress ID.
+**Defense:** If a human types in Discord, RipCurrent writes it to Fluss. If RipCurrent then blindly reads that same Fluss message and sends it back to Discord, we create an infinite "Echo Loop." The Egress Buoy must verify the `origin` or `actor_id` of the message to ensure it only proxies Agent messages and *Web-native* Human messages to Discord, effectively "sniping" messages that originated from Discord itself.
 
 ---
 
