@@ -194,12 +194,12 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                     if poll.num_rows == 0:
                         continue
 
-                    # Use raw Arrow columns
-                    ts_arr = poll.column("ts")
-                    actor_arr = poll.column("actor_id")
-                    content_arr = poll.column("content")
-                    type_arr = poll.column("type")
-                    sess_arr = poll.column("session_id")
+                    # Use dict-style access for pyarrow.RecordBatch
+                    sess_arr = poll["session_id"]
+                    actor_arr = poll["actor_id"]
+                    content_arr = poll["content"]
+                    ts_arr = poll["ts"]
+                    type_arr = poll["type"]
 
                     for i in range(poll.num_rows):
                         # Filter by session_id
@@ -368,8 +368,9 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         try:
             # For PK tables, we can scan or just use a snapshot.
             # Using a simple record batch scanner since we want to list all.
+            # Using a larger timeout for session listing.
             future = asyncio.run_coroutine_threadsafe(self._list_sessions_async(), self.loop)
-            sessions = future.result(timeout=10)
+            sessions = future.result(timeout=15)
             return agent_pb2.SessionListResponse(sessions=sessions)
         except Exception as e:
             import traceback
@@ -379,6 +380,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
     async def _list_sessions_async(self):
         scanner = await self.sessions_table.new_scan().create_record_batch_log_scanner()
+        print(f"📊 [_list_sessions_async] Subscribing to 16 buckets...")
         for b in range(16):
             scanner.subscribe(bucket_id=b, start_offset=0)
         
@@ -392,11 +394,11 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 continue
             
             empty_polls = 0
-            # Use raw Arrow columns
-            id_arr = poll.column("session_id")
-            title_arr = poll.column("title")
-            created_arr = poll.column("created_at")
-            active_arr = poll.column("last_active_at")
+            # Use dict-style access for pyarrow.RecordBatch
+            id_arr = poll["session_id"]
+            title_arr = poll["title"]
+            created_arr = poll["created_at"]
+            active_arr = poll["last_active_at"]
 
             for i in range(poll.num_rows):
                 sid = id_arr[i].as_py()
@@ -409,6 +411,20 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         
         # Return sorted by last active
         return sorted(sessions_dict.values(), key=lambda s: s.last_active_at, reverse=True)
+
+    def GetHistory(self, request, context):
+        """Fetch full chat history from Fluss."""
+        print(f"📜 [Agent] Fetching history for session: {request.session_id}")
+        future = asyncio.run_coroutine_threadsafe(self._fetch_history_async(request.session_id), self.loop)
+        try:
+            events = future.result(timeout=30)
+            print(f"✅ [Agent] History fetched: {len(events)} messages.")
+            return agent_pb2.HistoryResponse(events=events)
+        except Exception as e:
+            import traceback
+            error_msg = f"GetHistory error: {e}\n{traceback.format_exc()}"
+            print(f"❌ {error_msg}")
+            context.abort(grpc.StatusCode.INTERNAL, error_msg)
 
     def CreateSession(self, request, context):
         """Register a new session in the Fluss PK table."""
@@ -450,9 +466,9 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             writer = self.sessions_table.new_append().create_writer()
             writer.write_arrow_batch(batch)
             if hasattr(writer, "flush"):
-                writer.flush()
-            if hasattr(writer, "close"):
-                writer.close()
+                # writer.flush() is an async method in Fluss Python
+                await writer.flush()
+            print(f"✅ [_create_session_async] Session {session_id} flushed to Fluss.")
 
             return agent_pb2.SessionEntry(
                 session_id=session_id,
@@ -462,31 +478,24 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             )
         except Exception as e:
             print(f"❌ [Agent] CreateSession Error: {e}")
-            context.abort(grpc.StatusCode.INTERNAL, str(e))
-
-    def GetHistory(self, request, context):
-        """Fetch full chat history from Fluss."""
-        print(f"📜 [Agent] Fetching history for session: {request.session_id}")
-        future = asyncio.run_coroutine_threadsafe(self._fetch_history_async(request.session_id), self.loop)
-        try:
-            events = future.result(timeout=30)
-            print(f"✅ [Agent] History fetched: {len(events)} messages.")
-            return agent_pb2.HistoryResponse(events=events)
-        except Exception as e:
-            import traceback
-            error_msg = f"GetHistory error: {e}\n{traceback.format_exc()}"
-            print(f"❌ {error_msg}")
-            context.abort(grpc.StatusCode.INTERNAL, error_msg)
+            # Changed to return None to indicate failure, letting the calling gRPC method handle the abort.
+            return None
 
     async def _fetch_history_async(self, session_id):
         # 1. Lookup session start time for optimized seeking
         start_ts = 0
         try:
-            lookuper = self.sessions_table.new_lookup().create_lookuper()
-            session_info = await lookuper.lookup({"session_id": session_id})
-            if session_info:
-                start_ts = session_info.get("created_at", 0)
-                print(f"📍 [Agent] Session {session_id} started at {start_ts}. Seeking...")
+            # Revert to scan-based lookup since sessions is now a Log table
+            sessions = await self._list_sessions_async()
+            for s in sessions:
+                if s.session_id == session_id: # Accessing proto field directly
+                    start_ts = s.created_at
+                    print(f"📍 [Agent] Session start time for {session_id}: {start_ts}")
+                    break # Found the session, no need to continue
+            
+            if start_ts == 0: # If not found or created_at was 0
+                print(f"⚠️ [Agent] Could not find session {session_id} in sessions table or created_at was 0. Falling back to full scan.")
+
         except Exception as e:
             print(f"⚠️ [Agent] Could not lookup session start time: {e}. Falling back to full scan.")
 
@@ -584,7 +593,7 @@ async def init_infrastructure():
             ])
             descriptor = fluss.TableDescriptor(
                 fluss.Schema(schema),
-                hash_keys=["session_id"],
+                bucket_keys=["session_id"],
                 bucket_count=16
             )
             await admin.create_table(table_path, descriptor, ignore_if_exists=True)
@@ -600,7 +609,8 @@ async def init_infrastructure():
             ])
             sessions_descriptor = fluss.TableDescriptor(
                 fluss.Schema(sessions_schema),
-                primary_key=["session_id"]
+                bucket_keys=["session_id"],
+                bucket_count=16
             )
             await admin.create_table(sessions_path, sessions_descriptor, ignore_if_exists=True)
             sessions_table = await conn.get_table(sessions_path)
@@ -621,7 +631,7 @@ async def init_infrastructure():
             ])
             board_descriptor = fluss.TableDescriptor(
                 fluss.Schema(board_schema),
-                hash_keys=["session_id"],
+                bucket_keys=["session_id"],
                 bucket_count=16
             )
             await admin.create_table(board_path, board_descriptor, ignore_if_exists=True)

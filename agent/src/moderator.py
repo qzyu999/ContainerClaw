@@ -387,13 +387,29 @@ class StageModerator:
         start_ts = 0
         if self.sessions_table:
             try:
-                lookuper = self.sessions_table.new_lookup().create_lookuper()
-                session_info = await lookuper.lookup({"session_id": self.session_id})
-                if session_info:
-                    start_ts = session_info.get("created_at", 0)
-                    print(f"📜 [Moderator] Session {self.session_id} started at {start_ts}. Replaying from there...")
+                # Scan sessions table to find start time (it's a Log table now)
+                scanner = await self.sessions_table.new_scan().create_record_batch_log_scanner()
+                for b in range(16):
+                    scanner.subscribe(bucket_id=b, start_offset=0)
+                
+                found = False
+                for _ in range(5): # Max 5 polls
+                    poll = await asyncio.to_thread(scanner.poll_arrow, timeout_ms=500)
+                    if poll.num_rows == 0: continue
+                    
+                    id_arr = poll["session_id"]
+                    created_arr = poll["created_at"]
+                    for i in range(poll.num_rows):
+                        if id_arr[i].as_py() == self.session_id:
+                            start_ts = int(created_arr[i].as_py())
+                            print(f"📜 [Moderator] Session {self.session_id} started at {start_ts}. Replaying from there...")
+                            found = True
+                            break
+                    if found: break
             except Exception as e:
                 print(f"⚠️ [Moderator] Failed to lookup session start time: {e}")
+                import traceback
+                traceback.print_exc()
 
         self.scanner = await self.table.new_scan().create_record_batch_log_scanner()
         
@@ -416,11 +432,11 @@ class StageModerator:
             if poll.num_rows == 0:
                 break  # Caught up to head of log
 
-            # Use raw Arrow columns for better performance
-            sess_arr = poll.column("session_id")
-            actor_arr = poll.column("actor_id")
-            content_arr = poll.column("content")
-            ts_arr = poll.column("ts")
+            # Use dict-style access for pyarrow.RecordBatch
+            sess_arr = poll["session_id"]
+            actor_arr = poll["actor_id"]
+            content_arr = poll["content"]
+            ts_arr = poll["ts"]
 
             for i in range(poll.num_rows):
                 if sess_arr[i].as_py() != self.session_id:
