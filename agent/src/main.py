@@ -123,7 +123,13 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             print("🐚 [ConchShell] Disabled — agents will use text-only mode.")
 
         autonomous_steps = config.AUTONOMOUS_STEPS
-        moderator = StageModerator(self.table, agents, session_id=session_id, tool_dispatcher=tool_dispatcher)
+        moderator = StageModerator(
+            self.table, agents, 
+            session_id=session_id, 
+            tool_dispatcher=tool_dispatcher,
+            sessions_table=self.sessions_table,
+            fluss_conn=self.fluss_conn
+        )
         moderator.board = board
         # Re-check to avoid race condition
         if session_id not in self.moderators:
@@ -155,9 +161,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
     def StreamActivity(self, request, context):
         """Stream real-time events from Fluss to the UI via gRPC.
         
-        W-1: Replaces the old in-memory queue.Queue approach.
-        Creates a dedicated Fluss scanner that tails the log
-        and yields events as they arrive.
+        Optimized: Uses timestamp-based seeking to skip historical records.
         """
         session_id = request.session_id
         start_ts = int(time.time() * 1000) - 2000 # Buffer for clock skew/overlap
@@ -171,9 +175,9 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 content=f"Connected to session: {session_id}"
             )
 
-            # 2. Create and drain scanner (catch up to head)
+            # 2. Create optimized scanner (seek to start_ts)
             future = asyncio.run_coroutine_threadsafe(
-                self._create_sse_scanner(), self.loop
+                self._create_sse_scanner(start_ts), self.loop
             )
             scanner = future.result(timeout=10)
 
@@ -190,20 +194,19 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                     if poll.num_rows == 0:
                         continue
 
+                    # Use raw Arrow columns
                     ts_arr = poll.column("ts")
                     actor_arr = poll.column("actor_id")
                     content_arr = poll.column("content")
                     type_arr = poll.column("type")
+                    sess_arr = poll.column("session_id")
 
                     for i in range(poll.num_rows):
                         # Filter by session_id
-                        if poll.column("session_id")[i].as_py() != session_id:
+                        if sess_arr[i].as_py() != session_id:
                             continue
 
                         ts_ms = ts_arr[i].as_py()
-                        if ts_ms < start_ts:
-                            continue
-
                         actor_id = actor_arr[i].as_py()
                         content = content_arr[i].as_py()
                         e_type = type_arr[i].as_py()
@@ -232,11 +235,25 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         finally:
             print(f"🔌 Cleanly disconnected from session: {session_id}")
 
-    async def _create_sse_scanner(self):
-        """Create a Fluss scanner to tail the log."""
+    async def _create_sse_scanner(self, start_ts=None):
+        """Create a Fluss scanner to tail the log, optionally seeking to a timestamp."""
         scanner = await self.table.new_scan().create_record_batch_log_scanner()
-        for b in range(16):
-            scanner.subscribe(bucket_id=b, start_offset=0)
+        
+        if start_ts:
+            # Optimized: Seek to timestamp using admin.list_offsets
+            admin = await self.fluss_conn.get_admin()
+            table_path = self.table.get_table_path()
+            # Query offsets for all 16 buckets at or after start_ts
+            offsets = await admin.list_offsets(
+                table_path, 
+                list(range(16)), 
+                fluss.OffsetSpec.timestamp(start_ts)
+            )
+            scanner.subscribe_buckets(offsets)
+        else:
+            # Fallback to tailing from the very beginning (rarely used for SSE)
+            for b in range(16):
+                scanner.subscribe(bucket_id=b, start_offset=0)
         return scanner
 
     # ── Workspace Explorer gRPC Handlers ──
@@ -365,8 +382,8 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         for b in range(16):
             scanner.subscribe(bucket_id=b, start_offset=0)
         
-        sessions = []
-        # PK tables might have multiple snapshots; for MVP we just scan the log.
+        # Use a dict to deduplicate by session_id, keeping the latest version
+        sessions_dict = {}
         empty_polls = 0
         while empty_polls < 5: # Tolerate a few empty polls before giving up
             poll = await asyncio.to_thread(scanner.poll_arrow, timeout_ms=500)
@@ -382,13 +399,16 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             active_arr = poll.column("last_active_at")
 
             for i in range(poll.num_rows):
-                sessions.append(agent_pb2.SessionEntry(
-                    session_id=id_arr[i].as_py(),
+                sid = id_arr[i].as_py()
+                sessions_dict[sid] = agent_pb2.SessionEntry(
+                    session_id=sid,
                     title=title_arr[i].as_py(),
                     created_at=int(created_arr[i].as_py()),
                     last_active_at=int(active_arr[i].as_py())
-                ))
-        return sessions
+                )
+        
+        # Return sorted by last active
+        return sorted(sessions_dict.values(), key=lambda s: s.last_active_at, reverse=True)
 
     def CreateSession(self, request, context):
         """Register a new session in the Fluss PK table."""
@@ -459,10 +479,30 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             context.abort(grpc.StatusCode.INTERNAL, error_msg)
 
     async def _fetch_history_async(self, session_id):
-        # We use a scanner that starts at 0 and reads until the end
+        # 1. Lookup session start time for optimized seeking
+        start_ts = 0
+        try:
+            lookuper = self.sessions_table.new_lookup().create_lookuper()
+            session_info = await lookuper.lookup({"session_id": session_id})
+            if session_info:
+                start_ts = session_info.get("created_at", 0)
+                print(f"📍 [Agent] Session {session_id} started at {start_ts}. Seeking...")
+        except Exception as e:
+            print(f"⚠️ [Agent] Could not lookup session start time: {e}. Falling back to full scan.")
+
+        # 2. Create scanner and seek if possible
         scanner = await self.table.new_scan().create_record_batch_log_scanner()
-        for b in range(16):
-            scanner.subscribe(bucket_id=b, start_offset=0)
+        if start_ts > 0:
+            admin = await self.fluss_conn.get_admin()
+            offsets = await admin.list_offsets(
+                self.table.get_table_path(),
+                list(range(16)),
+                fluss.OffsetSpec.timestamp(start_ts)
+            )
+            scanner.subscribe_buckets(offsets)
+        else:
+            for b in range(16):
+                scanner.subscribe(bucket_id=b, start_offset=0)
         
         events = []
         empty_polls = 0
@@ -494,7 +534,6 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 ts_iso = ms_to_iso(ts_ms)
                 
                 # Determine type — match moderator.py behavior
-                # Now we read it directly from Fluss!
                 try:
                     e_type = poll.column("type")[i].as_py()
                     if isinstance(e_type, bytes): e_type = e_type.decode('utf-8')
@@ -513,8 +552,6 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 })
         
         # Explicitly sort the entire history by millisecond timestamp
-        # This fixes issues where log recovery or multi-bucket scanning
-        # returns events out of order.
         events.sort(key=lambda x: x["ts"])
         return [e["proto"] for e in events]
 

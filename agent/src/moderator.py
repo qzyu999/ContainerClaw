@@ -326,11 +326,15 @@ class GeminiAgent:
 class StageModerator:
     def __init__(self, table, agents: List[GeminiAgent],
                  session_id: str,
-                 tool_dispatcher: ToolDispatcher | None = None):
+                 tool_dispatcher: ToolDispatcher | None = None,
+                 sessions_table=None,
+                 fluss_conn=None):
         self.table = table
         self.agents = agents
         self.session_id = session_id
         self.tool_dispatcher = tool_dispatcher
+        self.sessions_table = sessions_table
+        self.fluss_conn = fluss_conn
         self.agent_names = [a.agent_id for a in agents]
         self.roster_str = ", ".join([f"{a.agent_id} ({a.persona})" for a in agents])
         self.all_messages = []  # Read-cache rebuilt from Fluss on startup
@@ -376,16 +380,35 @@ class StageModerator:
         return final_msgs
 
     async def _replay_history(self):
-        """Replay the Fluss log from offset 0 to rebuild all_messages.
-
-        Provides crash recovery: if the agent container restarts,
-        the moderator reconstructs full conversation history from
-        the durable Fluss log before entering the main loop.
+        """Replay the Fluss log from session creation time to rebuild all_messages.
+        
+        Optimized: Looks up session start time and seeks the scanner.
         """
-        print(f"📜 [Moderator] Replaying Fluss history for session: {self.session_id}...")
+        start_ts = 0
+        if self.sessions_table:
+            try:
+                lookuper = self.sessions_table.new_lookup().create_lookuper()
+                session_info = await lookuper.lookup({"session_id": self.session_id})
+                if session_info:
+                    start_ts = session_info.get("created_at", 0)
+                    print(f"📜 [Moderator] Session {self.session_id} started at {start_ts}. Replaying from there...")
+            except Exception as e:
+                print(f"⚠️ [Moderator] Failed to lookup session start time: {e}")
+
         self.scanner = await self.table.new_scan().create_record_batch_log_scanner()
-        for b in range(16):
-            self.scanner.subscribe(bucket_id=b, start_offset=0)
+        
+        if start_ts > 0 and self.fluss_conn:
+            admin = await self.fluss_conn.get_admin()
+            offsets = await admin.list_offsets(
+                self.table.get_table_path(),
+                list(range(16)),
+                fluss.OffsetSpec.timestamp(start_ts)
+            )
+            self.scanner.subscribe_buckets(offsets)
+        else:
+            print(f"📜 [Moderator] Replaying FULL Fluss history for session: {self.session_id}...")
+            for b in range(16):
+                self.scanner.subscribe(bucket_id=b, start_offset=0)
 
         total_replayed = 0
         while True:
@@ -393,19 +416,27 @@ class StageModerator:
             if poll.num_rows == 0:
                 break  # Caught up to head of log
 
-            df = poll.to_pandas()
-            for _, row in df.iterrows():
-                # Filter by session_id
-                if row.get("session_id") != self.session_id:
+            # Use raw Arrow columns for better performance
+            sess_arr = poll.column("session_id")
+            actor_arr = poll.column("actor_id")
+            content_arr = poll.column("content")
+            ts_arr = poll.column("ts")
+
+            for i in range(poll.num_rows):
+                if sess_arr[i].as_py() != self.session_id:
                     continue
 
-                key = f"{row['ts']}-{row['actor_id']}"
+                ts = ts_arr[i].as_py()
+                actor_id = actor_arr[i].as_py()
+                content = content_arr[i].as_py()
+
+                key = f"{ts}-{actor_id}"
                 if key not in self.history_keys:
                     self.history_keys.add(key)
                     self.all_messages.append({
-                        "actor_id": row["actor_id"],
-                        "content": row["content"],
-                        "ts": row["ts"]
+                        "actor_id": actor_id,
+                        "content": content,
+                        "ts": ts
                     })
                     total_replayed += 1
 
