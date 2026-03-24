@@ -405,9 +405,11 @@ class StageModerator:
                     self.all_messages.append({
                         "actor_id": row["actor_id"],
                         "content": row["content"],
+                        "ts": row["ts"]
                     })
                     total_replayed += 1
 
+        self.all_messages.sort(key=lambda x: x["ts"])
         self.last_replayed_offset = total_replayed
         print(f"✅ [Moderator] Replayed {total_replayed} messages from Fluss.")
 
@@ -432,7 +434,10 @@ class StageModerator:
                     self.all_messages.append({
                         "actor_id": row["actor_id"],
                         "content": row["content"],
+                        "ts": row["ts"]
                     })
+            # Ensure context maintains strict chronological order
+            self.all_messages.sort(key=lambda x: x["ts"])
 
     async def run(self, autonomous_steps=0):
         """
@@ -476,7 +481,7 @@ class StageModerator:
                     key = f"{row['ts']}-{row['actor_id']}"
                     if key not in self.history_keys:
                         self.history_keys.add(key)
-                        msg_obj = {"actor_id": row['actor_id'], "content": row['content']}
+                        msg_obj = {"actor_id": row['actor_id'], "content": row['content'], "ts": row['ts']}
                         self.all_messages.append(msg_obj)
 
                         if row['actor_id'] == "Human":
@@ -499,6 +504,9 @@ class StageModerator:
                             # re-polled — dedup keys for trimmed messages are unnecessary.
                             self.history_keys.clear()
                             print(f"🧹 [Moderator] Trimmed in-memory history to {len(self.all_messages)} messages.")
+
+                # Ensure context maintains strict chronological order after polling new batches
+                self.all_messages.sort(key=lambda x: x["ts"])
 
             # Trigger if human spoke OR we still have autonomous steps to take
             if human_interrupted or (current_steps != 0):

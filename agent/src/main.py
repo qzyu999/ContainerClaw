@@ -24,7 +24,7 @@ import pyarrow as pa
 import agent_pb2
 import agent_pb2_grpc
 
-# Language detection map for ReadFile
+from datetime import datetime, timezone
 LANG_MAP = {
     ".py": "python", ".js": "javascript", ".ts": "typescript",
     ".java": "java", ".go": "go", ".rs": "rust", ".rb": "ruby",
@@ -33,6 +33,12 @@ LANG_MAP = {
     ".txt": "plaintext", ".toml": "toml", ".xml": "xml",
     ".c": "c", ".cpp": "cpp", ".h": "c", ".hpp": "cpp",
 }
+
+def ms_to_iso(ts_ms: int) -> str:
+    """Convert millisecond timestamp to high-precision RFC 3339 string."""
+    dt = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
+    # Format with 3 decimal places for milliseconds
+    return dt.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
 
 class AgentService(agent_pb2_grpc.AgentServiceServicer):
     def __init__(self, fluss_conn, chat_table, board_table=None, sessions_table=None):
@@ -160,7 +166,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         try:
             # 1. Send Handshake IMMEDIATELY to confirm connection
             yield agent_pb2.ActivityEvent(
-                timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                timestamp=ms_to_iso(int(time.time() * 1000)),
                 type="thought",
                 content=f"Connected to session: {session_id}"
             )
@@ -212,7 +218,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                         if isinstance(content, bytes): content = content.decode('utf-8')
                         if isinstance(e_type, bytes): e_type = e_type.decode('utf-8')
 
-                        ts_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts_ms / 1000))
+                        ts_iso = ms_to_iso(ts_ms)
 
                         yield agent_pb2.ActivityEvent(
                             timestamp=ts_iso,
@@ -485,7 +491,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 if isinstance(actor_id, bytes): actor_id = actor_id.decode('utf-8')
                 if isinstance(content, bytes): content = content.decode('utf-8')
 
-                ts_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts_ms / 1000))
+                ts_iso = ms_to_iso(ts_ms)
                 
                 # Determine type — match moderator.py behavior
                 # Now we read it directly from Fluss!
@@ -496,13 +502,21 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                     # Fallback for old records without 'type'
                     e_type = "thought" if actor_id == "Moderator" else "output"
                 
-                events.append(agent_pb2.ActivityEvent(
-                    timestamp=ts_iso,
-                    type=e_type,
-                    content=content,
-                    actor_id=actor_id
-                ))
-        return events
+                events.append({
+                    "ts": ts_ms,
+                    "proto": agent_pb2.ActivityEvent(
+                        timestamp=ts_iso,
+                        type=e_type,
+                        content=content,
+                        actor_id=actor_id
+                    )
+                })
+        
+        # Explicitly sort the entire history by millisecond timestamp
+        # This fixes issues where log recovery or multi-bucket scanning
+        # returns events out of order.
+        events.sort(key=lambda x: x["ts"])
+        return [e["proto"] for e in events]
 
 async def init_infrastructure():
     print("🛰️ Initializing Fluss Infrastructure...")
