@@ -153,6 +153,25 @@ services:
       claw-agent:
         condition: service_started
 
+  ripcurrent-discord:
+    container_name: ripcurrent-discord
+    build:
+      context: .
+      dockerfile: ripcurrent/Dockerfile
+    networks:
+      - internal
+      - egress
+    secrets:
+      - discord_bot_token
+      - discord_webhook_url
+      - discord_channel_id
+    environment:
+      - FLUSS_BOOTSTRAP_SERVERS=coordinator-server:9123
+      - CLAW_SESSION_ID=user-session
+    depends_on:
+      coordinator-server:
+        condition: service_started
+
 networks:
   frontend:
     driver: bridge
@@ -168,3 +187,9 @@ secrets:
     file: ./secrets/anthropic_api_key.txt
   openai_api_key:
     file: ./secrets/openai_api_key.txt
+  discord_bot_token:
+    file: ./secrets/discord_bot_token.txt
+  discord_webhook_url:
+    file: ./secrets/discord_webhook_url.txt
+  discord_channel_id:
+    file: ./secrets/discord_channel_id.txt

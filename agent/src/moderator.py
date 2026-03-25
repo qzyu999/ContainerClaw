@@ -465,8 +465,13 @@ class StageModerator:
         self.all_messages.append(msg_obj)
 
         human_was_message = False
-        if actor_id == "Human":
-            print(f"📢 [Human said]: {content}")
+        is_human_source = (actor_id == "Human" or str(actor_id).startswith("Discord/"))
+        
+        if is_human_source:
+            if actor_id == "Human":
+                print(f"📢 [Human said]: {content}")
+            else:
+                print(f"📢 [Discord said ({actor_id})]: {content}")
             
             # Phase 14: Command Interception Layer
             if content.startswith("/"):
@@ -852,9 +857,10 @@ class StageModerator:
     async def publish(self, actor_id, content, m_type="output",
                       tool_name="", tool_success=False, parent_actor=""):
         try:
+            ts = int(time.time() * 1000)
             batch = pa.RecordBatch.from_arrays([
                 pa.array([self.session_id], type=pa.string()),
-                pa.array([int(time.time() * 1000)], type=pa.int64()),
+                pa.array([ts], type=pa.int64()),
                 pa.array([actor_id], type=pa.string()),
                 pa.array([content], type=pa.string()),
                 pa.array([m_type], type=pa.string()),
@@ -863,11 +869,15 @@ class StageModerator:
                 pa.array([parent_actor], type=pa.string()),
             ], schema=self.pa_schema)
             self.writer.write_arrow_batch(batch)
-            # Ensure each published message is immediately committed to the Fluss log.
-            # This ensures that history is available for instant retrieval on refresh.
+            
+            # Immediately add to memory to support memory-based GetHistory retrieval
+            # This ensures that a UI refresh during an agent turn shows the current work.
+            # Use our existing deduplication key logic to avoid pollution from later polls.
+            await self._handle_single_message(actor_id, content, ts)
+
             if hasattr(self.writer, "flush"):
                 await self.writer.flush()
-            print(f"📝 [Moderator] Published to Fluss: {actor_id} ({m_type})")
+            print(f"📝 [Moderator] Published to Fluss & Memory: {actor_id} ({m_type})")
         except Exception as e:
             print(f"❌ [Moderator] Failed to publish to Fluss: {e}")
             import traceback

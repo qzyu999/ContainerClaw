@@ -48,6 +48,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         self.board_table = board_table
         self.sessions_table = sessions_table
         self.moderators = {}  # session_id -> StageModerator
+        self.moderator_lock = threading.Lock()
         
         # Start a dedicated event loop for all moderators
         self.loop = asyncio.new_event_loop()
@@ -66,79 +67,78 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         return future.result(timeout=30)
 
     async def _init_moderator_async(self, session_id):
-        if session_id in self.moderators:
-            return self.moderators[session_id]
+        with self.moderator_lock:
+            if session_id in self.moderators:
+                return self.moderators[session_id]
             
-        print(f"🧠 [Agent] Initializing new session context: {session_id}")
-        # Load API Key
-        try:
-            api_key = open("/run/secrets/gemini_api_key", "r").read().strip()
-        except:
-            api_key = os.getenv("GEMINI_API_KEY")
+            print(f"🧠 [Agent] Initializing new session context: {session_id}")
+            # Load API Key
+            try:
+                api_key = open("/run/secrets/gemini_api_key", "r").read().strip()
+            except:
+                api_key = os.getenv("GEMINI_API_KEY")
 
-        agents = [
-            GeminiAgent("Alice", "Software architect.", api_key),
-            GeminiAgent("Bob", "Project manager.", api_key),
-            GeminiAgent("Carol", "Software engineer.", api_key),
-            GeminiAgent("David", "Software QA tester.", api_key),
-            GeminiAgent("Eve", "Business user.", api_key)
-        ]
-
-        # ── ConchShell: Per-agent tool authorization ──
-        conchshell_enabled = config.CONCHSHELL_ENABLED
-        tool_dispatcher = None
-
-        board = ProjectBoard(session_id=session_id, board_table=self.board_table)
-        await board.initialize()
-
-        if conchshell_enabled:
-            session_shell = SessionShellTool()
-            test_runner = TestRunnerTool(session_shell=session_shell)
-            diff = DiffTool(session_shell=session_shell)
-            board_rw = BoardTool(board, write_access=True)
-
-            # SWE-bench Advanced Tools
-            surgical_edit = SurgicalEditTool()
-            advanced_read = AdvancedReadTool()
-            repo_map = RepoMapTool()
-            structured_search = StructuredSearchTool()
-            linter = LinterTool()
-            create_file = CreateFileTool()
-
-            common_tools = [
-                board_rw, test_runner, diff,
-                surgical_edit, advanced_read, repo_map, structured_search,
-                linter, session_shell, create_file
+            agents = [
+                GeminiAgent("Alice", "Software architect.", api_key),
+                GeminiAgent("Bob", "Project manager.", api_key),
+                GeminiAgent("Carol", "Software engineer.", api_key),
+                GeminiAgent("David", "Software QA tester.", api_key),
+                GeminiAgent("Eve", "Business user.", api_key)
             ]
 
-            toolsets = {
-                "Alice": common_tools,
-                "Bob":   common_tools,
-                "Carol": common_tools,
-                "David": common_tools,
-                "Eve":   common_tools,
-            }
-            tool_dispatcher = ToolDispatcher(toolsets)
-            print(f"🐚 [ConchShell] Tool dispatcher initialized for session {session_id}.")
-        else:
-            print("🐚 [ConchShell] Disabled — agents will use text-only mode.")
+            # ── ConchShell: Per-agent tool authorization ──
+            conchshell_enabled = config.CONCHSHELL_ENABLED
+            tool_dispatcher = None
 
-        autonomous_steps = config.AUTONOMOUS_STEPS
-        moderator = StageModerator(
-            self.table, agents, 
-            session_id=session_id, 
-            tool_dispatcher=tool_dispatcher,
-            sessions_table=self.sessions_table,
-            fluss_conn=self.fluss_conn
-        )
-        moderator.board = board
-        # Re-check to avoid race condition
-        if session_id not in self.moderators:
+            board = ProjectBoard(session_id=session_id, board_table=self.board_table)
+            await board.initialize()
+
+            if conchshell_enabled:
+                session_shell = SessionShellTool()
+                test_runner = TestRunnerTool(session_shell=session_shell)
+                diff = DiffTool(session_shell=session_shell)
+                board_rw = BoardTool(board, write_access=True)
+
+                # SWE-bench Advanced Tools
+                surgical_edit = SurgicalEditTool()
+                advanced_read = AdvancedReadTool()
+                repo_map = RepoMapTool()
+                structured_search = StructuredSearchTool()
+                linter = LinterTool()
+                create_file = CreateFileTool()
+
+                common_tools = [
+                    board_rw, test_runner, diff,
+                    surgical_edit, advanced_read, repo_map, structured_search,
+                    linter, session_shell, create_file
+                ]
+
+                toolsets = {
+                    "Alice": common_tools,
+                    "Bob":   common_tools,
+                    "Carol": common_tools,
+                    "David": common_tools,
+                    "Eve":   common_tools,
+                }
+                tool_dispatcher = ToolDispatcher(toolsets)
+                print(f"🐚 [ConchShell] Tool dispatcher initialized for session {session_id}.")
+            else:
+                print("🐚 [ConchShell] Disabled — agents will use text-only mode.")
+
+            autonomous_steps = config.AUTONOMOUS_STEPS
+            moderator = StageModerator(
+                self.table, agents, 
+                session_id=session_id, 
+                tool_dispatcher=tool_dispatcher,
+                sessions_table=self.sessions_table,
+                fluss_conn=self.fluss_conn
+            )
+            moderator.board = board
             self.moderators[session_id] = moderator
             # Start the moderator loop in the shared event loop
             asyncio.create_task(moderator.run(autonomous_steps=int(os.getenv("AUTONOMOUS_STEPS", "-1"))))
             
-        return self.moderators[session_id]
+            return self.moderators[session_id]
 
     def ExecuteTask(self, request, context):
         print(f"📥 Received task from UI: {request.prompt} (Session: {request.session_id})")
@@ -414,12 +414,28 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         return sorted(sessions_dict.values(), key=lambda s: s.last_active_at, reverse=True)
 
     def GetHistory(self, request, context):
-        """Fetch full chat history from Fluss."""
-        print(f"📜 [Agent] Fetching history for session: {request.session_id}")
-        future = asyncio.run_coroutine_threadsafe(self._fetch_history_async(request.session_id), self.loop)
+        """Fetch full chat history from Fluss, using in-memory cache if available."""
+        session_id = request.session_id
+        if session_id in self.moderators:
+            moderator = self.moderators[session_id]
+            print(f"📜 [Agent] Serving history from memory for: {session_id} ({len(moderator.all_messages)} msgs)")
+            events = []
+            for msg in moderator.all_messages:
+                ts_iso = ms_to_iso(msg["ts"])
+                events.append(agent_pb2.ActivityEvent(
+                    timestamp=ts_iso,
+                    type=msg.get("type", "output"),
+                    content=msg.get("content", ""),
+                    actor_id=msg.get("actor_id", "")
+                ))
+            return agent_pb2.HistoryResponse(events=events)
+
+        print(f"📜 [Agent] Fetching history from Fluss for session: {session_id}")
+        future = asyncio.run_coroutine_threadsafe(self._fetch_history_async(session_id), self.loop)
         try:
-            events = future.result(timeout=30)
-            print(f"✅ [Agent] History fetched: {len(events)} messages.")
+            # Increase timeout to 60s for cold-start history retrieval
+            events = future.result(timeout=60)
+            print(f"✅ [Agent] History fetched from Fluss: {len(events)} messages.")
             return agent_pb2.HistoryResponse(events=events)
         except Exception as e:
             import traceback
@@ -487,15 +503,16 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         start_ts = 0
         try:
             # Revert to scan-based lookup since sessions is now a Log table
+            print(f"📊 [_fetch_history_async] Scanning sessions table to find start_ts for {session_id}")
             sessions = await self._list_sessions_async()
             for s in sessions:
                 if s.session_id == session_id: # Accessing proto field directly
                     start_ts = s.created_at
-                    print(f"📍 [Agent] Session start time for {session_id}: {start_ts}")
-                    break # Found the session, no need to continue
+                    print(f"📍 [Agent] Found session {session_id}. start_ts: {start_ts}")
+                    break
             
-            if start_ts == 0: # If not found or created_at was 0
-                print(f"⚠️ [Agent] Could not find session {session_id} in sessions table or created_at was 0. Falling back to full scan.")
+            if start_ts == 0:
+                print(f"⚠️ [Agent] Session {session_id} not found in sessions list. Performing FULL scan of chatroom.")
 
         except Exception as e:
             print(f"⚠️ [Agent] Could not lookup session start time: {e}. Falling back to full scan.")
