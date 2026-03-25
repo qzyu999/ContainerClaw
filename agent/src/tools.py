@@ -248,6 +248,9 @@ class ProjectBoard:
                             if item["id"] == item_id:
                                 item["status"] = new_status
                                 break
+                    elif action == "delete":
+                        item_id = poll.column("item_id")[i].as_py()
+                        self.items = [item for item in self.items if item["id"] != item_id]
             print(f"📋 [ProjectBoard] Replayed {len(self.items)} board items from Fluss.")
         except Exception as e:
             print(f"⚠️ [ProjectBoard] Fluss replay failed, falling back to JSON: {e}")
@@ -327,6 +330,17 @@ class ProjectBoard:
                 return item
         return None
 
+    def delete_item(self, item_id: str, actor: str = "Moderator") -> bool:
+        initial_count = len(self.items)
+        self.items = [item for item in self.items if item["id"] != item_id]
+        if len(self.items) < initial_count:
+            if self.board_table:
+                self._publish_event("delete", item_id, actor=actor)
+            else:
+                self._save()
+            return True
+        return False
+
     def get_board_summary(self) -> str:
         if not self.items:
             return "Board is empty. No items have been created yet."
@@ -345,7 +359,7 @@ class BoardTool(Tool):
     description = (
         "Interact with the shared project board. "
         "Actions: 'create' (type, title, description, assigned_to), "
-        "'update' (item_id, status), 'list' (no params)."
+        "'update' (item_id, status), 'delete' (item_id), 'list' (no params)."
     )
 
     def __init__(self, board: ProjectBoard, write_access: bool = True):
@@ -358,8 +372,8 @@ class BoardTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "Board action: 'create', 'update', or 'list'.",
-                    "enum": ["create", "update", "list"],
+                    "description": "Board action: 'create', 'update', 'delete', or 'list'.",
+                    "enum": ["create", "update", "delete", "list"],
                 },
                 "type": {
                     "type": "string",
@@ -429,6 +443,29 @@ class BoardTool(Tool):
                 success=False, output="",
                 error=f"Item {item_id} not found.",
             )
+
+        if action == "delete":
+            item_id = params.get("item_id", "")
+            if not item_id:
+                return ToolResult(
+                    success=False, output="",
+                    error="'delete' requires 'item_id'.",
+                )
+            
+            # Verify status is 'done' before deletion
+            target_item = next((item for item in self.board.items if item["id"] == item_id), None)
+            if not target_item:
+                return ToolResult(success=False, output="", error=f"Item {item_id} not found.")
+            
+            if target_item["status"] != "done":
+                return ToolResult(
+                    success=False, output="",
+                    error=f"Item {item_id} has status '{target_item['status']}'. Only 'done' items can be deleted."
+                )
+            
+            if self.board.delete_item(item_id):
+                return ToolResult(success=True, output=f"Deleted {item_id} from board.")
+            return ToolResult(success=False, output="", error=f"Failed to delete {item_id}.")
 
         return ToolResult(success=False, output="", error=f"Unknown action: {action}")
 
