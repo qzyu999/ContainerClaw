@@ -21,6 +21,13 @@ This document shows the full list of features that should remain stable as the c
 - [Planned] Indicator for each agent (and subagents) for status (e.g., waiting, thinking, using tools, etc.)
 - [Planned] Live Flink metrics on Fluss streams
 - [Planned] Tier into Iceberg tables (after compaction etc. is fixed)
+- [Planned] Move config files to the root folder
+- [Planned] Final review agent that analyzes the votes/reasons and selects based on the collective output (based on GenSelect)
+- [Planned] Integration: Google Workspace
+- [Planned] Integration: GitHub
+- [Planned] Integration: agent webbrowsing - allow them to do deep research etc. within the sandbox
+- [Planned] Read-only access to other system files (may need to just do docker cp or mount large folders at startup with read-only)
+- [Planned] Kaggle/autoresearch module: allow the agents to loop and improve on their own solutions through an API 
 
 Milestones
-- Add all the basic functionality - then refactor for cleanliness/modularity/efficient idempotent modular system around the stream -> document the stream-centric approach which should also be agent-centric (Noted with *)
+- Add all the basic functionality - then refactor for cleanliness/modularity/efficient idempotent modular system around the stream -> document the stream-centric approach which should also be agent-centric. In particular, a concept for spawning subagents to organically allow for parallelization (swarm > static patterns) (Noted with *)
