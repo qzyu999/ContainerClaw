@@ -76,11 +76,23 @@ class FlussClient:
 
         raise Exception(f"❌ Failed to initialize Fluss after {max_attempts} attempts.")
 
-    async def _ensure_table(self, table_name: str, schema: pa.Schema):
-        """Create a table if it doesn't exist, then return a table handle."""
+    async def _ensure_table(self, table_name: str, schema: pa.Schema,
+                             primary_keys: list[str] | None = None):
+        """Create a table if it doesn't exist, then return a table handle.
+
+        Args:
+            table_name: Fluss table name.
+            schema: PyArrow schema for the table.
+            primary_keys: Optional list of column names for PK table semantics.
+                          If None, creates a log (append-only) table.
+        """
         table_path = fluss.TablePath(DATABASE, table_name)
+        if primary_keys:
+            fluss_schema = fluss.Schema(schema, primary_keys=primary_keys)
+        else:
+            fluss_schema = fluss.Schema(schema)
         descriptor = fluss.TableDescriptor(
-            fluss.Schema(schema),
+            fluss_schema,
             bucket_keys=BUCKET_KEY,
             bucket_count=DEFAULT_BUCKET_COUNT,
         )
@@ -141,7 +153,7 @@ class FlussClient:
     # ── Session CRUD ────────────────────────────────────────────────
 
     async def create_session(self, session_id: str, title: str) -> dict:
-        """Create a new session record in the sessions table.
+        """Create a new session record in the sessions log table.
 
         Returns:
             dict with session_id, title, created_at, last_active_at.

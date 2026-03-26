@@ -8,6 +8,7 @@ from discord.ext import commands
 import fluss
 import pyarrow as pa
 from datetime import datetime, timezone
+from fluss_helpers import CHATROOM_SCHEMA, poll_batches
 
 # Load keys from Docker Secrets
 def get_secret(name):
@@ -31,44 +32,61 @@ intents.message_content = True
 class DiscordConnector:
     def __init__(self):
         self.fluss_conn = None
+        self.admin = None
         self.chat_table = None
         self.sessions_table = None
         self.session_id = SESSION_ID # Initial default
         self.session = None # aiohttp session for webhooks
 
     async def init_fluss(self):
+        """Connect to Fluss with retry. Tables may not exist yet if the agent
+        hasn't started — retry get_table separately from connection."""
         print("🛰️ Connecting to Fluss...")
         fluss_config = fluss.Config({"bootstrap.servers": FLUSS_BOOTSTRAP_SERVERS})
+
+        # Phase 1: Establish connection
         for attempt in range(30):
             try:
                 self.fluss_conn = await fluss.FlussConnection.create(fluss_config)
-                
-                # Chat table
-                table_path = fluss.TablePath("containerclaw", "chatroom")
-                self.chat_table = await self.fluss_conn.get_table(table_path)
-                
-                # Sessions table for discovery
-                sessions_path = fluss.TablePath("containerclaw", "sessions")
-                self.sessions_table = await self.fluss_conn.get_table(sessions_path)
-                
+                self.admin = await self.fluss_conn.get_admin()
                 print("✅ Connected to Fluss.")
-                return
+                break
             except Exception as e:
                 print(f"⏳ Fluss connection failed (attempt {attempt+1}/30): {e}")
                 await asyncio.sleep(3)
-        raise Exception("❌ Failed to connect to Fluss")
+        else:
+            raise Exception("❌ Failed to connect to Fluss")
+
+        # Phase 2: Wait for tables (agent creates them)
+        chat_path = fluss.TablePath("containerclaw", "chatroom")
+        sessions_path = fluss.TablePath("containerclaw", "sessions")
+        for attempt in range(30):
+            try:
+                self.chat_table = await self.fluss_conn.get_table(chat_path)
+                self.sessions_table = await self.fluss_conn.get_table(sessions_path)
+                print("✅ Fluss tables ready.")
+                return
+            except Exception as e:
+                print(f"⏳ Waiting for tables (attempt {attempt+1}/30): {e}")
+                await asyncio.sleep(3)
+        raise Exception("❌ Tables not created after 90s — is claw-agent running?")
+
+    async def _get_num_buckets(self, table):
+        """Dynamic bucket discovery via admin API."""
+        table_info = await self.admin.get_table_info(table.get_table_path())
+        return table_info.num_buckets
 
     async def session_discovery_worker(self):
         """Periodically polls the sessions table to find the latest active session ID."""
         print("🔍 Starting Session Discovery Worker...")
+        num_buckets = await self._get_num_buckets(self.sessions_table)
         scanner = await self.sessions_table.new_scan().create_record_batch_log_scanner()
-        scanner.subscribe_buckets({b: 0 for b in range(16)})
+        scanner.subscribe_buckets({b: 0 for b in range(num_buckets)})
             
         while True:
             try:
-                batches = await scanner._async_poll_batches(500)
+                batches = await poll_batches(scanner, timeout_ms=500)
                 if batches:
-                    batches = [b.batch for b in batches]
                     for poll in batches:
                         if poll.num_rows == 0: continue
                         id_arr = poll["session_id"]
@@ -98,13 +116,13 @@ class DiscordConnector:
         scanner = await self.chat_table.new_scan().create_record_batch_log_scanner()
         
         # Tail from the current end of the log
-        admin = await self.fluss_conn.get_admin()
+        num_buckets = await self._get_num_buckets(self.chat_table)
         offsets = None
         for attempt in range(10):
             try:
-                offsets = await admin.list_offsets(
+                offsets = await self.admin.list_offsets(
                     self.chat_table.get_table_path(),
-                    list(range(16)),
+                    list(range(num_buckets)),
                     fluss.OffsetSpec.latest()
                 )
                 break
@@ -120,11 +138,10 @@ class DiscordConnector:
         async with aiohttp.ClientSession() as session:
             self.session = session
             while True:
-                batches = await scanner._async_poll_batches(500)
+                batches = await poll_batches(scanner, timeout_ms=500)
                 if not batches:
                     await asyncio.sleep(0.1)
                     continue
-                batches = [b.batch for b in batches]
 
                 for poll in batches:
                     for i in range(poll.num_rows):
@@ -195,21 +212,11 @@ class DiscordConnector:
             pa.array([ts], pa.int64()),
             pa.array([discord_actor], pa.string()),
             pa.array([content], pa.string()),
-            pa.array(["user"], pa.string()), # Use 'user' type for UI visibility
+            pa.array(["user"], pa.string()),
             pa.array([""], pa.string()),
             pa.array([False], pa.bool_()),
             pa.array([""], pa.string()),
-        ], schema=pa.schema([
-            pa.field("event_id", pa.string()),
-            pa.field("session_id", pa.string()),
-            pa.field("ts", pa.int64()),
-            pa.field("actor_id", pa.string()),
-            pa.field("content", pa.string()),
-            pa.field("type", pa.string()),
-            pa.field("tool_name", pa.string()),
-            pa.field("tool_success", pa.bool_()),
-            pa.field("parent_actor", pa.string()),
-        ]))
+        ], schema=CHATROOM_SCHEMA)
         
         writer = self.chat_table.new_append().create_writer()
         writer.write_arrow_batch(batch)

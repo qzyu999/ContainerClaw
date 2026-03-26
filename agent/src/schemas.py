@@ -24,7 +24,8 @@ CHATROOM_SCHEMA = pa.schema([
 ])
 
 # ── Sessions Table ──────────────────────────────────────────────────
-# Session metadata (log table, will migrate to PK table in Phase 3).
+# Session metadata (log table). PK table migration deferred until 
+# Fluss SDK supports CDC-based scanning for PK tables.
 # Bucket key: session_id
 SESSIONS_SCHEMA = pa.schema([
     pa.field("session_id", pa.string()),

@@ -205,6 +205,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                         content_arr = poll["content"]
                         ts_arr = poll["ts"]
                         type_arr = poll["type"]
+                        event_id_arr = poll["event_id"]
 
                         for i in range(poll.num_rows):
                             # Filter by session_id
@@ -216,8 +217,9 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                             content = content_arr[i].as_py()
                             e_type = type_arr[i].as_py()
 
-                            # Per-connection deduplication
-                            key = f"{ts_ms}-{actor_id}-{content[:50]}"
+                            # Per-connection deduplication via event_id UUID
+                            eid = event_id_arr[i].as_py()
+                            key = eid if eid else f"{ts_ms}-{actor_id}"
                             if key in seen_keys:
                                 continue
                             seen_keys.add(key)

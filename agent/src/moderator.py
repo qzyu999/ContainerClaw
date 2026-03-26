@@ -83,12 +83,7 @@ class StageModerator:
                 import traceback
                 traceback.print_exc()
 
-        if self.fluss:
-            self.scanner = await self.fluss.create_scanner(self.table, start_ts=start_ts if start_ts > 0 else None)
-        else:
-            self.scanner = await self.table.new_scan().create_record_batch_log_scanner()
-            for b in range(16):
-                self.scanner.subscribe(bucket_id=b, start_offset=0)
+        self.scanner = await self.fluss.create_scanner(self.table, start_ts=start_ts if start_ts > 0 else None)
 
         total_replayed = 0
         while True:
