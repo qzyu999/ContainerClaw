@@ -209,7 +209,7 @@ sequenceDiagram
     participant UI as Web UI
     participant Bridge as ui-bridge
     participant gRPC as AgentService (gRPC)
-    participant Loop as Async Event Loop
+    participant EvLoop as Async Event Loop
     participant Mod as StageModerator
     participant Pub as FlussPublisher
     participant FC as FlussClient
@@ -219,8 +219,8 @@ sequenceDiagram
 
     UI->>Bridge: POST /execute {prompt}
     Bridge->>gRPC: ExecuteTask(prompt, session_id)
-    gRPC->>Loop: run_coroutine_threadsafe(publish)
-    Loop->>Pub: publish("Human", prompt)
+    gRPC->>EvLoop: run_coroutine_threadsafe(publish)
+    EvLoop->>Pub: publish("Human", prompt)
     Note right of Pub: Buffers in memory.<br/>Fires on_message callback<br/>immediately for context update.
     Pub-->>Pub: Timer flush (100ms)
     Pub->>Fluss: write_arrow_batch (batched)
