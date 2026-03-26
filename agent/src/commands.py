@@ -78,9 +78,38 @@ async def _handle_automation(content: str, moderator):
         print("⚠️ [Moderator] Invalid /automation command format.")
 
 
+async def _handle_subagents(content: str, moderator):
+    """Show status of active subagents."""
+    mgr = getattr(moderator, 'subagent_manager', None)
+    if not mgr:
+        await moderator.publish("Moderator", "⚠️ SubagentManager not available.", "system")
+        return
+    status = mgr.get_status()
+    await moderator.publish("Moderator", f"📊 {status}", "system")
+
+
+async def _handle_cancel_subagent(content: str, moderator):
+    """Cancel a specific subagent: /cancel_subagent=<task_id>."""
+    mgr = getattr(moderator, 'subagent_manager', None)
+    if not mgr:
+        await moderator.publish("Moderator", "⚠️ SubagentManager not available.", "system")
+        return
+    try:
+        task_id = content.split("=")[1].strip()
+        success = await mgr.cancel(task_id)
+        if success:
+            await moderator.publish("Moderator", f"🛑 Subagent {task_id} cancellation requested.", "system")
+        else:
+            await moderator.publish("Moderator", f"⚠️ Subagent {task_id} not found.", "system")
+    except (IndexError, ValueError):
+        await moderator.publish("Moderator", "⚠️ Usage: /cancel_subagent=<task_id>", "system")
+
+
 def create_default_dispatcher() -> CommandDispatcher:
     """Create a CommandDispatcher pre-loaded with all built-in commands."""
     dispatcher = CommandDispatcher()
     dispatcher.register("/stop", _handle_stop)
     dispatcher.register("/automation=", _handle_automation)
+    dispatcher.register("/subagents", _handle_subagents)
+    dispatcher.register("/cancel_subagent=", _handle_cancel_subagent)
     return dispatcher

@@ -181,6 +181,10 @@ class StageModerator:
         )
         await self.publisher.start()
 
+        # Wire SubagentManager publisher (deferred from main.py)
+        if hasattr(self, 'subagent_manager') and self.subagent_manager:
+            self.subagent_manager.publisher = self.publisher
+
         # Initialize ToolExecutor with callbacks (deferred to here so publish is bound)
         if self.tool_dispatcher:
             self.executor = ToolExecutor(

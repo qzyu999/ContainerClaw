@@ -861,6 +861,102 @@ class SessionShellTool(Tool):
             return ToolResult(success=False, output="", error=str(e))
 
 # ---------------------------------------------------------------------------
+# DelegateTool — Spawn parallel subagents
+# ---------------------------------------------------------------------------
+
+class DelegateTool(Tool):
+    """Spawn a parallel subagent to work on a specific subtask.
+
+    The subagent works independently with its own context and tools.
+    Results appear in the main stream as they complete (non-blocking).
+    """
+    name = "delegate"
+    description = (
+        "Spawn a parallel subagent to work on a specific subtask. "
+        "The subagent works independently with its own tools and context. "
+        "Results appear in the main stream as they complete. "
+        "Use for tasks that can run in parallel (research, file edits, tests)."
+    )
+
+    def __init__(self, subagent_manager=None, available_tools=None):
+        super().__init__()
+        self.subagent_manager = subagent_manager  # Set after creation
+        self.available_tools = available_tools or []
+
+    def get_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Clear description of the subtask to delegate.",
+                },
+                "persona": {
+                    "type": "string",
+                    "description": (
+                        "Persona/role for the subagent. "
+                        "Defaults to 'General-purpose software engineer'."
+                    ),
+                },
+                "timeout_s": {
+                    "type": "integer",
+                    "description": "Max seconds before timeout (default 120).",
+                },
+                "tools": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional list of tool names to grant. "
+                        "If omitted, all standard tools are available."
+                    ),
+                },
+            },
+            "required": ["task"],
+        }
+
+    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+        if not self.subagent_manager:
+            return ToolResult(
+                success=False, output="",
+                error="SubagentManager not initialized.",
+            )
+
+        task_desc = params.get("task", "")
+        if not task_desc:
+            return ToolResult(
+                success=False, output="",
+                error="'task' is required.",
+            )
+
+        persona = params.get("persona", "General-purpose software engineer")
+        timeout_s = params.get("timeout_s", 120)
+        tool_names = params.get("tools")
+
+        try:
+            task_id = await self.subagent_manager.spawn(
+                task_desc=task_desc,
+                agent_persona=persona,
+                tool_names=tool_names,
+                available_tools=self.available_tools,
+                timeout_s=timeout_s,
+            )
+            return ToolResult(
+                success=True,
+                output=(
+                    f"Subagent {task_id} spawned successfully.\n"
+                    f"Persona: {persona}\n"
+                    f"Task: {task_desc}\n"
+                    f"Timeout: {timeout_s}s\n"
+                    f"Results will appear in the main stream as the subagent works."
+                ),
+            )
+        except RuntimeError as e:
+            return ToolResult(success=False, output="", error=str(e))
+        except Exception as e:
+            return ToolResult(success=False, output="", error=f"Spawn failed: {e}")
+
+
+# ---------------------------------------------------------------------------
 # ToolDispatcher — Routes tool calls + enforces rate limits
 # ---------------------------------------------------------------------------
 

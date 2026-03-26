@@ -13,12 +13,13 @@ from fluss_client import FlussClient
 from moderator import StageModerator
 from agent import GeminiAgent
 from tools import (
-    ToolDispatcher, ProjectBoard,
+    ToolDispatcher, ProjectBoard, DelegateTool,
     DiffTool, TestRunnerTool, BoardTool,
     SurgicalEditTool, AdvancedReadTool, RepoMapTool,
     StructuredSearchTool, LinterTool, SessionShellTool,
     CreateFileTool,
 )
+from subagent_manager import SubagentManager
 
 # Generated gRPC stubs
 import agent_pb2
@@ -113,12 +114,16 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                     linter, session_shell, create_file
                 ]
 
+                # DelegateTool — wired after SubagentManager is created below
+                delegate_tool = DelegateTool(available_tools=common_tools)
+                all_tools = common_tools + [delegate_tool]
+
                 toolsets = {
-                    "Alice": common_tools,
-                    "Bob":   common_tools,
-                    "Carol": common_tools,
-                    "David": common_tools,
-                    "Eve":   common_tools,
+                    "Alice": all_tools,
+                    "Bob":   all_tools,
+                    "Carol": all_tools,
+                    "David": all_tools,
+                    "Eve":   all_tools,
                 }
                 tool_dispatcher = ToolDispatcher(toolsets)
                 print(f"🐚 [ConchShell] Tool dispatcher initialized for session {session_id}.")
@@ -134,6 +139,20 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 fluss_client=self.fluss
             )
             moderator.board = board
+
+            # Wire SubagentManager after moderator (needs publisher from moderator.run)
+            if conchshell_enabled:
+                subagent_mgr = SubagentManager(
+                    fluss_client=self.fluss,
+                    table=self.table,
+                    session_id=session_id,
+                    publisher=None,  # Set in moderator.run() after publisher init
+                    api_key=api_key,
+                )
+                moderator.subagent_manager = subagent_mgr
+                # Wire back reference for delegate tool
+                delegate_tool.subagent_manager = subagent_mgr
+
             self.moderators[session_id] = moderator
             # Start the moderator loop in the shared event loop
             asyncio.create_task(moderator.run(autonomous_steps=int(os.getenv("AUTONOMOUS_STEPS", "-1"))))
