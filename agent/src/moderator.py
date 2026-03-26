@@ -1,12 +1,10 @@
 import asyncio
-import time
-import uuid
 import pyarrow as pa
 from typing import List
 
 import config
-from schemas import CHATROOM_SCHEMA
 from fluss_client import FlussClient
+from publisher import FlussPublisher
 from context import ContextManager
 from election import ElectionProtocol
 from tool_executor import ToolExecutor
@@ -30,45 +28,32 @@ class StageModerator:
         self.agent_names = [a.agent_id for a in agents]
         self.roster_str = ", ".join([f"{a.agent_id} ({a.persona})" for a in agents])
         self.last_replayed_offset = 0
-        self.writer = table.new_append().create_writer()
 
-        self.pa_schema = CHATROOM_SCHEMA
         self.command_dispatcher = create_default_dispatcher()
 
         # Decomposed components
         self.context = ContextManager()
         self.election = ElectionProtocol()
         self.executor = None  # Initialized in run() after tool_dispatcher check
+        self.publisher = None  # Initialized in run() after _handle_single_message is bound
 
     # ── Fluss I/O ──────────────────────────────────────────────────
 
     async def publish(self, actor_id, content, m_type="output",
                       tool_name="", tool_success=False, parent_actor=""):
+        """Publish a message via the batched FlussPublisher."""
         try:
-            event_id = str(uuid.uuid4())
-            ts = int(time.time() * 1000)
-            batch = pa.RecordBatch.from_arrays([
-                pa.array([event_id], type=pa.string()),
-                pa.array([self.session_id], type=pa.string()),
-                pa.array([ts], type=pa.int64()),
-                pa.array([actor_id], type=pa.string()),
-                pa.array([content], type=pa.string()),
-                pa.array([m_type], type=pa.string()),
-                pa.array([tool_name], type=pa.string()),
-                pa.array([tool_success], type=pa.bool_()),
-                pa.array([parent_actor], type=pa.string()),
-            ], schema=self.pa_schema)
-            self.writer.write_arrow_batch(batch)
-            
-            # Immediately add to memory AND detect human messages
-            # (uses context.add_message internally for dedup)
-            await self._handle_single_message(actor_id, content, ts)
-
-            if hasattr(self.writer, "flush"):
-                await self.writer.flush()
-            print(f"📝 [Moderator] Published to Fluss & Memory: {actor_id} ({m_type})")
+            await self.publisher.publish(
+                actor_id=actor_id,
+                content=content,
+                m_type=m_type,
+                tool_name=tool_name,
+                tool_success=tool_success,
+                parent_actor=parent_actor,
+            )
+            print(f"📝 [Moderator] Published: {actor_id} ({m_type})")
         except Exception as e:
-            print(f"❌ [Moderator] Failed to publish to Fluss: {e}")
+            print(f"❌ [Moderator] Failed to publish: {e}")
             import traceback
             traceback.print_exc()
 
@@ -192,6 +177,14 @@ class StageModerator:
         """Main moderator loop: poll → elect → execute → repeat."""
         self.base_budget = autonomous_steps
         self.current_steps = 0
+
+        # Initialize FlussPublisher with immediate memory callback
+        self.publisher = FlussPublisher(
+            self.table,
+            self.session_id,
+            on_message=self._handle_single_message,
+        )
+        await self.publisher.start()
 
         # Initialize ToolExecutor with callbacks (deferred to here so publish is bound)
         if self.tool_dispatcher:

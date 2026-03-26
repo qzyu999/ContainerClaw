@@ -8,6 +8,8 @@ managing raw connections and admin objects directly.
 """
 
 import asyncio
+import time
+import uuid
 import fluss
 import pyarrow as pa
 
@@ -135,4 +137,132 @@ class FlussClient:
             return []
         # Unwrap Fluss RecordBatch → pyarrow RecordBatch
         return [b.batch for b in batches]
+
+    # ── Session CRUD ────────────────────────────────────────────────
+
+    async def create_session(self, session_id: str, title: str) -> dict:
+        """Create a new session record in the sessions table.
+
+        Returns:
+            dict with session_id, title, created_at, last_active_at.
+        """
+        now = int(time.time() * 1000)
+        batch = pa.RecordBatch.from_arrays([
+            pa.array([session_id], type=pa.string()),
+            pa.array([title], type=pa.string()),
+            pa.array([now], type=pa.int64()),
+            pa.array([now], type=pa.int64()),
+        ], schema=SESSIONS_SCHEMA)
+
+        writer = self.sessions_table.new_append().create_writer()
+        writer.write_arrow_batch(batch)
+        if hasattr(writer, "flush"):
+            await writer.flush()
+        print(f"✅ [FlussClient] Session {session_id} created.")
+
+        return {
+            "session_id": session_id,
+            "title": title,
+            "created_at": now,
+            "last_active_at": now,
+        }
+
+    async def list_sessions(self) -> list[dict]:
+        """Scan the sessions log and return deduplicated session list.
+
+        Returns:
+            list[dict] sorted by last_active_at descending. Each dict has
+            session_id, title, created_at, last_active_at.
+        """
+        scanner = await self.create_scanner(self.sessions_table)
+        sessions_dict = {}
+        empty_polls = 0
+        while empty_polls < 5:
+            batches = await self.poll_async(scanner, timeout_ms=500)
+            if not batches:
+                empty_polls += 1
+                continue
+            empty_polls = 0
+            for poll in batches:
+                id_arr = poll["session_id"]
+                title_arr = poll["title"]
+                created_arr = poll["created_at"]
+                active_arr = poll["last_active_at"]
+                for i in range(poll.num_rows):
+                    sid = id_arr[i].as_py()
+                    sessions_dict[sid] = {
+                        "session_id": sid,
+                        "title": title_arr[i].as_py(),
+                        "created_at": int(created_arr[i].as_py()),
+                        "last_active_at": int(active_arr[i].as_py()),
+                    }
+        return sorted(
+            sessions_dict.values(),
+            key=lambda s: s["last_active_at"],
+            reverse=True,
+        )
+
+    async def fetch_history(self, session_id: str) -> list[dict]:
+        """Fetch full chat history for a session from the chatroom log.
+
+        Performs an optimized seek if the session start time is found in
+        the sessions table.
+
+        Returns:
+            list[dict] sorted by ts. Each dict has ts, actor_id, content, type.
+        """
+        # 1. Lookup session start time
+        start_ts = 0
+        try:
+            sessions = await self.list_sessions()
+            for s in sessions:
+                if s["session_id"] == session_id:
+                    start_ts = s["created_at"]
+                    break
+        except Exception as e:
+            print(f"⚠️ [FlussClient] Session lookup failed: {e}")
+
+        # 2. Scan chatroom with optional seek
+        scanner = await self.create_scanner(
+            self.chat_table, start_ts=start_ts if start_ts > 0 else None
+        )
+
+        events = []
+        empty_polls = 0
+        while empty_polls < 10:
+            batches = await self.poll_async(scanner, timeout_ms=500)
+            if not batches:
+                empty_polls += 1
+                continue
+            empty_polls = 0
+            for poll in batches:
+                session_arr = poll.column("session_id")
+                ts_arr = poll.column("ts")
+                actor_arr = poll.column("actor_id")
+                content_arr = poll.column("content")
+                for i in range(poll.num_rows):
+                    if session_arr[i].as_py() != session_id:
+                        continue
+                    ts_ms = ts_arr[i].as_py()
+                    actor_id = actor_arr[i].as_py()
+                    content = content_arr[i].as_py()
+                    if isinstance(actor_id, bytes):
+                        actor_id = actor_id.decode("utf-8")
+                    if isinstance(content, bytes):
+                        content = content.decode("utf-8")
+                    try:
+                        e_type = poll.column("type")[i].as_py()
+                        if isinstance(e_type, bytes):
+                            e_type = e_type.decode("utf-8")
+                    except (KeyError, ValueError, IndexError):
+                        e_type = "thought" if actor_id == "Moderator" else "output"
+                    events.append({
+                        "ts": ts_ms,
+                        "actor_id": actor_id,
+                        "content": content,
+                        "type": e_type,
+                    })
+
+        events.sort(key=lambda x: x["ts"])
+        return events
 
