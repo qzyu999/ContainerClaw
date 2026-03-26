@@ -62,29 +62,30 @@ class DiscordConnector:
         """Periodically polls the sessions table to find the latest active session ID."""
         print("🔍 Starting Session Discovery Worker...")
         scanner = await self.sessions_table.new_scan().create_record_batch_log_scanner()
-        for b in range(16):
-            scanner.subscribe(bucket_id=b, start_offset=0)
+        scanner.subscribe_buckets({b: 0 for b in range(16)})
             
         while True:
             try:
-                poll = await asyncio.to_thread(scanner.poll_arrow, timeout_ms=500)
-                if poll.num_rows > 0:
-                    # Find the session with the largest created_at
-                    id_arr = poll["session_id"]
-                    created_arr = poll["created_at"]
-                    
-                    latest_ts = 0
-                    latest_id = self.session_id
-                    
-                    for i in range(poll.num_rows):
-                        ts = int(created_arr[i].as_py())
-                        if ts > latest_ts:
-                            latest_ts = ts
-                            latest_id = str(id_arr[i].as_py())
-                    
-                    if latest_id != self.session_id:
-                        print(f"🎯 Discord Bot switched to latest session: {latest_id}")
-                        self.session_id = latest_id
+                batches = await scanner._async_poll_batches(500)
+                if batches:
+                    batches = [b.batch for b in batches]
+                    for poll in batches:
+                        if poll.num_rows == 0: continue
+                        id_arr = poll["session_id"]
+                        created_arr = poll["created_at"]
+                        
+                        latest_ts = 0
+                        latest_id = self.session_id
+                        
+                        for i in range(poll.num_rows):
+                            ts = int(created_arr[i].as_py())
+                            if ts > latest_ts:
+                                latest_ts = ts
+                                latest_id = str(id_arr[i].as_py())
+                        
+                        if latest_id != self.session_id:
+                            print(f"🎯 Discord Bot switched to latest session: {latest_id}")
+                            self.session_id = latest_id
                 
             except Exception as e:
                 print(f"⚠️ Session discovery error: {e}")
@@ -119,28 +120,30 @@ class DiscordConnector:
         async with aiohttp.ClientSession() as session:
             self.session = session
             while True:
-                poll = await asyncio.to_thread(scanner.poll_arrow, timeout_ms=500)
-                if poll.num_rows == 0:
+                batches = await scanner._async_poll_batches(500)
+                if not batches:
                     await asyncio.sleep(0.1)
                     continue
+                batches = [b.batch for b in batches]
 
-                for i in range(poll.num_rows):
-                    row = {col: poll[col][i].as_py() for col in poll.schema.names}
-                    
-                    # Filter: Only messages for our session
-                    if row.get("session_id") != self.session_id:
-                        continue
-                    
-                    # Filter: Prevent loops - ignore messages that originated from Discord
-                    if str(row.get("actor_id")).startswith("Discord/"):
-                        continue
-                    
-                    # Filter: Ignore internal system messages without content
-                    if not row.get("content"):
-                        continue
+                for poll in batches:
+                    for i in range(poll.num_rows):
+                        row = {col: poll[col][i].as_py() for col in poll.schema.names}
+                        
+                        # Filter: Only messages for our session
+                        if row.get("session_id") != self.session_id:
+                            continue
+                        
+                        # Filter: Prevent loops - ignore messages that originated from Discord
+                        if str(row.get("actor_id")).startswith("Discord/"):
+                            continue
+                        
+                        # Filter: Ignore internal system messages without content
+                        if not row.get("content"):
+                            continue
 
-                    # Execute Webhook
-                    await self.send_to_discord(row)
+                        # Execute Webhook
+                        await self.send_to_discord(row)
 
     async def send_to_discord(self, row):
         """Sends a message to Discord via Webhook with actor impersonation."""
@@ -180,11 +183,14 @@ class DiscordConnector:
 
     async def push_to_fluss(self, actor_id, content):
         """Writes a message from Discord into the Fluss chatroom."""
+        import uuid
+        event_id = str(uuid.uuid4())
         ts = int(time.time() * 1000)
         # We prefix the actor_id with "Discord/" to identify the source across the bridge
         # and use type="user" so the UI renders it immediately in the main chat tab
         discord_actor = f"Discord/{actor_id}"
         batch = pa.RecordBatch.from_arrays([
+            pa.array([event_id], type=pa.string()),
             pa.array([self.session_id], type=pa.string()),
             pa.array([ts], pa.int64()),
             pa.array([discord_actor], pa.string()),
@@ -194,6 +200,7 @@ class DiscordConnector:
             pa.array([False], pa.bool_()),
             pa.array([""], pa.string()),
         ], schema=pa.schema([
+            pa.field("event_id", pa.string()),
             pa.field("session_id", pa.string()),
             pa.field("ts", pa.int64()),
             pa.field("actor_id", pa.string()),

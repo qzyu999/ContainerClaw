@@ -10,6 +10,7 @@ import json
 import subprocess
 import time
 import pyarrow as pa
+from schemas import BOARD_EVENTS_SCHEMA, DEFAULT_BUCKET_COUNT
 import ast
 import os
 import uuid
@@ -195,18 +196,7 @@ class ProjectBoard:
         self._pa_schema = None
 
         if self.board_table:
-            self._pa_schema = pa.schema([
-                pa.field("session_id", pa.string()),
-                pa.field("ts", pa.int64()),
-                pa.field("action", pa.string()),
-                pa.field("item_id", pa.string()),
-                pa.field("item_type", pa.string()),
-                pa.field("title", pa.string()),
-                pa.field("description", pa.string()),
-                pa.field("status", pa.string()),
-                pa.field("assigned_to", pa.string()),
-                pa.field("actor", pa.string()),
-            ])
+            self._pa_schema = BOARD_EVENTS_SCHEMA
             self._writer = self.board_table.new_append().create_writer()
         else:
             self._load()
@@ -218,39 +208,43 @@ class ProjectBoard:
             
         try:
             scanner = await self.board_table.new_scan().create_record_batch_log_scanner()
-            for b in range(16):
-                scanner.subscribe(bucket_id=b, start_offset=0)
+            scanner.subscribe_buckets(
+                {b: 0 for b in range(DEFAULT_BUCKET_COUNT)}
+            )
             
             while True:
-                poll = await asyncio.to_thread(scanner.poll_arrow, timeout_ms=500)
-                if poll.num_rows == 0:
+                batches = await scanner._async_poll_batches(500)
+                if not batches:
                     break
+                # Unwrap Fluss RecordBatch → pyarrow RecordBatch
+                batches = [b.batch for b in batches]
                 
-                for i in range(poll.num_rows):
-                    # Filter by session_id
-                    if poll.column("session_id")[i].as_py() != self.session_id:
-                        continue
-                    action = poll.column("action")[i].as_py()
-                    if action == "create":
-                        self.items.append({
-                            "id": poll.column("item_id")[i].as_py(),
-                            "type": poll.column("item_type")[i].as_py(),
-                            "title": poll.column("title")[i].as_py(),
-                            "description": poll.column("description")[i].as_py(),
-                            "status": poll.column("status")[i].as_py(),
-                            "assigned_to": poll.column("assigned_to")[i].as_py() or None,
-                            "created_at": poll.column("ts")[i].as_py() / 1000,
-                        })
-                    elif action == "update_status":
-                        item_id = poll.column("item_id")[i].as_py()
-                        new_status = poll.column("status")[i].as_py()
-                        for item in self.items:
-                            if item["id"] == item_id:
-                                item["status"] = new_status
-                                break
-                    elif action == "delete":
-                        item_id = poll.column("item_id")[i].as_py()
-                        self.items = [item for item in self.items if item["id"] != item_id]
+                for poll in batches:
+                    for i in range(poll.num_rows):
+                        # Filter by session_id
+                        if poll.column("session_id")[i].as_py() != self.session_id:
+                            continue
+                        action = poll.column("action")[i].as_py()
+                        if action == "create":
+                            self.items.append({
+                                "id": poll.column("item_id")[i].as_py(),
+                                "type": poll.column("item_type")[i].as_py(),
+                                "title": poll.column("title")[i].as_py(),
+                                "description": poll.column("description")[i].as_py(),
+                                "status": poll.column("status")[i].as_py(),
+                                "assigned_to": poll.column("assigned_to")[i].as_py() or None,
+                                "created_at": poll.column("ts")[i].as_py() / 1000,
+                            })
+                        elif action == "update_status":
+                            item_id = poll.column("item_id")[i].as_py()
+                            new_status = poll.column("status")[i].as_py()
+                            for item in self.items:
+                                if item["id"] == item_id:
+                                    item["status"] = new_status
+                                    break
+                        elif action == "delete":
+                            item_id = poll.column("item_id")[i].as_py()
+                            self.items = [item for item in self.items if item["id"] != item_id]
             print(f"📋 [ProjectBoard] Replayed {len(self.items)} board items from Fluss.")
         except Exception as e:
             print(f"⚠️ [ProjectBoard] Fluss replay failed, falling back to JSON: {e}")

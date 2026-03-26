@@ -1,0 +1,180 @@
+"""
+Tool execution engine for ContainerClaw agents.
+
+Implements the full Gemini function-calling protocol loop:
+1. Agent thinks with tools (forced via ANY mode)
+2. Tools are executed via ToolDispatcher
+3. Results are sent back as functionResponse
+4. Loop until agent produces text or max rounds exceeded
+
+Includes a circuit breaker that halts execution after 3 consecutive
+tool failures to prevent runaway error loops.
+"""
+
+import json
+import asyncio
+from typing import Callable, Awaitable
+
+import config
+from tools import ToolDispatcher, ToolResult
+
+
+class ToolExecutor:
+    """Execute an agent's turn with tool support and circuit breaking.
+    
+    Uses callback injection to avoid circular imports with the moderator:
+    - publish_fn: write events to Fluss
+    - get_context_fn: get current context window
+    - poll_fn: poll Fluss for mid-turn human interrupts
+    """
+
+    def __init__(
+        self,
+        tool_dispatcher: ToolDispatcher,
+        publish_fn: Callable[..., Awaitable[None]],
+        get_context_fn: Callable[[], list[dict]],
+        poll_fn: Callable[[], Awaitable[bool]],
+    ):
+        self.dispatcher = tool_dispatcher
+        self.publish = publish_fn
+        self.get_context = get_context_fn
+        self.poll = poll_fn
+
+    async def execute_with_tools(self, agent, check_halt_fn: Callable[[], bool]) -> str | None:
+        """Run an agent's full tool-augmented turn.
+
+        Args:
+            agent: GeminiAgent instance.
+            check_halt_fn: Returns True if execution should be aborted
+                           (e.g., user sent /stop mid-turn).
+        
+        Returns:
+            Agent's final text response, or None.
+        """
+        available_tools = self.dispatcher.get_tools_for_agent(agent.agent_id)
+        shared_context = self.get_context()
+
+        # Clear the per-agent turn buffer for this execution cycle
+        agent._api_turns = []
+
+        final_text = None
+        last_round_results = []
+        consecutive_failures = 0
+
+        for round_num in range(config.MAX_TOOL_ROUNDS):
+            if round_num == 0:
+                text, fn_calls = await agent._think_with_tools(
+                    shared_context, available_tools
+                )
+            else:
+                # Build functionResponse parts from the last round's results
+                function_responses = []
+                for call_result in last_round_results:
+                    function_responses.append({
+                        "name": call_result["name"],
+                        "response": {
+                            "result": call_result["output"],
+                            "success": call_result["success"],
+                            "error": call_result.get("error"),
+                        },
+                        "id": call_result["id"],
+                    })
+
+                text, fn_calls = await agent._send_function_responses(
+                    shared_context, function_responses, available_tools
+                )
+
+            if text:
+                final_text = text
+
+            if not fn_calls:
+                # Model chose text response — done with tools
+                break
+
+            last_round_results = []
+
+            for call in fn_calls:
+                tool_name = call["name"]
+                tool_args = call["args"]
+                call_id = call["id"]
+
+                print(f"🔧 [{agent.agent_id}] Tool call: {tool_name}({json.dumps(tool_args)[:200]})")
+                await self.publish(
+                    agent.agent_id,
+                    f"$ {tool_name} {json.dumps(tool_args)[:200]}",
+                    "action",
+                )
+
+                result = await self.dispatcher.execute(
+                    agent.agent_id, tool_name, tool_args
+                )
+
+                # Circuit Breaker logic
+                if not result.success:
+                    consecutive_failures += 1
+                else:
+                    consecutive_failures = 0
+
+                if consecutive_failures >= 3:
+                    msg = f"🛑 Circuit Breaker: {agent.agent_id} halted after 3 consecutive tool failures."
+                    print(f"⚠️ [Circuit Breaker] {msg}")
+                    await self.publish("Moderator", msg, "system")
+                    return "🛑 Execution stopped due to consecutive tool failures."
+
+                # Log tool result
+                result_summary = result.output[:500] if result.success else f"ERROR: {result.error}"
+                print(f"  → {'✅' if result.success else '❌'} {result_summary[:200]}")
+                await self.publish(
+                    agent.agent_id,
+                    f"{'✅' if result.success else '❌'} {result_summary[:500]}",
+                    "action",
+                )
+
+                # Publish full tool result to Fluss
+                tool_result_content = (
+                    f"[Tool Result for {agent.agent_id}] {tool_name}: "
+                    f"{'SUCCESS' if result.success else 'FAILED'}\n"
+                    f"{result.output[:1000]}"
+                    f"{(' | Error: ' + result.error) if result.error else ''}"
+                )
+                await self.publish(
+                    "Moderator", tool_result_content, "action",
+                    tool_name=tool_name,
+                    tool_success=result.success,
+                    parent_actor=agent.agent_id,
+                )
+
+                # Accumulate results for functionResponse construction
+                # Adaptive Verbosity: allow more context for read-heavy tools
+                read_tools = ["repo_map", "structured_search", "advanced_read"]
+                limit = 8000 if tool_name in read_tools else 2000
+
+                output = result.output
+                if len(output) > limit:
+                    output = output[:limit] + "\n\n[TRUNCATED: Result too large for context window. Narrow your search or use pagination.]"
+
+                last_round_results.append({
+                    "name": tool_name,
+                    "id": call_id,
+                    "output": output,
+                    "success": result.success,
+                    "error": result.error,
+                })
+
+            # Poll Fluss to pick up published messages
+            interrupted = await self.poll()
+            if interrupted and check_halt_fn():
+                print(f"🛑 [Moderator] {agent.agent_id} execution halted mid-turn by user command.")
+                return "🛑 Turn aborted by user command."
+            shared_context = self.get_context()
+
+        # Clear the per-agent turn buffer — cycle complete
+        agent._api_turns = []
+
+        return final_text
+
+    @staticmethod
+    async def execute_text_only(agent, get_context_fn: Callable[[], list[dict]]) -> str | None:
+        """Execute the winning agent's turn without tools (backward-compatible)."""
+        updated_context = get_context_fn()
+        return await agent._think(updated_context)

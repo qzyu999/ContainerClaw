@@ -9,7 +9,10 @@ import grpc
 import concurrent.futures
 from pathlib import Path
 import config
-from moderator import StageModerator, GeminiAgent
+from schemas import CHATROOM_SCHEMA, SESSIONS_SCHEMA
+from fluss_client import FlussClient
+from moderator import StageModerator
+from agent import GeminiAgent
 from tools import (
     ToolDispatcher, ProjectBoard,
     DiffTool, TestRunnerTool, BoardTool,
@@ -17,7 +20,6 @@ from tools import (
     StructuredSearchTool, LinterTool, SessionShellTool,
     CreateFileTool,
 )
-import fluss
 import pyarrow as pa
 
 # Generated gRPC stubs
@@ -41,12 +43,12 @@ def ms_to_iso(ts_ms: int) -> str:
     return dt.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
 
 class AgentService(agent_pb2_grpc.AgentServiceServicer):
-    def __init__(self, fluss_conn, chat_table, board_table=None, sessions_table=None):
+    def __init__(self, fluss_client: FlussClient):
         self.is_running = True
-        self.fluss_conn = fluss_conn
-        self.table = chat_table
-        self.board_table = board_table
-        self.sessions_table = sessions_table
+        self.fluss = fluss_client
+        self.table = fluss_client.chat_table
+        self.board_table = fluss_client.board_table
+        self.sessions_table = fluss_client.sessions_table
         self.moderators = {}  # session_id -> StageModerator
         self.moderator_lock = threading.Lock()
         
@@ -131,7 +133,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 session_id=session_id, 
                 tool_dispatcher=tool_dispatcher,
                 sessions_table=self.sessions_table,
-                fluss_conn=self.fluss_conn
+                fluss_client=self.fluss
             )
             moderator.board = board
             self.moderators[session_id] = moderator
@@ -186,50 +188,54 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 if not context.is_active():
                     break
                 try:
-                    # Poll via the event loop to avoid "no running event loop" errors
+                    # Native async poll via Rust future_into_py
                     future = asyncio.run_coroutine_threadsafe(
-                        asyncio.to_thread(scanner.poll_arrow, timeout_ms=500),
+                        FlussClient.poll_async(scanner, timeout_ms=500),
                         self.loop
                     )
-                    poll = future.result(timeout=10)
-                    if poll.num_rows == 0:
+                    batches = future.result(timeout=10)
+                    if not batches:
                         continue
 
-                    # Use dict-style access for pyarrow.RecordBatch
-                    sess_arr = poll["session_id"]
-                    actor_arr = poll["actor_id"]
-                    content_arr = poll["content"]
-                    ts_arr = poll["ts"]
-                    type_arr = poll["type"]
-
-                    for i in range(poll.num_rows):
-                        # Filter by session_id
-                        if sess_arr[i].as_py() != session_id:
+                    for poll in batches:
+                        if poll.num_rows == 0:
                             continue
 
-                        ts_ms = ts_arr[i].as_py()
-                        actor_id = actor_arr[i].as_py()
-                        content = content_arr[i].as_py()
-                        e_type = type_arr[i].as_py()
+                        # Use dict-style access for pyarrow.RecordBatch
+                        sess_arr = poll["session_id"]
+                        actor_arr = poll["actor_id"]
+                        content_arr = poll["content"]
+                        ts_arr = poll["ts"]
+                        type_arr = poll["type"]
 
-                        # Per-connection deduplication
-                        key = f"{ts_ms}-{actor_id}-{content[:50]}"
-                        if key in seen_keys:
-                            continue
-                        seen_keys.add(key)
+                        for i in range(poll.num_rows):
+                            # Filter by session_id
+                            if sess_arr[i].as_py() != session_id:
+                                continue
 
-                        if isinstance(actor_id, bytes): actor_id = actor_id.decode('utf-8')
-                        if isinstance(content, bytes): content = content.decode('utf-8')
-                        if isinstance(e_type, bytes): e_type = e_type.decode('utf-8')
+                            ts_ms = ts_arr[i].as_py()
+                            actor_id = actor_arr[i].as_py()
+                            content = content_arr[i].as_py()
+                            e_type = type_arr[i].as_py()
 
-                        ts_iso = ms_to_iso(ts_ms)
+                            # Per-connection deduplication
+                            key = f"{ts_ms}-{actor_id}-{content[:50]}"
+                            if key in seen_keys:
+                                continue
+                            seen_keys.add(key)
 
-                        yield agent_pb2.ActivityEvent(
-                            timestamp=ts_iso,
-                            type=e_type or "output",
-                            content=content,
-                            actor_id=actor_id
-                        )
+                            if isinstance(actor_id, bytes): actor_id = actor_id.decode('utf-8')
+                            if isinstance(content, bytes): content = content.decode('utf-8')
+                            if isinstance(e_type, bytes): e_type = e_type.decode('utf-8')
+
+                            ts_iso = ms_to_iso(ts_ms)
+
+                            yield agent_pb2.ActivityEvent(
+                                timestamp=ts_iso,
+                                type=e_type or "output",
+                                content=content,
+                                actor_id=actor_id
+                            )
                 except Exception as e:
                     print(f"⚠️ [StreamActivity] Poll error: {e}")
                     continue
@@ -238,24 +244,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
     async def _create_sse_scanner(self, start_ts=None):
         """Create a Fluss scanner to tail the log, optionally seeking to a timestamp."""
-        scanner = await self.table.new_scan().create_record_batch_log_scanner()
-        
-        if start_ts:
-            # Optimized: Seek to timestamp using admin.list_offsets
-            admin = await self.fluss_conn.get_admin()
-            table_path = self.table.get_table_path()
-            # Query offsets for all 16 buckets at or after start_ts
-            offsets = await admin.list_offsets(
-                table_path, 
-                list(range(16)), 
-                fluss.OffsetSpec.timestamp(start_ts)
-            )
-            scanner.subscribe_buckets(offsets)
-        else:
-            # Fallback to tailing from the very beginning (rarely used for SSE)
-            for b in range(16):
-                scanner.subscribe(bucket_id=b, start_offset=0)
-        return scanner
+        return await self.fluss.create_scanner(self.table, start_ts=start_ts)
 
     # ── Workspace Explorer gRPC Handlers ──
 
@@ -380,35 +369,33 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             context.abort(grpc.StatusCode.INTERNAL, str(e))
 
     async def _list_sessions_async(self):
-        scanner = await self.sessions_table.new_scan().create_record_batch_log_scanner()
-        print(f"📊 [_list_sessions_async] Subscribing to 16 buckets...")
-        for b in range(16):
-            scanner.subscribe(bucket_id=b, start_offset=0)
+        scanner = await self.fluss.create_scanner(self.sessions_table)
+        print(f"📊 [_list_sessions_async] Scanning sessions...")
         
         # Use a dict to deduplicate by session_id, keeping the latest version
         sessions_dict = {}
         empty_polls = 0
-        while empty_polls < 5: # Tolerate a few empty polls before giving up
-            poll = await asyncio.to_thread(scanner.poll_arrow, timeout_ms=500)
-            if poll.num_rows == 0:
+        while empty_polls < 5:
+            batches = await FlussClient.poll_async(scanner, timeout_ms=500)
+            if not batches:
                 empty_polls += 1
                 continue
             
             empty_polls = 0
-            # Use dict-style access for pyarrow.RecordBatch
-            id_arr = poll["session_id"]
-            title_arr = poll["title"]
-            created_arr = poll["created_at"]
-            active_arr = poll["last_active_at"]
+            for poll in batches:
+                id_arr = poll["session_id"]
+                title_arr = poll["title"]
+                created_arr = poll["created_at"]
+                active_arr = poll["last_active_at"]
 
-            for i in range(poll.num_rows):
-                sid = id_arr[i].as_py()
-                sessions_dict[sid] = agent_pb2.SessionEntry(
-                    session_id=sid,
-                    title=title_arr[i].as_py(),
-                    created_at=int(created_arr[i].as_py()),
-                    last_active_at=int(active_arr[i].as_py())
-                )
+                for i in range(poll.num_rows):
+                    sid = id_arr[i].as_py()
+                    sessions_dict[sid] = agent_pb2.SessionEntry(
+                        session_id=sid,
+                        title=title_arr[i].as_py(),
+                        created_at=int(created_arr[i].as_py()),
+                        last_active_at=int(active_arr[i].as_py())
+                    )
         
         # Return sorted by last active
         return sorted(sessions_dict.values(), key=lambda s: s.last_active_at, reverse=True)
@@ -418,9 +405,9 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         session_id = request.session_id
         if session_id in self.moderators:
             moderator = self.moderators[session_id]
-            print(f"📜 [Agent] Serving history from memory for: {session_id} ({len(moderator.all_messages)} msgs)")
+            print(f"📜 [Agent] Serving history from memory for: {session_id} ({len(moderator.context.all_messages)} msgs)")
             events = []
-            for msg in moderator.all_messages:
+            for msg in moderator.context.all_messages:
                 ts_iso = ms_to_iso(msg["ts"])
                 events.append(agent_pb2.ActivityEvent(
                     timestamp=ts_iso,
@@ -472,12 +459,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 pa.array([title], type=pa.string()),
                 pa.array([now], type=pa.int64()),
                 pa.array([now], type=pa.int64()),
-            ], schema=pa.schema([
-                pa.field("session_id", pa.string()),
-                pa.field("title", pa.string()),
-                pa.field("created_at", pa.int64()),
-                pa.field("last_active_at", pa.int64()),
-            ]))
+            ], schema=SESSIONS_SCHEMA)
             
             # Use append to register in PK table
             writer = self.sessions_table.new_append().create_writer()
@@ -518,159 +500,63 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             print(f"⚠️ [Agent] Could not lookup session start time: {e}. Falling back to full scan.")
 
         # 2. Create scanner and seek if possible
-        scanner = await self.table.new_scan().create_record_batch_log_scanner()
-        if start_ts > 0:
-            admin = await self.fluss_conn.get_admin()
-            offsets = await admin.list_offsets(
-                self.table.get_table_path(),
-                list(range(16)),
-                fluss.OffsetSpec.timestamp(start_ts)
-            )
-            scanner.subscribe_buckets(offsets)
-        else:
-            for b in range(16):
-                scanner.subscribe(bucket_id=b, start_offset=0)
+        scanner = await self.fluss.create_scanner(self.table, start_ts=start_ts if start_ts > 0 else None)
         
         events = []
         empty_polls = 0
-        while empty_polls < 10: # Increased tolerance for chat history
-            poll = await asyncio.to_thread(scanner.poll_arrow, timeout_ms=500)
-            if poll.num_rows == 0:
+        while empty_polls < 10:
+            batches = await FlussClient.poll_async(scanner, timeout_ms=500)
+            if not batches:
                 empty_polls += 1
                 continue
             
             empty_polls = 0
-            # Use raw Arrow columns (faster and avoids pandas dependency issues)
-            session_arr = poll.column("session_id")
-            ts_arr = poll.column("ts")
-            actor_arr = poll.column("actor_id")
-            content_arr = poll.column("content")
-            
-            for i in range(poll.num_rows):
-                if session_arr[i].as_py() != session_id:
-                    continue
+            for poll in batches:
+                session_arr = poll.column("session_id")
+                ts_arr = poll.column("ts")
+                actor_arr = poll.column("actor_id")
+                content_arr = poll.column("content")
+                
+                for i in range(poll.num_rows):
+                    if session_arr[i].as_py() != session_id:
+                        continue
 
-                ts_ms = ts_arr[i].as_py()
-                actor_id = actor_arr[i].as_py()
-                content = content_arr[i].as_py()
-                
-                # Conversion to string if needed
-                if isinstance(actor_id, bytes): actor_id = actor_id.decode('utf-8')
-                if isinstance(content, bytes): content = content.decode('utf-8')
+                    ts_ms = ts_arr[i].as_py()
+                    actor_id = actor_arr[i].as_py()
+                    content = content_arr[i].as_py()
+                    
+                    if isinstance(actor_id, bytes): actor_id = actor_id.decode('utf-8')
+                    if isinstance(content, bytes): content = content.decode('utf-8')
 
-                ts_iso = ms_to_iso(ts_ms)
-                
-                # Determine type — match moderator.py behavior
-                try:
-                    e_type = poll.column("type")[i].as_py()
-                    if isinstance(e_type, bytes): e_type = e_type.decode('utf-8')
-                except (KeyError, ValueError, IndexError):
-                    # Fallback for old records without 'type'
-                    e_type = "thought" if actor_id == "Moderator" else "output"
-                
-                events.append({
-                    "ts": ts_ms,
-                    "proto": agent_pb2.ActivityEvent(
-                        timestamp=ts_iso,
-                        type=e_type,
-                        content=content,
-                        actor_id=actor_id
-                    )
-                })
+                    ts_iso = ms_to_iso(ts_ms)
+                    
+                    try:
+                        e_type = poll.column("type")[i].as_py()
+                        if isinstance(e_type, bytes): e_type = e_type.decode('utf-8')
+                    except (KeyError, ValueError, IndexError):
+                        e_type = "thought" if actor_id == "Moderator" else "output"
+                    
+                    events.append({
+                        "ts": ts_ms,
+                        "proto": agent_pb2.ActivityEvent(
+                            timestamp=ts_iso,
+                            type=e_type,
+                            content=content,
+                            actor_id=actor_id
+                        )
+                    })
         
-        # Explicitly sort the entire history by millisecond timestamp
         events.sort(key=lambda x: x["ts"])
         return [e["proto"] for e in events]
 
-async def init_infrastructure():
-    print("🛰️ Initializing Fluss Infrastructure...")
-    fluss_config = fluss.Config({"bootstrap.servers": config.FLUSS_BOOTSTRAP_SERVERS})
-    
-    global chat_table, sessions_table, board_table
-    
-    for attempt in range(30):
-        try:
-            conn = await fluss.FlussConnection.create(fluss_config)
-            print("✅ Connected to Fluss.")
-            admin = await conn.get_admin()
-            
-            # Database
-            await admin.create_database("containerclaw", ignore_if_exists=True)
-            
-            # 1. Chatroom Table
-            table_path = fluss.TablePath("containerclaw", "chatroom")
-            schema = pa.schema([
-                pa.field("session_id", pa.string()),
-                pa.field("ts", pa.int64()),
-                pa.field("actor_id", pa.string()),
-                pa.field("content", pa.string()),
-                pa.field("type", pa.string()),
-                pa.field("tool_name", pa.string()),
-                pa.field("tool_success", pa.bool_()),
-                pa.field("parent_actor", pa.string()),
-            ])
-            descriptor = fluss.TableDescriptor(
-                fluss.Schema(schema),
-                bucket_keys=["session_id"],
-                bucket_count=16
-            )
-            await admin.create_table(table_path, descriptor, ignore_if_exists=True)
-            chat_table = await conn.get_table(table_path)
-            
-            # 2. Sessions Table
-            sessions_path = fluss.TablePath("containerclaw", "sessions")
-            sessions_schema = pa.schema([
-                pa.field("session_id", pa.string()),
-                pa.field("title", pa.string()),
-                pa.field("created_at", pa.int64()),
-                pa.field("last_active_at", pa.int64()),
-            ])
-            sessions_descriptor = fluss.TableDescriptor(
-                fluss.Schema(sessions_schema),
-                bucket_keys=["session_id"],
-                bucket_count=16
-            )
-            await admin.create_table(sessions_path, sessions_descriptor, ignore_if_exists=True)
-            sessions_table = await conn.get_table(sessions_path)
-            
-            # 3. Board Events Table
-            board_path = fluss.TablePath("containerclaw", "board_events")
-            board_schema = pa.schema([
-                pa.field("session_id", pa.string()),
-                pa.field("ts", pa.int64()),
-                pa.field("action", pa.string()),
-                pa.field("item_id", pa.string()),
-                pa.field("item_type", pa.string()),
-                pa.field("title", pa.string()),
-                pa.field("description", pa.string()),
-                pa.field("status", pa.string()),
-                pa.field("assigned_to", pa.string()),
-                pa.field("actor", pa.string()),
-            ])
-            board_descriptor = fluss.TableDescriptor(
-                fluss.Schema(board_schema),
-                bucket_keys=["session_id"],
-                bucket_count=16
-            )
-            await admin.create_table(board_path, board_descriptor, ignore_if_exists=True)
-            board_table = await conn.get_table(board_path)
-            
-            print("🚀 All Fluss tables connected and ready.")
-            return conn, chat_table, board_table, sessions_table
-
-        except Exception as e:
-            print(f"⏳ Fluss initialization failed (attempt {attempt+1}/30): {e}")
-            await asyncio.sleep(3)
-    
-    raise Exception("❌ Failed to initialize Fluss after 30 attempts.")
-
 def serve():
     # 1. Block until Fluss is ready
-    conn, chat_table, board_table, sessions_table = asyncio.run(init_infrastructure())
+    fluss_client = FlussClient(config.FLUSS_BOOTSTRAP_SERVERS)
+    asyncio.run(fluss_client.connect())
     
     # 2. Start gRPC
     server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=10))
-    agent_service = AgentService(conn, chat_table, board_table, sessions_table)
+    agent_service = AgentService(fluss_client)
     agent_pb2_grpc.add_AgentServiceServicer_to_server(agent_service, server)
     server.add_insecure_port('0.0.0.0:50051')
     server.start()
