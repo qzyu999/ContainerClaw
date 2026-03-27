@@ -59,9 +59,18 @@ class CommandDispatcher:
 # ── Built-in Command Handlers ───────────────────────────────────────
 
 async def _handle_stop(content: str, moderator):
-    """Halt all autonomous execution immediately."""
-    moderator.base_budget = 0
-    moderator.current_steps = 0
+    """Halt all autonomous execution immediately.
+    
+    If a ReconciliationController is wired, uses halt() to cancel
+    running election/execution tasks. Otherwise falls back to
+    budget zeroing.
+    """
+    reconciler = getattr(moderator, '_reconciler', None)
+    if reconciler:
+        reconciler.halt()
+    else:
+        moderator.base_budget = 0
+        moderator.current_steps = 0
     print("🛑 [Moderator] /stop received. Halting autonomy.")
     await moderator.publish("Moderator", "🛑 Automation halted by user demand.", "system")
 
@@ -72,6 +81,13 @@ async def _handle_automation(content: str, moderator):
         val = int(content.split("=")[1])
         moderator.base_budget = val
         moderator.current_steps = val
+        # If reconciler is in SUSPENDED state, transition back to IDLE
+        reconciler = getattr(moderator, '_reconciler', None)
+        if reconciler:
+            from reconciler import State
+            if reconciler.state == State.SUSPENDED:
+                reconciler.state = State.IDLE
+                print(f"🔄 [Reconciler] Exiting SUSPENDED → IDLE (budget={val})")
         print(f"🤖 [Moderator] /automation={val} received. Budget updated.")
         await moderator.publish("Moderator", f"🤖 Step budget updated to: {val}", "system")
     except (IndexError, ValueError):

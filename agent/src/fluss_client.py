@@ -15,7 +15,9 @@ import pyarrow as pa
 
 from schemas import (
     CHATROOM_SCHEMA, SESSIONS_SCHEMA, BOARD_EVENTS_SCHEMA,
+    AGENT_STATUS_SCHEMA,
     DATABASE, CHATROOM_TABLE, SESSIONS_TABLE, BOARD_EVENTS_TABLE,
+    AGENT_STATUS_TABLE,
     DEFAULT_BUCKET_COUNT, BUCKET_KEY,
 )
 
@@ -37,6 +39,7 @@ class FlussClient:
         self.chat_table = None
         self.sessions_table = None
         self.board_table = None
+        self.status_table = None
 
     async def connect(self, max_attempts: int = 30, retry_delay: float = 3.0):
         """Connect to Fluss and initialize all tables.
@@ -65,6 +68,9 @@ class FlussClient:
                 )
                 self.board_table = await self._ensure_table(
                     BOARD_EVENTS_TABLE, BOARD_EVENTS_SCHEMA
+                )
+                self.status_table = await self._ensure_table(
+                    AGENT_STATUS_TABLE, AGENT_STATUS_SCHEMA
                 )
 
                 print("🚀 All Fluss tables connected and ready.")

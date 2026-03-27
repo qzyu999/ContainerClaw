@@ -50,12 +50,24 @@ BOARD_EVENTS_SCHEMA = pa.schema([
     pa.field("actor", pa.string()),
 ])
 
+# ── Agent Status Table ──────────────────────────────────────────────
+# Agent liveness and state. Written by HeartbeatEmitter, read by UI
+# and monitoring agents. Bucket key: session_id
+AGENT_STATUS_SCHEMA = pa.schema([
+    pa.field("session_id", pa.string()),
+    pa.field("agent_id", pa.string()),
+    pa.field("state", pa.string()),             # "idle", "electing", "executing", "suspended"
+    pa.field("last_heartbeat", pa.int64()),     # ms timestamp
+    pa.field("current_task", pa.string()),      # description of active work
+])
+
 # ── Table Paths ─────────────────────────────────────────────────────
 # Centralized table path constants (database.table)
 DATABASE = "containerclaw"
 CHATROOM_TABLE = "chatroom"
 SESSIONS_TABLE = "sessions"
 BOARD_EVENTS_TABLE = "board_events"
+AGENT_STATUS_TABLE = "agent_status"
 
 # ── Bucket Configuration ────────────────────────────────────────────
 DEFAULT_BUCKET_COUNT = 16

@@ -250,9 +250,9 @@ class ProjectBoard:
             print(f"⚠️ [ProjectBoard] Fluss replay failed, falling back to JSON: {e}")
             self._load()
 
-    def _publish_event(self, action, item_id, item_type="", title="",
-                       description="", status="", assigned_to="", actor="Moderator"):
-        """Write a board mutation event to Fluss."""
+    async def _publish_event(self, action, item_id, item_type="", title="",
+                             description="", status="", assigned_to="", actor="Moderator"):
+        """Write a board mutation event to Fluss (non-blocking)."""
         if not self._writer:
             return
         try:
@@ -269,7 +269,8 @@ class ProjectBoard:
                 pa.array([actor], type=pa.string()),
             ], schema=self._pa_schema)
             self._writer.write_arrow_batch(batch)
-            self._writer.flush()
+            if hasattr(self._writer, "flush"):
+                await self._writer.flush()
             print(f"📋 [ProjectBoard] Published {action} event for {item_id}")
         except Exception as e:
             print(f"⚠️ [ProjectBoard] Failed to write to Fluss: {e}")
@@ -289,7 +290,7 @@ class ProjectBoard:
         tmp_path.write_text(json.dumps(self.items, indent=2))
         tmp_path.replace(self.board_path)
 
-    def create_item(
+    async def create_item(
         self, item_type: str, title: str,
         description: str = "", assigned_to: str | None = None,
         actor: str = "Moderator",
@@ -305,7 +306,7 @@ class ProjectBoard:
         }
         self.items.append(item)
         if self.board_table:
-            self._publish_event(
+            await self._publish_event(
                 "create", item["id"], item_type, title,
                 description, "todo", assigned_to or "", actor,
             )
@@ -313,23 +314,23 @@ class ProjectBoard:
             self._save()
         return item
 
-    def update_status(self, item_id: str, status: str, actor: str = "Moderator") -> dict | None:
+    async def update_status(self, item_id: str, status: str, actor: str = "Moderator") -> dict | None:
         for item in self.items:
             if item["id"] == item_id:
                 item["status"] = status
                 if self.board_table:
-                    self._publish_event("update_status", item_id, status=status, actor=actor)
+                    await self._publish_event("update_status", item_id, status=status, actor=actor)
                 else:
                     self._save()
                 return item
         return None
 
-    def delete_item(self, item_id: str, actor: str = "Moderator") -> bool:
+    async def delete_item(self, item_id: str, actor: str = "Moderator") -> bool:
         initial_count = len(self.items)
         self.items = [item for item in self.items if item["id"] != item_id]
         if len(self.items) < initial_count:
             if self.board_table:
-                self._publish_event("delete", item_id, actor=actor)
+                await self._publish_event("delete", item_id, actor=actor)
             else:
                 self._save()
             return True
@@ -408,7 +409,7 @@ class BoardTool(Tool):
 
         if action == "create":
             title = params.get("title", "Untitled")
-            item = self.board.create_item(
+            item = await self.board.create_item(
                 item_type=params.get("type", "task"),
                 title=title,
                 description=params.get("description", ""),
@@ -427,7 +428,7 @@ class BoardTool(Tool):
                     success=False, output="",
                     error="'update' requires 'item_id' and 'status'.",
                 )
-            item = self.board.update_status(item_id, status)
+            item = await self.board.update_status(item_id, status)
             if item:
                 return ToolResult(
                     success=True,
@@ -457,7 +458,7 @@ class BoardTool(Tool):
                     error=f"Item {item_id} has status '{target_item['status']}'. Only 'done' items can be deleted."
                 )
             
-            if self.board.delete_item(item_id):
+            if await self.board.delete_item(item_id):
                 return ToolResult(success=True, output=f"Deleted {item_id} from board.")
             return ToolResult(success=False, output="", error=f"Failed to delete {item_id}.")
 
@@ -494,7 +495,10 @@ class CreateFileTool(Tool):
             return ToolResult(success=False, output="", error="Path traversal denied.")
         if path.exists():
             return ToolResult(success=False, output="", error=f"File already exists: {params.get('path')}. Use surgical_edit to modify it.")
-            
+        return await asyncio.to_thread(self._create_file, params, path)
+
+    def _create_file(self, params: dict, path: Path) -> ToolResult:
+        """File creation in worker thread — never blocks the event loop."""
         content = params.get("content", "")
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -531,9 +535,15 @@ class SurgicalEditTool(Tool):
             return ToolResult(success=False, output="", error=f"File not found: {path}")
 
         old_str = params.get("old_str", "")
-        new_str = params.get("new_str", "")
         if not old_str:
             return ToolResult(success=False, output="", error="old_str cannot be empty.")
+
+        return await asyncio.to_thread(self._perform_edit, params, path)
+
+    def _perform_edit(self, params: dict, path: Path) -> ToolResult:
+        """File I/O in worker thread — never blocks the event loop."""
+        old_str = params.get("old_str", "")
+        new_str = params.get("new_str", "")
 
         try:
             content = path.read_text(encoding="utf-8")
@@ -599,6 +609,10 @@ class AdvancedReadTool(Tool):
         if start_line < 1 or end_line < start_line:
             return ToolResult(success=False, output="", error="Invalid line range.")
 
+        return await asyncio.to_thread(self._read_lines, path, start_line, end_line)
+
+    def _read_lines(self, path: Path, start_line: int, end_line: int) -> ToolResult:
+        """File read in worker thread — never blocks the event loop."""
         try:
             lines = path.read_text(errors="replace").splitlines()
         except Exception as e:
@@ -623,6 +637,10 @@ class RepoMapTool(Tool):
         }
 
     async def execute(self, agent_id: str, params: dict) -> ToolResult:
+        return await asyncio.to_thread(self._build_map)
+
+    def _build_map(self) -> ToolResult:
+        """Runs entirely in a worker thread — never touches the event loop."""
         base_dir = Path("/workspace")
         output_lines = []
         parsed_files = 0
