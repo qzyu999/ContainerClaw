@@ -17,25 +17,31 @@ This document shows the full list of features that should remain stable as the c
 - * [Planned] /clear-workspace to clear workspace from the human chat interface
 - [Planned] /normal=true/false to simplify the agent context window so they talk more normally and use less (or no) tooling
 - [Planned] /tool-mute and /tool-unmute to remove the tool outputs from the main chatroom
+- [Planned] Filter (via web UI)/mute tool-related actions in chatroom
 - * [Planned] Snorkel: A way to see the actual context window for each agent
-- [Planned] Subagents that work independently and async with the main chatroom
+- [Planned] DeerFlow-style JSON memories for AI context HUD
+- [Existing] Subagents that work independently and async with the main chatroom
 - [Planned] Telemetry/querying into the underlying Fluss tables, e.g., SELECT * FROM table WHERE user=Alice
 - [Planned] Indicator for each agent (and subagents) for status (e.g., waiting, thinking, using tools, etc.)
 - [Planned] Live Flink metrics on Fluss streams
 - [Planned] Tier into Iceberg tables (after compaction etc. is fixed)
-- [Planned] Move config files to the root folder
+- [Planned] Move config files to the root folder / config.yaml similar to DeerFlow
 - [Planned] Final review agent that analyzes the votes/reasons and selects based on the collective output (based on GenSelect)
 - [Planned] Integration: Google Workspace
+- [Planned] Integration: Slack
 - [Planned] Integration: GitHub
 - [Planned] Integration: agent webbrowsing - allow them to do deep research etc. within the sandbox
 - [Planned] Read-only access to other system files (may need to just do docker cp or mount large folders at startup with read-only)
 - [Planned] Kaggle/autoresearch module: allow the agents to loop and improve on their own solutions through an API 
 - [Planned] Kubernetes integrations
-- [Planned] Filter (via web UI)/mute tool-related actions in chatroom
 - [Planned] Project board seems to require manual refresh quite often
+- [Planned] Visualization tab of the agentic DAG
+- [Planned] README.md for all the commands and how to use them
 
 Milestones
 - [x] Add all the basic functionality - then refactor for cleanliness/modularity/efficient idempotent modular system around the stream -> document the stream-centric approach which should also be agent-centric. In particular, a concept for spawning subagents to organically allow for parallelization (swarm > static patterns) (Noted with *)
+- [] Refactor for an agnostic LLM API (Gemini, OpenAI, Anthropic, Ollama, MLX, etc.), where the number of primary voting agents, their API, and description can be customized (e.g. Agent('Alice', 'Software architect.', 'MLX'), Agent('Bob', 'Program Manager.', 'Gemini')) in a config.yaml. The entire repo's specific config files (include .env files and other global variables) can all be routed towards this single root-level config file. Furthermore, we can also start to integrate a SELF.md and MEMORY.json (DeerFlow-inspired). It would also make sense for the config.yaml to allow for editing the prompts that go towards the voting process.
+- [] Snorkel and DAG nodes should allow for a first-level telemetry into agent activity
 
 Bugs
-- ⚠️ [StreamActivity] Poll error: - after long period of silence with agents
+- [x] ⚠️ [StreamActivity] Poll error: - after long period of silence with agents
