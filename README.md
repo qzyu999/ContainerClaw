@@ -5,7 +5,7 @@ ContainerClaw is a secure, defense-in-depth, and containerized runtime for auton
 ---
 
 # Temporary Fluss Workaround
-The Dockerfile requires compiling a fluss-rust repo as the Python library is not ready. This is done via a git submodule located in ./vendor/fluss-rust.
+The Dockerfile requires compiling a fluss-rust repo as the Python library is not ready. **Rust must be installed on your machine** to build these components. This is done via a git submodule located in `./vendor/fluss-rust`.
 
 ## Step 1: Clone the main project
 git clone https://github.com/qzyu999/containerclaw.git
@@ -21,6 +21,7 @@ The second command will also git clone the required submodule for the Python flu
 ### 1. Prerequisites
 - Docker & Docker Compose
 - A Gemini API Key (from Google AI Studio)
+- [Rust](https://www.rust-lang.org/tools/install) (Required to build dependencies)
 
 ### 2. Configuration
 ContainerClaw uses **Docker Secrets** to isolate your API keys from the agent container.
