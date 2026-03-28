@@ -38,6 +38,7 @@ agent/src/agent_pb2.py
 agent/src/agent_pb2_grpc.py
 bridge/src/proto/*_pb2.py
 bridge/src/proto/*_pb2_grpc.py
+*.code-workspace
 
 # OS Files
 .DS_Store
