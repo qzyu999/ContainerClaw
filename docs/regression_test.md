@@ -23,7 +23,7 @@ This document shows the full list of features that should remain stable as the c
 - [Existing] Subagents that work independently and async with the main chatroom
 - [Planned] Telemetry/querying into the underlying Fluss tables, e.g., SELECT * FROM table WHERE user=Alice
 - [Planned] Indicator for each agent (and subagents) for status (e.g., waiting, thinking, using tools, etc.)
-- [Planned] Live Flink metrics on Fluss streams
+- [Planned] Live Flink metrics on Fluss streams (Starrocks may be better)
 - [Planned] Tier into Iceberg tables (after compaction etc. is fixed)
 - [Planned] Move config files to the root folder / config.yaml similar to DeerFlow
 - [Planned] Final review agent that analyzes the votes/reasons and selects based on the collective output (based on GenSelect)
