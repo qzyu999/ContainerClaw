@@ -24,20 +24,15 @@ The second command will also git clone the required submodule for the Python flu
 - [Rust](https://www.rust-lang.org/tools/install) (Required to build dependencies)
 
 ### 2. Configuration
-ContainerClaw uses **Docker Secrets** to isolate your API keys from the agent container.
+ContainerClaw uses a centralized `config.yaml` to define your agent roster, credentials, and provider endpoints.
 
-1.  Create a `secrets` directory:
+1.  **Configure System Defaults:** Edit `config.yaml` in the project root. By default, it supports local inference (MLX/vLLM) and Cloud APIs (Gemini/OpenAI).
+2.  **Add Secrets:** Create a `secrets` directory. Add your text files exactly matching the secret names referenced in `config.yaml`:
     ```bash
     mkdir -p secrets
-    ```
-2.  Put your Gemini API key in a file named `secrets/gemini_api_key.txt`:
-    ```bash
     echo "your-api-key-here" > secrets/gemini_api_key.txt
     ```
-3.  (Optional) Create a `.env` file based on `.env.example`:
-    ```bash
-    cp .env.example .env
-    ```
+3.  **Customize Agents (Optional):** Define new agents in the `agents.roster` section of `config.yaml`. You can assign different models or providers securely on a per-agent basis.
 
 ### 3. Launching the Stack
 Use the provided `claw.sh` script to manage the lifecycle of your agent sessions.
