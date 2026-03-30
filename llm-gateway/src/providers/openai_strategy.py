@@ -8,41 +8,22 @@ Zero translation — the payload is forwarded as-is with only
 authentication headers and URL routing applied.
 """
 
-import requests
-import certifi
-from requests.adapters import HTTPAdapter
-
+import httpx
+import asyncio
 
 class OpenAIStrategy:
     """Transparent proxy for OpenAI-compatible backends."""
 
-    def __init__(self, provider_config):
+    def __init__(self, provider_config, client: httpx.AsyncClient):
         self.name = provider_config.get("name", "openai")
         self.base_url = provider_config["base_url"]
         self.api_key = provider_config.get("api_key", "")
         self.settings = provider_config.get("settings", {})
-        self.session = self._build_session()
+        self.client = client
+        self.semaphore = asyncio.Semaphore(20)
 
-    def _build_session(self):
-        """Build a requests session with connection pooling (no auto-retry).
-
-        Auto-retry is intentionally disabled here. Local inference servers
-        (MLX, Ollama) can only serve one request at a time — retry storms
-        from 5 concurrent agents cause connection drops. The agent layer
-        has its own retry loop with backoff.
-        """
-        session = requests.Session()
-        adapter = HTTPAdapter(
-            pool_connections=10,
-            pool_maxsize=10,
-        )
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-        session.verify = certifi.where()
-        return session
-
-    def send(self, payload: dict) -> tuple:
-        """Forward payload to OpenAI-compatible backend.
+    async def send(self, payload: dict) -> tuple:
+        """Forward payload to OpenAI-compatible backend asynchronously.
 
         Returns:
             (response_dict, status_code) — response is passed through unchanged.
@@ -61,7 +42,9 @@ class OpenAIStrategy:
             url = f"{base}/v1/chat/completions"
 
         try:
-            res = self.session.post(url, json=payload, headers=headers, timeout=300)
+            async with self.semaphore:
+                res = await self.client.post(url, json=payload, headers=headers)
             return res.json(), res.status_code
         except Exception as e:
             return {"error": f"OpenAI strategy request failed: {str(e)}"}, 502
+

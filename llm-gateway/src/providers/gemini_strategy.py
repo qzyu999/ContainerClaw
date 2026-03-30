@@ -8,47 +8,49 @@ logic exists in the system.
 Translation covers:
 - messages → contents/parts (with system_instruction extraction)
 - tools → function_declarations
-- tool_choice → function_calling_config
 - Response: candidates → choices (text + tool_calls)
 """
 
-import requests
-import certifi
-from urllib3.util.retry import Retry
-from requests.adapters import HTTPAdapter
+import httpx
+import asyncio
+from tenacity import retry, wait_exponential, wait_random, stop_after_attempt, retry_if_result
 
+def is_transient_error(exception):
+    if isinstance(exception, httpx.HTTPStatusError):
+        # Retry on Rate Limit (429) or Server Errors (5xx)
+        return exception.response.status_code in {429, 500, 502, 503, 504}
+    # Retry on network-level failures (DNS, Connection Refused, etc.)
+    return isinstance(exception, httpx.TransportError)
 
 class GeminiStrategy:
     """Translates OpenAI wire format ↔ Gemini generateContent format."""
 
-    def __init__(self, provider_config):
+    def __init__(self, provider_config, client: httpx.AsyncClient):
         self.name = provider_config.get("name", "gemini")
         self.base_url = provider_config["base_url"]
         self.api_key = provider_config.get("api_key", "")
         self.settings = provider_config.get("settings", {})
-        self.session = self._build_session()
+        self.client = client
+        # Cap concurrent outbound requests per upstream provider to avoid rate-limit bans
+        self.semaphore = asyncio.Semaphore(20)
 
-    def _build_session(self):
-        """Build a resilient requests session with connection pooling."""
-        session = requests.Session()
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["POST"],
-            raise_on_status=False,
-        )
-        adapter = HTTPAdapter(
-            max_retries=retry_strategy,
-            pool_connections=10,
-            pool_maxsize=10,
-        )
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-        session.verify = certifi.where()
-        return session
+    @retry(
+        wait=wait_exponential(multiplier=1, max=10) + wait_random(0, 1),
+        stop=stop_after_attempt(3),
+        retry=retry_if_result(is_transient_error),
+        reraise=True
+    )
+    async def _post_with_retry(self, url: str, json_payload: dict) -> httpx.Response:
+        """Execute post request under a concurrency semaphore with status-aware retry."""
+        async with self.semaphore:
+            res = await self.client.post(url, json=json_payload)
+            # Raise an HTTPStatusError if it warrants a retry or is an error
+            # so `is_transient_error` logic can decide if it should retry
+            if res.status_code >= 400:
+                res.raise_for_status()
+            return res
 
-    def send(self, payload: dict) -> tuple:
+    async def send(self, payload: dict) -> tuple:
         """Translate OpenAI payload → Gemini, call API, translate response back.
 
         Returns:
@@ -60,13 +62,14 @@ class GeminiStrategy:
         url = f"{self.base_url}/models/{model}:generateContent?key={self.api_key}"
 
         try:
-            res = self.session.post(url, json=gemini_payload, timeout=300)
+            res = await self._post_with_retry(url, gemini_payload)
             if res.status_code == 200:
                 return self._from_gemini(res.json(), model), 200
             else:
                 return res.json(), res.status_code
         except Exception as e:
             return {"error": f"Gemini strategy request failed: {str(e)}"}, 502
+
 
     # ── OpenAI → Gemini Translation ──────────────────────────────
 

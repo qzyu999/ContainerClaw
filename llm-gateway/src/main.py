@@ -11,15 +11,16 @@ All provider configuration comes from config.yaml (mounted at /config/).
 import os
 import sys
 import json
-from flask import Flask, request
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
 
 # Add shared module path for config_loader
 sys.path.insert(0, os.getenv("SHARED_MODULE_PATH", "/app/shared"))
 
 from src.providers.openai_strategy import OpenAIStrategy
 from src.providers.gemini_strategy import GeminiStrategy
-
-app = Flask(__name__)
 
 # ── Strategy Registry ────────────────────────────────────────────
 
@@ -29,7 +30,7 @@ STRATEGY_MAP = {
 }
 
 
-def _load_strategies() -> tuple[dict, str]:
+def _load_strategies(client: httpx.AsyncClient) -> tuple[dict, str]:
     """Load provider strategies from config.yaml or env vars."""
     config_path = os.getenv("CLAW_CONFIG_PATH", "/config/config.yaml")
     strategies = {}
@@ -60,7 +61,7 @@ def _load_strategies() -> tuple[dict, str]:
                             api_key = ""
                     prov["api_key"] = api_key
                     prov["name"] = name
-                    strategies[name] = cls(prov)
+                    strategies[name] = cls(prov, client)
                     print(f"✅ [Gateway] Loaded provider: {name} ({prov_type})")
 
             print(f"🎯 [Gateway] Default provider: {default_provider}")
@@ -83,42 +84,62 @@ def _load_strategies() -> tuple[dict, str]:
         "base_url": "https://generativelanguage.googleapis.com/v1beta",
         "api_key": api_key,
         "settings": {"thinking_level": "HIGH", "max_output_tokens": 8192},
-    })
+    }, client)
     print("⚠️ [Gateway] Using fallback Gemini-only configuration.")
     return strategies, "gemini-cloud"
 
 
-# Initialize on module load
-strategies, default_provider = _load_strategies()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Setup client with connection pools and timeouts for LLMs
+    limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
+    timeout = httpx.Timeout(10.0, read=90.0)
+    async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+        # Load strategies and attach them to the application state
+        strategies, default_provider = _load_strategies(client)
+        app.state.strategies = strategies
+        app.state.default_provider = default_provider
+        yield
+    # Client is automatically closed here
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 # ── Routes ───────────────────────────────────────────────────────
 
-@app.route('/v1/chat/completions', methods=['POST'])
-def proxy():
+@app.post('/v1/chat/completions')
+async def proxy(request: Request):
     """Route LLM requests to the appropriate provider strategy."""
-    data = request.json
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
     # Determine provider: explicit in request → default from config
-    provider_name = data.pop("provider", None) or default_provider
-    strategy = strategies.get(provider_name)
+    provider_name = data.pop("provider", None) or app.state.default_provider
+    strategy = app.state.strategies.get(provider_name)
 
     if not strategy:
-        return {"error": f"Unknown provider: {provider_name}. "
-                f"Available: {list(strategies.keys())}"}, 400
+        return JSONResponse(
+            {"error": f"Unknown provider: {provider_name}. Available: {list(app.state.strategies.keys())}"}, 
+            status_code=400
+        )
 
-    return strategy.send(data)
+    res, status_code = await strategy.send(data)
+    return JSONResponse(content=res, status_code=status_code)
 
 
-@app.route('/health', methods=['GET'])
-def health():
+@app.get('/health')
+async def health():
     """Health check endpoint."""
     return {
         "status": "ok",
-        "providers": list(strategies.keys()),
-        "default_provider": default_provider,
+        "providers": list(app.state.strategies.keys()),
+        "default_provider": app.state.default_provider,
     }
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+    import uvicorn
+    uvicorn.run("src.main:app", host="0.0.0.0", port=8000)

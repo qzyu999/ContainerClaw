@@ -25,7 +25,7 @@ def test_gemini_strategy_preserves_thoughts():
         "api_key": "test-key",
         "settings": {}
     }
-    strategy = GeminiStrategy(prov)
+    strategy = GeminiStrategy(prov, None)
 
     # 1. Mock a raw response from Gemini containing a thought signature and a function call
     mock_gemini_response = {
