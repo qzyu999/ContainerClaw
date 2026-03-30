@@ -884,5 +884,3 @@ These items are explicitly **deferred** to future refactors:
 2. **SELF.md / MEMORY.json** — Per-agent persistent memory files that survive across sessions. Would be referenced in config.yaml as paths.
 
 3. **Telemetry & Observability** — Structured logging of every LLM API call: latency, token counts, provider, model, cost. Enables per-agent performance dashboarding.
-
-4. **LiteLLM integration** — Once the OpenAI wire format is standard, LiteLLM can replace the gateway entirely. The strategy pattern makes this a configuration change, not an architectural one.
