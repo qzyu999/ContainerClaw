@@ -3,3 +3,5 @@ grpcio
 grpcio-tools
 pyarrow
 pandas
+pyyaml
+pydantic

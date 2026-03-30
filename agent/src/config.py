@@ -1,16 +1,33 @@
+"""
+ContainerClaw Agent Configuration — Thin wrapper over config_loader.
+
+This file exists for backward compatibility. All modules that
+`import config` get values sourced from config.yaml (via config_loader)
+or env vars (via _from_env fallback).
+"""
+
 import os
+import sys
 
-# Agent Session Configuration
-CLAW_SESSION_ID = os.getenv("CLAW_SESSION_ID", "default-session")
-CONCHSHELL_ENABLED = os.getenv("CONCHSHELL_ENABLED", "true").lower() == "true"
-AUTONOMOUS_STEPS = int(os.getenv("AUTONOMOUS_STEPS", "-1"))
+# Add shared/ to the Python path for config_loader
+sys.path.insert(0, os.getenv("SHARED_MODULE_PATH", "/app/shared"))
 
-# LLM & Moderation Configuration
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "gemini-3-flash-preview")
-LLM_GATEWAY_URL = os.getenv("LLM_GATEWAY_URL", "http://llm-gateway:8000")
-MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", 100))
-MAX_HISTORY_CHARS = int(os.getenv("MAX_HISTORY_CHARS", 480000)) # Approx 120k tokens
-MAX_TOOL_ROUNDS = int(os.getenv("MAX_TOOL_ROUNDS", 30))
+from config_loader import load_config  # noqa: E402
 
-# Network Configuration
-FLUSS_BOOTSTRAP_SERVERS = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "coordinator-server:9123")
+_cfg = load_config()
+
+# ── Backward-compatible module-level constants ──────────────────
+# These match the old `config.py` interface so existing imports work.
+
+LLM_GATEWAY_URL = _cfg.gateway_url
+DEFAULT_MODEL = _cfg.default_model
+MAX_HISTORY_MESSAGES = _cfg.max_history_messages
+MAX_HISTORY_CHARS = _cfg.max_history_chars
+MAX_TOOL_ROUNDS = _cfg.max_tool_rounds
+CONCHSHELL_ENABLED = _cfg.conchshell_enabled
+AUTONOMOUS_STEPS = _cfg.autonomous_steps
+FLUSS_BOOTSTRAP_SERVERS = _cfg.fluss_bootstrap_servers
+SESSION_ID = _cfg.session_id
+
+# Expose the full config object for new code
+CONFIG = _cfg

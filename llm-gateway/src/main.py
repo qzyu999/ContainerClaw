@@ -1,92 +1,124 @@
+"""
+LLM Gateway — Provider-Agnostic Router.
+
+Routes requests to the appropriate backend via the Strategy Pattern.
+For OpenAI-compatible backends (MLX, vLLM, Ollama), requests pass through
+unchanged. For Gemini, the GeminiStrategy handles bidirectional translation.
+
+All provider configuration comes from config.yaml (mounted at /config/).
+"""
+
 import os
-import requests
-from flask import Flask, request, Response
+import sys
 import json
-import certifi
-import urllib3
-from urllib3.util.retry import Retry
-from requests.adapters import HTTPAdapter
+from flask import Flask, request
+
+# Add shared module path for config_loader
+sys.path.insert(0, os.getenv("SHARED_MODULE_PATH", "/app/shared"))
+
+from src.providers.openai_strategy import OpenAIStrategy
+from src.providers.gemini_strategy import GeminiStrategy
 
 app = Flask(__name__)
 
-# Load keys from Docker Secrets
-def get_secret(name):
-    try:
-        with open(f"/run/secrets/{name}", "r") as f:
-            return f.read().strip()
-    except Exception:
-        return None
+# ── Strategy Registry ────────────────────────────────────────────
 
-# Load all potential keys
-KEYS = {
-    "gemini": get_secret("gemini_api_key"),
-    "anthropic": get_secret("anthropic_api_key"),
-    "openai": get_secret("openai_api_key")
+STRATEGY_MAP = {
+    "openai": OpenAIStrategy,
+    "gemini": GeminiStrategy,
 }
 
-def is_active(key_name):
-    key = KEYS.get(key_name)
-    return key and not key.startswith("placeholder")
 
-# Set up a resilient requests session with connection pooling + SSL retry
-session = requests.Session()
-retry_strategy = Retry(
-    total=3,
-    backoff_factor=1,
-    status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["POST"],        # Allow retry on POST (needed for LLM calls)
-    raise_on_status=False,           # Don't raise — let us handle status codes
-)
-adapter = HTTPAdapter(
-    max_retries=retry_strategy,
-    pool_connections=10,             # Connection pool size per host
-    pool_maxsize=10,                 # Max connections per pool
-)
-session.mount("https://", adapter)
-session.mount("http://", adapter)
-session.verify = certifi.where()     # Explicit CA bundle
+def _load_strategies() -> tuple[dict, str]:
+    """Load provider strategies from config.yaml or env vars."""
+    config_path = os.getenv("CLAW_CONFIG_PATH", "/config/config.yaml")
+    strategies = {}
+    default_provider = "gemini-cloud"
+
+    try:
+        # Try loading from config.yaml
+        import yaml
+        from pathlib import Path
+
+        if Path(config_path).exists():
+            with open(config_path) as f:
+                raw = yaml.safe_load(f)
+
+            llm = raw.get("llm", {})
+            default_provider = llm.get("default_provider", "gemini-cloud")
+
+            for name, prov in llm.get("providers", {}).items():
+                prov_type = prov.get("type", "openai")
+                cls = STRATEGY_MAP.get(prov_type)
+                if cls:
+                    # Resolve API key from Docker secret if needed
+                    api_key = prov.get("api_key", "")
+                    if not api_key and prov.get("api_key_secret"):
+                        try:
+                            api_key = Path(f"/run/secrets/{prov['api_key_secret']}").read_text().strip()
+                        except Exception:
+                            api_key = ""
+                    prov["api_key"] = api_key
+                    prov["name"] = name
+                    strategies[name] = cls(prov)
+                    print(f"✅ [Gateway] Loaded provider: {name} ({prov_type})")
+
+            print(f"🎯 [Gateway] Default provider: {default_provider}")
+            return strategies, default_provider
+
+    except Exception as e:
+        print(f"⚠️ [Gateway] Failed to load config.yaml: {e}. Falling back to env vars.")
+
+    # Fallback: build Gemini-only strategy from env/secrets (backward compat)
+    def get_secret(name):
+        try:
+            with open(f"/run/secrets/{name}", "r") as f:
+                return f.read().strip()
+        except Exception:
+            return None
+
+    api_key = get_secret("gemini_api_key") or os.getenv("GEMINI_API_KEY", "")
+    strategies["gemini-cloud"] = GeminiStrategy({
+        "name": "gemini-cloud",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta",
+        "api_key": api_key,
+        "settings": {"thinking_level": "HIGH", "max_output_tokens": 8192},
+    })
+    print("⚠️ [Gateway] Using fallback Gemini-only configuration.")
+    return strategies, "gemini-cloud"
+
+
+# Initialize on module load
+strategies, default_provider = _load_strategies()
+
+
+# ── Routes ───────────────────────────────────────────────────────
 
 @app.route('/v1/chat/completions', methods=['POST'])
 def proxy():
+    """Route LLM requests to the appropriate provider strategy."""
     data = request.json
-    # Priority: payload key → Docker secret → env var
-    api_key = data.get('api_key') or KEYS.get('gemini') or os.getenv("GEMINI_API_KEY")
-    
-    if not api_key:
-        return {"error": "No Gemini API key available (checked payload, secrets, env)"}, 500
-    
-    model = data.get('model', 'gemini-3-flash-preview')
-    
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
-    # Extract config and ensure thinking is enabled for SWE-bench
-    gen_config = data.get('generationConfig', {})
+    # Determine provider: explicit in request → default from config
+    provider_name = data.pop("provider", None) or default_provider
+    strategy = strategies.get(provider_name)
 
-    # Force 'HIGH' thinking if not specified and using a Gemini 3 model
-    if 'gemini-3' in model:
-        # Set thinking_level if it isn't already there
-        if 'thinking_config' not in gen_config:
-            gen_config['thinking_config'] = {'thinking_level': 'HIGH'}
-        
-        # SWE-bench often needs more than the default 4k tokens for complex fixes
-        gen_config.setdefault('max_output_tokens', 8192)
+    if not strategy:
+        return {"error": f"Unknown provider: {provider_name}. "
+                f"Available: {list(strategies.keys())}"}, 400
 
-    google_payload = {
-        "contents": data.get('contents', []),
-        "system_instruction": {"parts": [{"text": data.get('system_instruction', '')}]},
-        "generationConfig": gen_config,
-        "tools": data.get('tools', []),
+    return strategy.send(data)
+
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Health check endpoint."""
+    return {
+        "status": "ok",
+        "providers": list(strategies.keys()),
+        "default_provider": default_provider,
     }
-    # Forward tool_config if present (function calling mode: ANY/AUTO/NONE/VALIDATED)
-    if data.get('tool_config'):
-        google_payload["tool_config"] = data['tool_config']
-    
-    try:
-        # Use the resilient session (connection pooling + automatic retry on failure)
-        res = session.post(url, json=google_payload, timeout=300)
-        return res.json(), res.status_code
-    except Exception as e:
-        return {"error": f"Gateway request failed: {str(e)}"}, 502
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)

@@ -1,10 +1,10 @@
 """
 Tool execution engine for ContainerClaw agents.
 
-Implements the full Gemini function-calling protocol loop:
-1. Agent thinks with tools (forced via ANY mode)
+Implements the OpenAI function-calling protocol loop:
+1. Agent thinks with tools (forced via tool_choice="required")
 2. Tools are executed via ToolDispatcher
-3. Results are sent back as functionResponse
+3. Results are sent back as tool-role messages
 4. Loop until agent produces text or max rounds exceeded
 
 Includes a circuit breaker that halts execution after 3 consecutive

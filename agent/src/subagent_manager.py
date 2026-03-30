@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass, field
 
 import config
-from agent import GeminiAgent
+from agent import LLMAgent
 from agent_context import AgentContext
 from fluss_client import FlussClient
 from tool_executor import ToolExecutor
@@ -58,13 +58,15 @@ class SubagentManager:
         table,
         session_id: str,
         publisher,
-        api_key: str,
+        provider: str = "",
+        model: str = "",
     ):
         self.fluss = fluss_client
         self.table = table
         self.session_id = session_id
         self.publisher = publisher  # Main stream publisher (for system messages)
-        self.api_key = api_key
+        self.provider = provider or config.CONFIG.default_provider
+        self.model = model or config.DEFAULT_MODEL
         self._active: dict[str, SubagentHandle] = {}
         self._file_locks: dict[str, str] = {}  # path → task_id
 
@@ -102,7 +104,7 @@ class SubagentManager:
         agent_id = f"Sub/{task_id}"
 
         # Create a fresh agent with the requested persona
-        agent = GeminiAgent(agent_id, agent_persona, self.api_key)
+        agent = LLMAgent(agent_id, agent_persona, provider=self.provider, model=self.model)
 
         # Build tool scope
         tools = available_tools or []

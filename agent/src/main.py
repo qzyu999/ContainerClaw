@@ -23,7 +23,7 @@ import grpc.aio
 import config
 from fluss_client import FlussClient
 from moderator import StageModerator
-from agent import GeminiAgent
+from agent import LLMAgent
 from tools import (
     ToolDispatcher, ProjectBoard, DelegateTool,
     DiffTool, TestRunnerTool, BoardTool,
@@ -92,21 +92,18 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
     async def _init_moderator(self, session_id: str) -> StageModerator:
         """Initialize a new session moderator. Runs on the event loop."""
         print(f"🧠 [Agent] Initializing new session context: {session_id}")
-        # Load API Key
-        try:
-            api_key = await asyncio.to_thread(
-                lambda: open("/run/secrets/gemini_api_key", "r").read().strip()
-            )
-        except Exception:
-            api_key = os.getenv("GEMINI_API_KEY")
 
-        agents = [
-            GeminiAgent("Alice", "Software architect.", api_key),
-            GeminiAgent("Bob", "Project manager.", api_key),
-            GeminiAgent("Carol", "Software engineer.", api_key),
-            GeminiAgent("David", "Software QA tester.", api_key),
-            GeminiAgent("Eve", "Business user.", api_key)
-        ]
+        # Build agents from config.yaml roster
+        cfg = config.CONFIG
+        agents = []
+        for agent_cfg in cfg.agents:
+            agents.append(LLMAgent(
+                agent_id=agent_cfg.name,
+                persona=agent_cfg.persona,
+                provider=agent_cfg.provider or cfg.default_provider,
+                model=agent_cfg.model or cfg.default_model,
+            ))
+        print(f"🤖 [Agent] Roster: {[a.agent_id for a in agents]} (provider: {cfg.default_provider}, model: {cfg.default_model})")
 
         # ── ConchShell: Per-agent tool authorization ──
         conchshell_enabled = config.CONCHSHELL_ENABLED
@@ -139,13 +136,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             delegate_tool = DelegateTool(available_tools=common_tools)
             all_tools = common_tools + [delegate_tool]
 
-            toolsets = {
-                "Alice": all_tools,
-                "Bob":   all_tools,
-                "Carol": all_tools,
-                "David": all_tools,
-                "Eve":   all_tools,
-            }
+            toolsets = {a.agent_id: all_tools for a in agents}
             tool_dispatcher = ToolDispatcher(toolsets)
             print(f"🐚 [ConchShell] Tool dispatcher initialized for session {session_id}.")
         else:
@@ -167,7 +158,8 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 table=self.table,
                 session_id=session_id,
                 publisher=None,  # Set in moderator.run() after publisher init
-                api_key=api_key,
+                provider=cfg.default_provider,
+                model=cfg.default_model,
             )
             moderator.subagent_manager = subagent_mgr
             # Wire back reference for delegate tool
@@ -190,7 +182,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
         # Start the reconciler loop as a task on THIS event loop
         asyncio.create_task(reconciler.run(
-            autonomous_steps=int(os.getenv("AUTONOMOUS_STEPS", "-1"))
+            autonomous_steps=config.AUTONOMOUS_STEPS
         ))
 
         return moderator

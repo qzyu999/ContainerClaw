@@ -1,0 +1,91 @@
+# ContainerClaw Configuration — Single Source of Truth
+# ====================================================
+# This file replaces .env, agent/src/config.py, and all scattered
+# os.getenv() calls. Secrets stay in Docker Secrets (/run/secrets/).
+
+# --- LLM Provider Definitions ---
+llm:
+  providers:
+    mlx-local:
+      type: openai          # Uses OpenAI-compatible API (passthrough)
+      base_url: "http://host.docker.internal:8080/v1"
+      api_key: "mlx-community"  # MLX doesn't validate keys
+      models:
+        - "Qwen2.5-3B-Instruct-4bit"
+        - "Qwen2.5-72B-Instruct-4bit"
+
+    gemini-cloud:
+      type: gemini           # Requires translation layer
+      base_url: "https://generativelanguage.googleapis.com/v1beta"
+      api_key_secret: "gemini_api_key"   # References Docker Secret
+      models:
+        - "gemini-2.5-flash"
+        - "gemini-2.5-flash-lite"
+        - "gemini-3-flash-preview"
+      settings:
+        thinking_level: "HIGH"           # Gemini 3 thinking
+        max_output_tokens: 8192
+
+    openai-cloud:
+      type: openai
+      base_url: "https://api.openai.com/v1"
+      api_key_secret: "openai_api_key"
+      models:
+        - "gpt-4o"
+        - "gpt-4o-mini"
+
+  # Default provider + model (used when agent config doesn't specify)
+  default_provider: "mlx-local"
+  default_model: "Qwen2.5-3B-Instruct-4bit"
+
+# --- Agent Roster ---
+agents:
+  roster:
+    - name: "Alice"
+      persona: "Software architect."
+    - name: "Bob"
+      persona: "Project manager."
+    - name: "Carol"
+      persona: "Software engineer."
+    - name: "David"
+      persona: "Software QA tester."
+    - name: "Eve"
+      persona: "Business user."
+
+  settings:
+    max_history_messages: 100
+    max_history_chars: 480000
+    max_tool_rounds: 30
+    autonomous_steps: -1
+    conchshell_enabled: true
+
+# --- Gateway Settings ---
+gateway:
+  port: 8000
+  rate_limit_rpm: 60
+  max_tokens_per_request: 8192
+  retry:
+    max_attempts: 3
+    backoff_factor: 1
+    status_forcelist: [429, 500, 502, 503, 504]
+  connection_pool:
+    pool_connections: 10
+    pool_maxsize: 10
+
+# --- Infrastructure ---
+infrastructure:
+  fluss:
+    bootstrap_servers: "coordinator-server:9123"
+  session:
+    default_id: "default-session"
+
+# --- Integrations ---
+integrations:
+  discord:
+    bot_token_secret: "discord_bot_token"
+    webhook_url_secret: "discord_webhook_url"
+    channel_id_secret: "discord_channel_id"
+
+# --- UI ---
+ui:
+  port: 3000

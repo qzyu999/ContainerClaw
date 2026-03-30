@@ -4,7 +4,7 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y ca-certificates curl dnsutils iputils-ping && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir flask requests gunicorn certifi
+RUN pip install --no-cache-dir flask requests gunicorn certifi pyyaml
 
 COPY src/ ./src/
 
