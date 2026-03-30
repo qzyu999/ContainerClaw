@@ -37,10 +37,15 @@ This document shows the full list of features that should remain stable as the c
 - [Planned] Project board seems to require manual refresh quite often
 - [Planned] Visualization tab of the agentic DAG
 - [Planned] README.md for all the commands and how to use them
+- [Planned] Add enable/disable for integrations like Discord etc.
+- [Planned] Able to edit the agent roster and prompts dynamically from UI/CLI
+- [Planned] Turtle concept for problem density progressing over time
+- [Planned] Refactor - abstract all the different verticals into a simpler plane like a data mesh where everything can be accessed/changed easily
 
 Milestones
 - [x] Add all the basic functionality - then refactor for cleanliness/modularity/efficient idempotent modular system around the stream -> document the stream-centric approach which should also be agent-centric. In particular, a concept for spawning subagents to organically allow for parallelization (swarm > static patterns) (Noted with *)
-- [] Refactor for an agnostic LLM API (Gemini, OpenAI, Anthropic, Ollama, MLX, etc.), where the number of primary voting agents, their API, and description can be customized (e.g. Agent('Alice', 'Software architect.', 'MLX'), Agent('Bob', 'Program Manager.', 'Gemini')) in a config.yaml. The entire repo's specific config files (include .env files and other global variables) can all be routed towards this single root-level config file. Furthermore, we can also start to integrate a SELF.md and MEMORY.json (DeerFlow-inspired). It would also make sense for the config.yaml to allow for editing the prompts that go towards the voting process.
+- [x] Refactor for an agnostic LLM API (Gemini, OpenAI, Anthropic, Ollama, MLX, etc.), where the number of primary voting agents, their API, and description can be customized (e.g. Agent('Alice', 'Software architect.', 'MLX'), Agent('Bob', 'Program Manager.', 'Gemini')) in a config.yaml. The entire repo's specific config files (include .env files and other global variables) can all be routed towards this single root-level config file. 
+- [] Integrate a SELF.md and MEMORY.json (DeerFlow-inspired). It would also make sense for the config.yaml to allow for editing the prompts that go towards the voting process.
 - [] Snorkel and DAG nodes should allow for a first-level telemetry into agent activity
 
 Bugs
