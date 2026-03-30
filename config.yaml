@@ -13,6 +13,8 @@ llm:
       models:
         - "Qwen2.5-3B-Instruct-4bit"
         - "Qwen2.5-72B-Instruct-4bit"
+        - "MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-8bit"
+        - "Qwen3-Coder-Next-6bit"
 
     gemini-cloud:
       type: gemini           # Requires translation layer
@@ -36,7 +38,7 @@ llm:
 
   # Default provider + model (used when agent config doesn't specify)
   default_provider: "mlx-local"
-  default_model: "Qwen2.5-3B-Instruct-4bit"
+  default_model: "MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-8bit"
 
 # --- Agent Roster ---
 agents:
