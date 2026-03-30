@@ -73,33 +73,47 @@ class GeminiStrategy:
     def _to_gemini(self, openai_payload: dict, model: str) -> dict:
         """Convert OpenAI Chat Completions request → Gemini generateContent."""
         contents = []
-        system_instruction = ""
+        system_instructions = []
+        
+        current_tool_parts = []
 
         for msg in openai_payload.get("messages", []):
             role = msg.get("role", "user")
             content = msg.get("content", "")
 
             if role == "system":
-                system_instruction = content
+                system_instructions.append(content)
                 continue
 
             if role == "tool":
-                # OpenAI tool result → Gemini functionResponse
-                contents.append({
-                    "role": "user",
-                    "parts": [{
-                        "functionResponse": {
-                            "name": msg.get("name", ""),
-                            "response": {"result": content},
-                            "id": msg.get("tool_call_id", ""),
-                        }
-                    }]
+                # OpenAI tool result → Gemini functionResponse part
+                current_tool_parts.append({
+                    "functionResponse": {
+                        "name": msg.get("name", ""),
+                        "response": {"result": content},
+                        "id": msg.get("tool_call_id", ""),
+                    }
                 })
                 continue
+                
+            # Flush accumulated tool parts before adding next message
+            if current_tool_parts:
+                contents.append({
+                    "role": "user",
+                    "parts": current_tool_parts
+                })
+                current_tool_parts = []
 
             if role == "assistant":
                 gemini_role = "model"
-                # Check for tool_calls in assistant message
+                
+                # If we have preserved raw Gemini parts, use them directly!
+                # This ensures `thought_signature` and `thought` are perfectly echoed.
+                if "_gemini_parts" in msg:
+                    contents.append({"role": gemini_role, "parts": msg["_gemini_parts"]})
+                    continue
+                
+                # Check for tool_calls in assistant message (cross-provider mapping fallback)
                 tool_calls = msg.get("tool_calls", [])
                 if tool_calls:
                     parts = []
@@ -129,10 +143,19 @@ class GeminiStrategy:
                 "parts": [{"text": content}]
             })
 
+        # Flush any trailing tool parts
+        if current_tool_parts:
+            contents.append({
+                "role": "user",
+                "parts": current_tool_parts
+            })
+
         gemini = {"contents": contents}
 
-        if system_instruction:
-            gemini["system_instruction"] = {"parts": [{"text": system_instruction}]}
+        if system_instructions:
+            gemini["system_instruction"] = {
+                "parts": [{"text": "\n\n".join(system_instructions)}]
+            }
 
         # Generation config
         gen_config = {}
@@ -241,6 +264,9 @@ class GeminiStrategy:
             message["content"] = None
         if tool_calls:
             message["tool_calls"] = tool_calls
+            
+        # Required to pass `thought` and `thought_signature` parts back to Gemini in identical form
+        message["_gemini_parts"] = parts
 
         finish_reason = "stop"
         if tool_calls:

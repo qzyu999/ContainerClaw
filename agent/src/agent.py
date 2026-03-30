@@ -312,6 +312,7 @@ class LLMAgent:
             self._api_turns.append({
                 "role": "tool",
                 "tool_call_id": fr["id"],
+                "name": fr["name"],
                 "content": result_content,
             })
 
