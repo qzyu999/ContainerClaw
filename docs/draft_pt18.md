@@ -105,12 +105,18 @@ This proves that MLX-LM's built-in server already speaks the OpenAI API. But the
 The **only physically irreducible latency** in an LLM call is:
 
 ```
-t_total = t_network + t_inference
+T_total = T_proxy_overhead + T_network_latency + T_TTFT + (N_tokens × T_per_token)
 ```
 
-For local inference (MLX on Apple Silicon), `t_network ≈ 0` (loopback). For cloud APIs, `t_network` is bounded by `distance / c` plus TLS overhead. Everything else — format translation, config lookups, retry logic — must be **O(1) with negligible constant factors**.
+Where:
+- **`T_proxy_overhead`**: Gateway routing + serialization/deserialization (JSON→Dict→JSON). For OpenAI passthrough, this is ≈0. For Gemini translation, this involves O(n_messages) string ops — negligible (<1ms), but the JSON parse/serialize cycle is where hidden milliseconds accumulate.
+- **`T_network_latency`**: For local inference (MLX on Apple Silicon), ≈0 (loopback). For cloud APIs, bounded by `distance / c` plus TLS overhead.
+- **`T_TTFT`**: Time to first token — model-dependent, irreducible.
+- **`N_tokens × T_per_token`**: Token generation — model-dependent, irreducible.
 
-**Design consequence**: The gateway should add ≈0 overhead for local calls and ≈1 RTT overhead for cloud calls. Any architecture that adds serialization/deserialization steps beyond what is physically necessary is suboptimal.
+Everything except `T_TTFT` and token generation must be **O(1) with negligible constant factors**.
+
+**Design consequence**: The gateway should add ≈0 overhead for local calls and ≈1 RTT overhead for cloud calls. By using the OpenAI passthrough for MLX, `T_proxy_overhead ≈ 0`. For Gemini, the O(n) string manipulation is negligible, but minimizing JSON round-trips is critical.
 
 ### 2.2 The OpenAI Wire Format as Universal Language
 
@@ -127,6 +133,17 @@ Every major inference framework speaks OpenAI-compatible:
 | Anthropic Claude | ❌ | `messages` (similar but different) |
 
 **Design consequence**: Standardize on OpenAI as the **internal wire protocol**. Translate only at the boundary — only when calling a non-OpenAI-compatible upstream (e.g., Gemini). For OpenAI-compatible backends (MLX, vLLM, Ollama), the gateway becomes a transparent proxy with zero translation cost.
+
+#### 2.2.1 Chat Completions API vs Responses API
+
+OpenAI now offers two APIs: the legacy **Chat Completions** (`/v1/chat/completions`) and the newer **Responses** (`/v1/responses`). The Responses API is recommended for new projects and provides better reasoning model performance, built-in tools, and stateful context.
+
+However, for ContainerClaw's gateway, **we standardize on the Chat Completions wire format** because:
+
+1. **Universal compatibility** — MLX-LM, vLLM, Ollama, and llama.cpp all implement `/v1/chat/completions`. None implement `/v1/responses`.
+2. **Simpler translation** — The `messages` array format maps cleanly to Gemini's `contents` format. The Responses API uses `input`/`output` items with internally-tagged polymorphism, which would complicate the translation layer.
+3. **Function calling compatibility** — Chat Completions uses `{type: "function", function: {name, parameters}}` for tool definitions. The Responses API uses `{type: "function", name, parameters}` (internally-tagged). Our agents' tool schemas map directly to the Chat Completions format.
+4. **Future migration path** — When/if local inference servers adopt the Responses API, the strategy pattern makes this a per-provider change, not an architectural one.
 
 ### 2.3 Configuration as Data, Not Code
 
@@ -349,7 +366,11 @@ ui:
 
 ### 4.2 Config Loader
 
-**New file**: `shared/config_loader.py` — a zero-dependency module copied into each container.
+**New file**: `shared/config_loader.py` — shared via Docker volume mount across all containers.
+
+> **Review Note (§1 — Shared Volume vs. Copy)**: The original design proposed copying `config_loader.py` into each container, creating a maintenance trap where updates to config parsing logic could diverge. **Accepted fix**: The `shared/` directory is volume-mounted into all containers at `/app/shared`, ensuring a single source of truth for the config loader. This eliminates the risk of "update one, forget the other" drift while keeping zero external dependencies.
+
+> **Review Note (§3 — Pydantic Validation)**: The original design used plain `dataclasses`. **Accepted fix**: We use **Pydantic `BaseModel`** instead for automatic type coercion, validation, and fail-fast error messages. A typo like `rate_limit_rpm: "sixty"` will produce a clear `ValidationError` at container startup rather than a cryptic `TypeError` at runtime. This adds `pydantic` to requirements but eliminates an entire class of silent config bugs.
 
 ```python
 """
@@ -362,29 +383,27 @@ falls back to environment variables for backward compatibility.
 import os
 import yaml
 from pathlib import Path
-from dataclasses import dataclass, field
+from pydantic import BaseModel, Field, field_validator
+from typing import Optional
 
 CONFIG_PATH = os.getenv("CLAW_CONFIG_PATH", "/config/config.yaml")
 
-@dataclass
-class ProviderConfig:
+class ProviderConfig(BaseModel):
     name: str
     type: str                    # "openai" | "gemini"
     base_url: str
     api_key: str = ""            # Resolved from secret or inline
     api_key_secret: str = ""     # Docker secret name
-    models: list[str] = field(default_factory=list)
-    settings: dict = field(default_factory=dict)
+    models: list[str] = []
+    settings: dict = {}
 
-@dataclass
-class AgentConfig:
+class AgentConfig(BaseModel):
     name: str
     persona: str
     provider: str = ""           # Provider name (resolved to ProviderConfig)
     model: str = ""              # Model override
 
-@dataclass
-class ClawConfig:
+class ClawConfig(BaseModel):
     providers: dict[str, ProviderConfig]
     agents: list[AgentConfig]
     default_provider: str
@@ -401,6 +420,21 @@ class ClawConfig:
     # Infrastructure
     fluss_bootstrap_servers: str = "coordinator-server:9123"
     session_id: str = "default-session"
+
+    @field_validator("agents")
+    @classmethod
+    def validate_agent_providers(cls, agents, info):
+        """Fail-fast: every agent must reference a valid provider."""
+        providers = info.data.get("providers", {})
+        default = info.data.get("default_provider", "")
+        for agent in agents:
+            effective_provider = agent.provider or default
+            if effective_provider and effective_provider not in providers:
+                raise ValueError(
+                    f"Agent '{agent.name}' references unknown provider "
+                    f"'{effective_provider}'. Available: {list(providers.keys())}"
+                )
+        return agents
 
 def _resolve_secret(secret_name: str) -> str:
     """Read a Docker secret from /run/secrets/."""
@@ -447,6 +481,8 @@ def load_config() -> ClawConfig:
             model=entry.get("model", default_model),
         ))
 
+    # Pydantic validates on construction — bad types or missing
+    # providers will raise ValidationError immediately
     return ClawConfig(
         providers=providers,
         agents=agents,
@@ -481,7 +517,8 @@ def _from_env() -> ClawConfig:
 
 1. **`_resolve_secret()`** maintains the Docker Secrets pattern — API keys never live in the YAML as plaintext for production. The YAML references secret names; the loader resolves them.
 2. **`_from_env()` fallback** — existing `.env`-based deployments keep working during migration.
-3. **Dataclasses, not dicts** — typed access prevents silent `KeyError` bugs.
+3. **Pydantic `BaseModel`** — automatic type coercion/validation with fail-fast errors at startup. The `validate_agent_providers` validator ensures no agent references a non-existent provider.
+4. **Shared volume mount** — `shared/config_loader.py` is mounted at `/app/shared` in all containers, not copied. One source file, one truth.
 
 ### 4.3 LLM Gateway Refactor
 
@@ -521,6 +558,8 @@ classDiagram
 ```
 
 #### 4.3.1 `llm-gateway/src/main.py` — Refactored
+
+> **Review Note (§2 — Flask vs. FastAPI)**: The reviewer correctly identified that synchronous Flask + `requests.Session()` creates a bottleneck when multiple agents fire concurrent LLM calls. However, for **Phase 1-2**, Flask is retained to minimize the blast radius of changes (the current gateway is already Flask). The strategy pattern is framework-agnostic — upgrading to FastAPI + `httpx.AsyncClient` in a follow-up phase requires only changing the gateway's HTTP layer, not the strategies themselves. This is explicitly noted as a Phase 7 optimization.
 
 ```python
 # The NEW gateway — provider-agnostic router
@@ -614,24 +653,34 @@ class GeminiStrategy:
 
 **This is where ALL the Gemini-specific logic lives** — isolated in one file. The rest of the system never sees Gemini's wire format.
 
-### 4.4 Agent Refactor — OpenAI Wire Protocol
+### 4.4 Agent Refactor — OpenAI Wire Protocol (Chat Completions)
 
 **Current**: `GeminiAgent._call_gateway()` builds Gemini payloads.
-**Target**: Rename to `LLMAgent` and build OpenAI payloads.
+**Target**: Rename to `LLMAgent` and build OpenAI Chat Completions payloads.
 
 #### Key Changes to `agent/src/agent.py`
 
-| Current (Gemini) | Target (OpenAI) |
+| Current (Gemini) | Target (OpenAI Chat Completions) |
 |---|---|
 | `GeminiAgent` class name | `LLMAgent` |
 | `{"role": "model"/"user", "parts": [{"text": ...}]}` | `{"role": "assistant"/"user", "content": ...}` |
 | `system_instruction` as raw string | `{"role": "system", "content": ...}` in messages |
 | `generationConfig` | `temperature`, `max_tokens` top-level |
-| `tools: [{function_declarations: [...]}]` | `tools: [{type: "function", function: {...}}]` |
-| `tool_config: {function_calling_config: {mode: "ANY"}}` | `tool_choice: "required"` |
+| `tools: [{function_declarations: [...]}]` | `tools: [{type: "function", function: {name, description, parameters}}]` |
+| `tool_config: {function_calling_config: {mode: "ANY"}}` | `tool_choice: "required"` (or `"auto"` for default) |
 | Response: `candidates[0].content.parts[*].text` | Response: `choices[0].message.content` |
-| Response: `candidates[0].content.parts[*].functionCall` | Response: `choices[0].message.tool_calls` |
-| `functionResponse` parts for multi-turn | `tool` role messages for multi-turn |
+| Response: `candidates[0].content.parts[*].functionCall` | Response: `choices[0].message.tool_calls[*].function.{name,arguments}` |
+| `functionResponse` parts for multi-turn | `{"role": "tool", "tool_call_id": "...", "content": "..."}` messages |
+
+#### OpenAI Tool Calling Wire Format (Chat Completions)
+
+Per the OpenAI function calling docs, the multi-turn tool call flow is:
+
+1. **Request tools definition**: Each tool uses `{type: "function", function: {name, description, parameters, strict}}`. Set `strict: true` + `additionalProperties: false` for reliable schema adherence.
+2. **Response with tool calls**: `choices[0].message.tool_calls` is an array of `{id, type: "function", function: {name, arguments}}`. The `arguments` field is a JSON-encoded string.
+3. **Submit tool results**: Append a message with `{role: "tool", tool_call_id: "<id>", content: "<result>"}` for each call.
+4. **Parallel calls**: The model may return multiple `tool_calls` in a single response. All must be resolved before the next turn. Set `parallel_tool_calls: false` to force sequential calls.
+5. **Tool choice**: `tool_choice: "auto"` (default), `"required"` (force call), `"none"` (disable), or `{type: "function", function: {name: "..."}}` (force specific function).
 
 The agent also needs a `provider` field read from config, passed in the gateway request:
 
@@ -799,11 +848,24 @@ Every hard-coded value that must move to `config.yaml`:
 | Risk | Impact | Mitigation |
 |---|---|---|
 | **Gemini function calling protocol differs from OpenAI** | Tool use breaks during migration | `GeminiStrategy._to_gemini()` handles full tool format translation; Phase 2 tests validate tool round-trips before touching agent code |
-| **MLX doesn't support function calling** | Agents can't use tools with local models | Fallback to text-mode (ConchShell disabled); or use ReAct-style prompting. Config can set `conchshell_enabled: false` per-provider |
-| **YAML syntax errors break all containers** | System fails to start | `config_loader.load_config()` has `_from_env()` fallback; `claw.sh up` validates YAML before `docker compose up` |
+| **MLX doesn't support function calling natively** | Agents can't use tools with local models | See §7.1 below for detailed mitigation |
+| **YAML syntax errors break all containers** | System fails to start | Pydantic `ClawConfig` validation catches type errors at startup; `_from_env()` fallback; `claw.sh up` validates YAML before `docker compose up` |
 | **Docker `host.docker.internal` not available on Linux** | MLX unreachable from containers | Use `extra_hosts` directive; document Linux workaround (`--add-host`) |
 | **Breaking change to gateway API** | Bridge, agent, scripts break simultaneously | Gateway maintains backward compatibility during Phase 2 (old format still accepted, auto-detected) |
 | **Ripcurrent schema duplication** | `fluss_helpers.py` diverges from `schemas.py` | Phase 6 cleanup: ripcurrent imports from shared config module, or schema is duplicated intentionally with a version check |
+| **Agent references non-existent provider** | "Carol" agent created without a brain | `ClawConfig.validate_agent_providers()` Pydantic validator fails-fast at startup with a clear error |
+
+### 7.1 MLX Function Calling Parity
+
+> **Review Note (§5)**: The reviewer correctly noted that models like Qwen 2.5 are capable of function calling when the prompt is formatted correctly, even on "dumb" local servers.
+
+The MLX-LM server (`mlx_lm.server`) exposes an OpenAI-compatible `/v1/chat/completions` endpoint. Whether it supports the `tools` field depends on the model and the server's implementation:
+
+1. **Best case**: The MLX server passes the `tools` JSON through to the model's chat template, and the model (e.g., Qwen 2.5) generates valid `tool_calls` in its response. This works out of the box with the OpenAI passthrough strategy.
+2. **Degraded case**: The MLX server ignores the `tools` field or the model doesn't generate structured tool calls. In this case, the `OpenAIStrategy` can inject a **ReAct-style prompt template** that formats the available tools as text in the system message, instructing the model to output JSON tool calls in a parseable format.
+3. **Fallback case**: Set `conchshell_enabled: false` per-provider in config to disable tools entirely for that provider.
+
+**Implementation**: The `OpenAIStrategy` will check if the provider has a `settings.tool_prompt_injection: true` flag. If set, it injects tool definitions into the system prompt as a formatted text block before forwarding. This ensures agents retain agentic capabilities even on backends that don't natively handle the `tools` field.
 
 ---
 
@@ -843,7 +905,25 @@ python scripts/mlx_batch_test.py  # Already works — validates MLX server
 # 3. Verify election includes Frank
 ```
 
-### 8.3 End-to-End Smoke Test
+### 8.3 Configuration Consistency Check
+
+> **Review Note (Verification Plan Addition)**: Added a pre-flight consistency check script.
+
+A startup validation script (`scripts/validate_config.py`) runs before container launch:
+
+```bash
+python scripts/validate_config.py config.yaml
+```
+
+This script:
+1. Parses `config.yaml` via `load_config()` (Pydantic validation catches type errors)
+2. Verifies every agent in `roster` has a valid `provider` and `model` defined in `llm.providers`
+3. Verifies every referenced `api_key_secret` has a corresponding file in `secrets/`
+4. Reports all errors at once (not fail-on-first) for operator convenience
+
+`claw.sh up` calls this script before `docker compose up`.
+
+### 8.4 End-to-End Smoke Test
 
 1. `./claw.sh up` with `mlx-local` as default provider
 2. Open `http://localhost:3000`
@@ -884,3 +964,18 @@ These items are explicitly **deferred** to future refactors:
 2. **SELF.md / MEMORY.json** — Per-agent persistent memory files that survive across sessions. Would be referenced in config.yaml as paths.
 
 3. **Telemetry & Observability** — Structured logging of every LLM API call: latency, token counts, provider, model, cost. Enables per-agent performance dashboarding.
+
+4. **FastAPI + httpx migration (Phase 7)** — Replace Flask with FastAPI and `requests.Session` with `httpx.AsyncClient` in the gateway. This eliminates the synchronous bottleneck where concurrent agent requests are handled one-by-one. The strategy pattern is framework-agnostic, so this is a drop-in replacement for the HTTP layer. Priority: after Phases 1-6 are stable.
+
+5. **OpenAI Responses API migration** — When local inference servers adopt the Responses API (`/v1/responses`), individual provider strategies can be updated to use the new API shape (richer tool semantics, stateful context, encrypted reasoning) without changing the agent code.
+
+## Appendix C: Review Feedback Disposition
+
+| # | Feedback | Disposition | Action |
+|---|---|---|---|
+| §1 | Copied module maintenance trap | **Accepted** | Changed to shared volume mount (`shared/` → `/app/shared` in all containers) |
+| §2 | Flask sync bottleneck | **Noted, deferred** | Valid concern. Flask retained for Phase 1-2 to minimize blast radius. FastAPI migration added as Phase 7 / Appendix B item 4. Strategy pattern is framework-agnostic. |
+| §3 | Pydantic config validation | **Accepted** | `ClawConfig` and sub-models switched from `dataclass` to `pydantic.BaseModel`. Added `validate_agent_providers` cross-validation. |
+| §5 | MLX function calling parity | **Accepted, expanded** | Added §7.1 with three-tier mitigation (native support → ReAct prompt injection → fallback disable). Added `tool_prompt_injection` provider setting. |
+| — | Revised latency equation | **Accepted** | Updated §2.1 with decomposed `T_total` equation including `T_proxy_overhead`, `T_TTFT`, per-token terms. |
+| — | Consistency check script | **Accepted** | Added §8.3 with pre-flight `validate_config.py` script and `claw.sh` integration. |
