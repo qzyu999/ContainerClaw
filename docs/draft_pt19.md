@@ -86,15 +86,12 @@ graph TB
 
 ---
 
-## 4. Detailed Component Design
+## 4. Detailed Component Design (MVP Integration)
 
 ### 4.1 Flink Job: The DAG Reconstructor
 **Logic**: Consumes `chatroom` events. It watches for `type="spawn"` or messages with a `parent_actor` field. 
 - **State**: Maintains a `KeyedState` of active agent IDs and their parent-child relationships.
 - **Output**: Sinks an adjacency list `(parent_id, child_id, status)` to StarRocks.
-- **Graph Property Inference**: Analyzes graph properties in-stream:
-  - **Loop Detection**: Flags a `loop_stall` if Flink detects a cycle where the same agent is re-elected with an identical context hash.
-  - **Critical Path Length**: Measures the sum of latencies along the longest chain of agent dependencies to identify swarm bottlenecks.
 - **Defense**: Doing this in Flink ensures that even if events arrive out of order (due to async subagents), the stateful processing guarantees a consistent tree structure.
 
 ### 4.2 StarRocks Schema: The "Snorkel" Table
@@ -106,15 +103,11 @@ CREATE TABLE agent_context_snorkel (
     session_id VARCHAR(64),
     run_id VARCHAR(64),
     context_json JSON,
-    metadata_json JSON,
-    context_growth_rate FLOAT,
     last_updated_at DATETIME
 ) ENGINE=OLAP
 PRIMARY KEY(agent_id, session_id)
 DISTRIBUTED BY HASH(agent_id);
 ```
-
-**The "Active" Snorkel - Metadata & Signal**: The `metadata_json` column tracks token counts, truncation flags (if the context was pruned), and signal-to-noise ratio estimates. `context_growth_rate` tracks runtime context expansion to predict when an agent might lose coherence or hit model limits.
 
 **Defense**: By using a PK table, Flink simply issues an `UPSERT`. The UI query becomes a simple $O(1)$ point-lookup: `SELECT context_json FROM snorkel WHERE agent_id = 'Alice'`. This is the "Speed of Light" optimization.
 
@@ -124,21 +117,42 @@ We utilize Flink's windowing capabilities to calculate:
 - **Tool Efficiency**: `SUM(tool_success) / COUNT(tool_calls)`.
 - **Latency**: Time between `election_start` and `output_published`.
 
-**Trajectory Intelligence Layer**: To measure if the agent is "smart" (not just system health), we compute:
+These are sunk into a StarRocks table with a `1s` granularity, allowing the HUD to show "Sparklines" of agent performance.
+
+---
+
+## 5. Future Scope: Agentic Intelligence
+
+Once the core Flink-StarRocks pipeline is integrated and stable, the system should be expanded to transition from an observer into a self-optimizing harness.
+
+### 5.1 Graph Property Inference
+Enhance the DAG Reconstructor to analyze swarm behavior in-stream:
+- **Loop Detection**: Flag a `loop_stall` if Flink detects a cycle where the same agent is re-elected with an identical context hash.
+- **Critical Path Length**: Measure the sum of latencies along the longest chain of agent dependencies to identify swarm bottlenecks.
+
+### 5.2 The "Active" Snorkel (Metadata & Signal)
+Enhance the `agent_context_snorkel` table with:
+- **Metadata JSON**: Track token counts, truncation flags (if the context was pruned), and signal-to-noise ratio estimates.
+- **Context Growth Rate**: Track runtime context expansion to predict when an agent might lose coherence or hit model limits.
+
+### 5.3 Trajectory Intelligence Metrics
+To measure if the agent is "smart" (not just system health), compute:
 - **Trajectory Efficiency**: Steps taken vs. minimum steps required (based on regression baselines).
 - **Branching Factor**: How many subagents/tasks are spawned per node (measuring swarm complexity).
 - **Redundancy Rate**: How often an agent repeats a tool call with the same parameters.
 
-These are sunk into a StarRocks table with a `1s` granularity, allowing the HUD to show "Sparklines" of agent performance.
+### 5.4 Failure Attribution Job
+Create a semantic Flink job that monitors for errors or `is_done=false` stalls to explain *why* a run failed:
+- Assign blame using heuristics (e.g., `tool_failure`, `context_overflow`, `loop_stall`, or `model_logic_error`).
+- Sink to a `failure_analysis` table in StarRocks to eliminate manual log-digging by operators.
 
-### 4.4 Failure Attribution Job
-**Logic**: A Flink job that monitors for errors or `is_done=false` stalls to explain *why* a run failed.
-- Assigns blame using heuristics (e.g., `tool_failure`, `context_overflow`, `loop_stall`, or `model_logic_error`).
-- Sinks to a `failure_analysis` table in StarRocks to eliminate manual log-digging by operators.
+### 5.5 Policy Feedback Loop
+- Use StarRocks' analytics to update an `agent_policy_state` (e.g., "Tool X is failing today, advise agents to avoid it").
+- Feed this state globally back to the agents bridging the gap between monitoring and dynamic self-correction.
 
 ---
 
-## 5. Implementation Phases
+## 6. Implementation Phases (MVP)
 
 ### Phase 1: StarRocks & Flink Infrastructure
 1. Deploy StarRocks (FE/BE) and Flink (JobManager/TaskManager) via `docker-compose.yml`.
@@ -160,13 +174,9 @@ These are sunk into a StarRocks table with a `1s` granularity, allowing the HUD 
 2. Construct the graph edges and sink to StarRocks.
 3. Update the UI to use a graph-rendering library (e.g., `react-flow`) to pull from the `dag_edges` table.
 
-### Phase 5: Policy Feedback
-1. Use StarRocks' analytics to update an `agent_policy_state` (e.g., "Tool X is failing today, advise agents to avoid it").
-2. Feed this state back to the agents to transform the system from an observer into a self-optimizing harness.
-
 ---
 
-## 6. Risk Analysis & Mitigations
+## 7. Risk Analysis & Mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
@@ -176,18 +186,18 @@ These are sunk into a StarRocks table with a `1s` granularity, allowing the HUD 
 
 ---
 
-## 7. Verification Plan
+## 8. Verification Plan
 
-### 7.1 Latency Smoke Test
+### 8.1 Latency Smoke Test
 1. Send a message in Discord (RipCurrent).
 2. Measure time until the "Live Metrics" HUD in the Web UI increments.
 3. **Target**: <250ms.
 
-### 7.2 Consistency Check
+### 8.2 Consistency Check
 1. Run a complex task involving multiple subagents.
 2. Compare the `dag_edges` table in StarRocks with the manual audit of the Fluss `chatroom` log.
 3. **Target**: 100% structural parity.
 
-### 7.3 Snorkel Accuracy
+### 8.3 Snorkel Accuracy
 1. Pause an agent mid-thought.
 2. Verify the `context_json` in StarRocks matches the `messages` array generated by `LLMAgent._format_history()`.
