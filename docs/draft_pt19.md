@@ -43,6 +43,8 @@ To minimize `T_vis`, we must eliminate `T_query` latency by moving from **Pull-o
 
 ## 3. Target Architecture
 
+**The "Run" Boundary**: To track discrete tasks, the system generates a `run_id` upon a human prompt and closes it upon `is_done`. This `run_id` is propagated through all Flink jobs to allow for clean trajectory analysis and distinguish individual attempts from broader session metrics.
+
 ```mermaid
 graph TB
     subgraph "Event Sources (Fluss)"
@@ -90,6 +92,9 @@ graph TB
 **Logic**: Consumes `chatroom` events. It watches for `type="spawn"` or messages with a `parent_actor` field. 
 - **State**: Maintains a `KeyedState` of active agent IDs and their parent-child relationships.
 - **Output**: Sinks an adjacency list `(parent_id, child_id, status)` to StarRocks.
+- **Graph Property Inference**: Analyzes graph properties in-stream:
+  - **Loop Detection**: Flags a `loop_stall` if Flink detects a cycle where the same agent is re-elected with an identical context hash.
+  - **Critical Path Length**: Measures the sum of latencies along the longest chain of agent dependencies to identify swarm bottlenecks.
 - **Defense**: Doing this in Flink ensures that even if events arrive out of order (due to async subagents), the stateful processing guarantees a consistent tree structure.
 
 ### 4.2 StarRocks Schema: The "Snorkel" Table
@@ -99,12 +104,17 @@ The Snorkel requires the "actual context window." Instead of the UI asking "give
 CREATE TABLE agent_context_snorkel (
     agent_id VARCHAR(64),
     session_id VARCHAR(64),
+    run_id VARCHAR(64),
     context_json JSON,
+    metadata_json JSON,
+    context_growth_rate FLOAT,
     last_updated_at DATETIME
 ) ENGINE=OLAP
 PRIMARY KEY(agent_id, session_id)
 DISTRIBUTED BY HASH(agent_id);
 ```
+
+**The "Active" Snorkel - Metadata & Signal**: The `metadata_json` column tracks token counts, truncation flags (if the context was pruned), and signal-to-noise ratio estimates. `context_growth_rate` tracks runtime context expansion to predict when an agent might lose coherence or hit model limits.
 
 **Defense**: By using a PK table, Flink simply issues an `UPSERT`. The UI query becomes a simple $O(1)$ point-lookup: `SELECT context_json FROM snorkel WHERE agent_id = 'Alice'`. This is the "Speed of Light" optimization.
 
@@ -114,7 +124,17 @@ We utilize Flink's windowing capabilities to calculate:
 - **Tool Efficiency**: `SUM(tool_success) / COUNT(tool_calls)`.
 - **Latency**: Time between `election_start` and `output_published`.
 
+**Trajectory Intelligence Layer**: To measure if the agent is "smart" (not just system health), we compute:
+- **Trajectory Efficiency**: Steps taken vs. minimum steps required (based on regression baselines).
+- **Branching Factor**: How many subagents/tasks are spawned per node (measuring swarm complexity).
+- **Redundancy Rate**: How often an agent repeats a tool call with the same parameters.
+
 These are sunk into a StarRocks table with a `1s` granularity, allowing the HUD to show "Sparklines" of agent performance.
+
+### 4.4 Failure Attribution Job
+**Logic**: A Flink job that monitors for errors or `is_done=false` stalls to explain *why* a run failed.
+- Assigns blame using heuristics (e.g., `tool_failure`, `context_overflow`, `loop_stall`, or `model_logic_error`).
+- Sinks to a `failure_analysis` table in StarRocks to eliminate manual log-digging by operators.
 
 ---
 
@@ -140,6 +160,10 @@ These are sunk into a StarRocks table with a `1s` granularity, allowing the HUD 
 2. Construct the graph edges and sink to StarRocks.
 3. Update the UI to use a graph-rendering library (e.g., `react-flow`) to pull from the `dag_edges` table.
 
+### Phase 5: Policy Feedback
+1. Use StarRocks' analytics to update an `agent_policy_state` (e.g., "Tool X is failing today, advise agents to avoid it").
+2. Feed this state back to the agents to transform the system from an observer into a self-optimizing harness.
+
 ---
 
 ## 6. Risk Analysis & Mitigations
@@ -147,7 +171,7 @@ These are sunk into a StarRocks table with a `1s` granularity, allowing the HUD 
 | Risk | Impact | Mitigation |
 |---|---|---|
 | **Backpressure** | If Flink slows down, the UI lags behind reality. | Monitor Flink's `checkpointAlignmentTime`. Scale Flink TaskManagers horizontally. |
-| **State Size** | Keeping 100k messages in Flink state for the Snorkel could consume RAM. | Use Flink's `RocksDBStateBackend` to spill state to disk while keeping the "Hot" window in memory. |
+| **State Size / Explosion** | Keeping 100k messages in Flink state for the Snorkel could consume RAM and crash State Backend. | Implement a **4-hour State TTL** for active runs. Use **Sliding Windows** for metrics. Use Flink's `RocksDBStateBackend` to spill state to disk while keeping the "Hot" window in memory. |
 | **Data Consistency** | StarRocks PK table might miss an update. | Flink provides "Exactly-Once" semantics via two-phase commit sinks to StarRocks. |
 
 ---
