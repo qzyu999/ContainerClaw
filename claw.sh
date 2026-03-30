@@ -15,10 +15,28 @@ fi
 case $COMMAND in
   up)
     echo "Starting ContainerClaw session: $SESSION_ID"
+    
+    # Pre-flight config validation
+    echo "Running pre-flight config check..."
+    PYTHON_BIN="python3"
+    if [ -f ".venv/bin/python3" ]; then
+      PYTHON_BIN=".venv/bin/python3"
+    fi
+    
+    if $PYTHON_BIN -c "import yaml, pydantic" 2>/dev/null; then
+      if ! $PYTHON_BIN scripts/validate_config.py config.yaml; then
+        echo -e "\n❌ Startup aborted. Please fix configuration errors above."
+        exit 1
+      fi
+    else
+      echo "⚠️ Skipping pre-flight check: 'pyyaml' or 'pydantic' missing in host Python."
+    fi
+    
     # Ensure secrets directory exists if referenced in compose
     if [ ! -d "secrets" ]; then
       mkdir -p secrets
       touch secrets/gemini_api_key.txt secrets/anthropic_api_key.txt secrets/openai_api_key.txt
+      echo "⚠️ Created empty secrets files in secrets/. Please populate them before continuing."
     fi
     mkdir -p workspace .zk_data/data .zk_data/datalog .fluss_data
     $DOCKER_COMPOSE up -d --build --remove-orphans

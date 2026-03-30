@@ -174,9 +174,13 @@ services:
       - discord_bot_token
       - discord_webhook_url
       - discord_channel_id
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      - ./shared:/app/shared:ro
     environment:
-      - FLUSS_BOOTSTRAP_SERVERS=coordinator-server:9123
-      - CLAW_SESSION_ID=user-session
+      - CLAW_CONFIG_PATH=/config/config.yaml
+      - SHARED_MODULE_PATH=/app/shared
+      - PYTHONUNBUFFERED=1
     depends_on:
       coordinator-server:
         condition: service_started

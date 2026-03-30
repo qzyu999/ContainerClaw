@@ -10,20 +10,22 @@ import pyarrow as pa
 from datetime import datetime, timezone
 from fluss_helpers import CHATROOM_SCHEMA, poll_batches
 
-# Load keys from Docker Secrets
-def get_secret(name):
-    try:
-        with open(f"/run/secrets/{name}", "r") as f:
-            return f.read().strip()
-    except Exception:
-        return None
+import sys
+from pathlib import Path
+
+# Add shared/ to the Python path for config_loader
+sys.path.insert(0, os.getenv("SHARED_MODULE_PATH", "/app/shared"))
+
+from config_loader import load_config
+
+cfg = load_config()
 
 # Load credentials
-DISCORD_BOT_TOKEN = get_secret("discord_bot_token") or os.getenv("DISCORD_BOT_TOKEN")
-DISCORD_WEBHOOK_URL = get_secret("discord_webhook_url") or os.getenv("DISCORD_WEBHOOK_URL")
-DISCORD_CHANNEL_ID = get_secret("discord_channel_id") or os.getenv("DISCORD_CHANNEL_ID")
-FLUSS_BOOTSTRAP_SERVERS = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "coordinator-server:9123")
-SESSION_ID = os.getenv("CLAW_SESSION_ID", "user-session")
+DISCORD_BOT_TOKEN = cfg.discord_bot_token
+DISCORD_WEBHOOK_URL = cfg.discord_webhook_url
+DISCORD_CHANNEL_ID = cfg.discord_channel_id
+FLUSS_BOOTSTRAP_SERVERS = cfg.fluss_bootstrap_servers
+SESSION_ID = cfg.session_id
 
 # Discord Bot Setup
 intents = discord.Intents.default()

@@ -59,6 +59,10 @@ class ClawConfig(BaseModel):
     # Infrastructure
     fluss_bootstrap_servers: str = "coordinator-server:9123"
     session_id: str = "default-session"
+    # Integrations
+    discord_bot_token: str = ""
+    discord_webhook_url: str = ""
+    discord_channel_id: str = ""
 
     @field_validator("agents")
     @classmethod
@@ -162,6 +166,9 @@ def load_config(config_path: str | None = None) -> ClawConfig:
         session_id=(
             infra.get("session", {}).get("default_id", "default-session")
         ),
+        discord_bot_token=_resolve_secret(raw.get("integrations", {}).get("discord", {}).get("bot_token_secret", "")),
+        discord_webhook_url=_resolve_secret(raw.get("integrations", {}).get("discord", {}).get("webhook_url_secret", "")),
+        discord_channel_id=_resolve_secret(raw.get("integrations", {}).get("discord", {}).get("channel_id_secret", "")),
     )
 
 
@@ -221,4 +228,7 @@ def _from_env() -> ClawConfig:
         max_tokens_per_request=int(os.getenv("MAX_TOKENS_PER_REQUEST", "8192")),
         fluss_bootstrap_servers=os.getenv("FLUSS_BOOTSTRAP_SERVERS", "coordinator-server:9123"),
         session_id=os.getenv("CLAW_SESSION_ID", "default-session"),
+        discord_bot_token=os.getenv("DISCORD_BOT_TOKEN", ""),
+        discord_webhook_url=os.getenv("DISCORD_WEBHOOK_URL", ""),
+        discord_channel_id=os.getenv("DISCORD_CHANNEL_ID", ""),
     )
