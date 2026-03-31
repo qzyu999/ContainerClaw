@@ -39,7 +39,7 @@ const TIER_COLORS = [
 
 // Spacing constants for Vertical Spacetime
 const TIERS_X_SPACING = 280;   // Distance between vertical lanes
-const DEPTH_Y_SPACING = 250;   // Vertical movement forward in time
+const DEPTH_Y_SPACING = 160;   // Vertical movement forward in time
 const START_X = 140;
 const START_Y = 120;
 const NODE_RADIUS = 32;
@@ -241,7 +241,7 @@ export default function DagView({ sessionId }: DagViewProps) {
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
           onWheel={handleWheel}
-          style={{ cursor: isDragging ? 'grabbing' : 'grab', height: '1400px' }}
+          style={{ cursor: isDragging ? 'grabbing' : 'grab', height: '800px' }}
         >
           <svg width="100%" height="100%" className="dag-svg-root">
             <defs>

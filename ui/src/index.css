@@ -1033,7 +1033,7 @@ h1, h2, h3 {
   border: 1px solid var(--card-border);
   border-radius: 0 0 12px 12px;
   background: #0d0d10;
-  min-height: 1400px;
+  min-height: 800px;
   display: flex;
   flex-direction: column;
 }
@@ -1152,6 +1152,16 @@ h1, h2, h3 {
 /* ================================================
    METRICS VIEW
    ================================================ */
+
+.explorer-container {
+  border: 1px solid var(--card-border);
+  border-left: none;
+  background: #09090b;
+  min-height: 800px;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
 
 .metrics-container {
   border: 1px solid var(--card-border);
