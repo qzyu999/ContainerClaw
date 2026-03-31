@@ -157,3 +157,42 @@ export const createSession = async (title?: string): Promise<Session | null> => 
     return null;
   }
 };
+
+// ── Telemetry API ───────────────────────────────────────────────
+
+export interface DagEdge {
+  parent: string;
+  child: string;
+  status: 'ACTIVE' | 'THINKING' | 'DONE';
+  updated_at: number;
+}
+
+export interface MetricsWindow {
+  window_start: number;
+  total_messages: number;
+  tool_calls: number;
+  tool_successes: number;
+  avg_latency_ms: number;
+}
+
+export const fetchDagEdges = async (sessionId: string): Promise<DagEdge[]> => {
+  try {
+    const resp = await fetch(`${BRIDGE_URL}/telemetry/dag/${sessionId}`);
+    const data = await resp.json();
+    if (data.status === 'ok') return data.edges || [];
+    return [];
+  } catch {
+    return [];
+  }
+};
+
+export const fetchMetrics = async (sessionId: string): Promise<MetricsWindow[]> => {
+  try {
+    const resp = await fetch(`${BRIDGE_URL}/telemetry/metrics/${sessionId}`);
+    const data = await resp.json();
+    if (data.status === 'ok') return data.metrics || [];
+    return [];
+  } catch {
+    return [];
+  }
+};

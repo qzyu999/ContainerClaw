@@ -228,5 +228,145 @@ def workspace_diff(session_id):
     except Exception as e:
         return {"status": "error", "message": str(e)}, 500
 
+
+# ── Telemetry Endpoints (Engine-Agnostic) ─────────────────────────
+
+def _init_duckdb(db_path):
+    """Create and initialize the DuckDB file with telemetry schema if it doesn't exist."""
+    import duckdb
+    conn = duckdb.connect(db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS dag_edges (
+            session_id VARCHAR NOT NULL,
+            parent_id VARCHAR NOT NULL,
+            child_id VARCHAR NOT NULL,
+            status VARCHAR DEFAULT 'ACTIVE',
+            created_at BIGINT,
+            updated_at BIGINT,
+            PRIMARY KEY (session_id, parent_id, child_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_context_snorkel (
+            agent_id VARCHAR NOT NULL,
+            session_id VARCHAR NOT NULL,
+            run_id VARCHAR DEFAULT '',
+            context_json JSON,
+            last_updated_at BIGINT,
+            PRIMARY KEY (agent_id, session_id)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS live_metrics (
+            session_id VARCHAR NOT NULL,
+            window_start BIGINT NOT NULL,
+            total_messages INTEGER DEFAULT 0,
+            tool_calls INTEGER DEFAULT 0,
+            tool_successes INTEGER DEFAULT 0,
+            avg_latency_ms DOUBLE DEFAULT 0.0,
+            PRIMARY KEY (session_id, window_start)
+        )
+    """)
+    conn.close()
+    print(f"Bridge: Initialized DuckDB at {db_path}")
+
+
+def get_telemetry_connection():
+    """Return a DB-API 2.0 connection based on the configured engine.
+
+    Returns None if telemetry is not enabled, allowing endpoints
+    to gracefully degrade with a 404.
+    """
+    engine = os.getenv("TELEMETRY_ENGINE", "")
+    if not engine:
+        return None
+    if engine == "duckdb":
+        import duckdb
+        db_path = os.getenv("TELEMETRY_DUCKDB_PATH", "/state/telemetry.duckdb")
+        if not os.path.exists(db_path):
+            _init_duckdb(db_path)
+        return duckdb.connect(db_path, read_only=True)
+    elif engine == "starrocks":
+        import pymysql
+        return pymysql.connect(
+            host=os.getenv("STARROCKS_HOST", "starrocks-fe"),
+            port=int(os.getenv("STARROCKS_PORT", "9030")),
+            user="root",
+            database="containerclaw",
+        )
+    else:
+        print(f"⚠️ Bridge: Unknown telemetry engine: {engine}")
+        return None
+
+
+@app.route("/telemetry/dag/<session_id>")
+def telemetry_dag(session_id):
+    """Return DAG edges for the swarm visualization."""
+    conn = get_telemetry_connection()
+    if not conn:
+        return {"status": "error", "message": "Telemetry not enabled"}, 404
+    try:
+        rows = conn.execute(
+            "SELECT parent_id, child_id, status, updated_at FROM dag_edges WHERE session_id = ?",
+            [session_id],
+        ).fetchall()
+        edges = [
+            {"parent": r[0], "child": r[1], "status": r[2], "updated_at": r[3]}
+            for r in rows
+        ]
+        return {"status": "ok", "edges": edges}
+    except Exception as e:
+        print(f"Bridge: Telemetry DAG Error: {e}")
+        return {"status": "error", "message": str(e)}, 500
+
+
+@app.route("/telemetry/snorkel/<agent_id>/<session_id>")
+def telemetry_snorkel(agent_id, session_id):
+    """Return the materialized context window for a specific agent."""
+    conn = get_telemetry_connection()
+    if not conn:
+        return {"status": "error", "message": "Telemetry not enabled"}, 404
+    try:
+        row = conn.execute(
+            "SELECT context_json, last_updated_at FROM agent_context_snorkel WHERE agent_id = ? AND session_id = ?",
+            [agent_id, session_id],
+        ).fetchone()
+        if row:
+            return {"status": "ok", "context": row[0], "updated_at": row[1]}
+        return {"status": "ok", "context": None}
+    except Exception as e:
+        print(f"Bridge: Telemetry Snorkel Error: {e}")
+        return {"status": "error", "message": str(e)}, 500
+
+
+@app.route("/telemetry/metrics/<session_id>")
+def telemetry_metrics(session_id):
+    """Return aggregated metrics for HUD sparklines."""
+    conn = get_telemetry_connection()
+    if not conn:
+        return {"status": "error", "message": "Telemetry not enabled"}, 404
+    try:
+        rows = conn.execute(
+            "SELECT window_start, total_messages, tool_calls, tool_successes, avg_latency_ms "
+            "FROM live_metrics WHERE session_id = ? ORDER BY window_start DESC LIMIT 60",
+            [session_id],
+        ).fetchall()
+        metrics = [
+            {
+                "window_start": r[0],
+                "total_messages": r[1],
+                "tool_calls": r[2],
+                "tool_successes": r[3],
+                "avg_latency_ms": r[4],
+            }
+            for r in rows
+        ]
+        return {"status": "ok", "metrics": metrics}
+    except Exception as e:
+        print(f"Bridge: Telemetry Metrics Error: {e}")
+        return {"status": "error", "message": str(e)}, 500
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001, threaded=True)
+

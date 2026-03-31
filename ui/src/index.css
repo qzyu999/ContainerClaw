@@ -1024,3 +1024,253 @@ h1, h2, h3 {
   flex-direction: column;
   gap: 4px;
 }
+
+/* ================================================
+   DAG VIEW
+   ================================================ */
+
+.dag-container {
+  border: 1px solid var(--card-border);
+  border-radius: 0 0 12px 12px;
+  background: #0d0d10;
+  min-height: 400px;
+  display: flex;
+  flex-direction: column;
+}
+
+.dag-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 3rem;
+}
+
+.dag-empty-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #52525b;
+}
+
+.dag-empty-sub {
+  font-size: 0.8rem;
+  color: #3b3b44;
+  text-align: center;
+  max-width: 320px;
+  line-height: 1.5;
+}
+
+.dag-scroll {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+}
+
+.dag-svg {
+  display: block;
+  margin: 0 auto;
+}
+
+.dag-legend {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--card-border);
+  background: #111115;
+  font-size: 0.7rem;
+  color: #71717a;
+}
+
+.dag-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dag-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.dag-legend-count {
+  margin-left: auto;
+  font-size: 0.65rem;
+  color: #52525b;
+}
+
+/* ================================================
+   METRICS VIEW
+   ================================================ */
+
+.metrics-container {
+  border: 1px solid var(--card-border);
+  border-radius: 0 0 12px 12px;
+  background: #0d0d10;
+  min-height: 400px;
+  display: flex;
+  flex-direction: column;
+}
+
+.metrics-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 3rem;
+}
+
+.metrics-empty-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #52525b;
+}
+
+.metrics-empty-sub {
+  font-size: 0.8rem;
+  color: #3b3b44;
+  text-align: center;
+  max-width: 360px;
+  line-height: 1.5;
+}
+
+/* Summary stat cards */
+.metrics-summary {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  border-bottom: 1px solid var(--card-border);
+}
+
+.metrics-stat-card {
+  padding: 16px 20px;
+  border-right: 1px solid var(--card-border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.metrics-stat-card:last-child {
+  border-right: none;
+}
+
+.metrics-stat-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #71717a;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.metrics-stat-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.metrics-stat-sub {
+  font-size: 0.7rem;
+  color: #52525b;
+}
+
+/* Sparklines */
+.metrics-sparklines {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0;
+  border-bottom: 1px solid var(--card-border);
+}
+
+.sparkline-container {
+  padding: 12px 16px;
+  border-right: 1px solid var(--card-border);
+}
+
+.sparkline-container:last-child {
+  border-right: none;
+}
+
+.sparkline-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.sparkline-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #71717a;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sparkline-value {
+  font-size: 0.9rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.sparkline-empty {
+  font-size: 0.75rem;
+  color: #3b3b44;
+  padding: 12px 0;
+}
+
+.sparkline-svg {
+  display: block;
+  width: 100%;
+}
+
+/* Data table */
+.metrics-table-wrap {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 240px;
+}
+
+.metrics-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+}
+
+.metrics-table thead th {
+  position: sticky;
+  top: 0;
+  background: #111115;
+  padding: 8px 12px;
+  text-align: left;
+  font-weight: 600;
+  color: #71717a;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--card-border);
+}
+
+.metrics-table tbody tr {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  transition: background 0.1s;
+}
+
+.metrics-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.metrics-table td {
+  padding: 6px 12px;
+  color: #d1d5db;
+  font-variant-numeric: tabular-nums;
+}
+
+.metrics-ts {
+  color: #52525b !important;
+}
+

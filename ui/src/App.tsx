@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Box, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare, ChevronLeft, ChevronRight, User, Plus } from 'lucide-react';
+import { Box, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare, ChevronLeft, ChevronRight, User, Plus, GitBranch, BarChart3 } from 'lucide-react';
 
 import { streamEvents, fetchWorkspace, fetchHistory, fetchSessions, createSession } from './api';
 import type { ActivityEvent, Session } from './api';
@@ -7,10 +7,12 @@ import ChatroomView from './components/ChatroomView';
 import ExplorerView from './components/ExplorerView';
 import ConchShellPanel from './components/ConchShellPanel';
 import ProjectBoard from './components/ProjectBoard';
+import DagView from './components/DagView';
+import MetricsView from './components/MetricsView';
 
 const DEFAULT_SESSION_ID = 'user-session';
 
-type TabId = 'chatroom' | 'explorer';
+type TabId = 'chatroom' | 'explorer' | 'dag' | 'metrics';
 
 export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -242,6 +244,20 @@ export default function App() {
               <span>Explorer</span>
               {fileCount > 0 && <span className="tab-badge">{fileCount}</span>}
             </button>
+            <button 
+              className={`tab-item ${activeTab === 'dag' ? 'active' : ''}`}
+              onClick={() => setActiveTab('dag')}
+            >
+              <GitBranch size={14} />
+              <span>DAG</span>
+            </button>
+            <button 
+              className={`tab-item ${activeTab === 'metrics' ? 'active' : ''}`}
+              onClick={() => setActiveTab('metrics')}
+            >
+              <BarChart3 size={14} />
+              <span>Metrics</span>
+            </button>
           </div>
 
           {/* Tab Content */}
@@ -263,6 +279,12 @@ export default function App() {
             )}
             {activeTab === 'explorer' && (
               <ExplorerView sessionId={activeSessionId || DEFAULT_SESSION_ID} refreshKey={refreshKey} />
+            )}
+            {activeTab === 'dag' && (
+              <DagView sessionId={activeSessionId || DEFAULT_SESSION_ID} />
+            )}
+            {activeTab === 'metrics' && (
+              <MetricsView sessionId={activeSessionId || DEFAULT_SESSION_ID} />
             )}
           </div>
         </main>

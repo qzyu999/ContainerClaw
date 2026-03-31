@@ -1,0 +1,31 @@
+# ContainerClaw Telemetry — Flink Sink Configuration
+# This file is mounted into the Flink JobManager container.
+# It controls which analytical backend the Flink pipelines sink to.
+
+sink:
+  # "duckdb" for local laptop MVP, "starrocks" for enterprise K8s
+  engine: "duckdb"
+
+  duckdb:
+    jdbc_url: "jdbc:duckdb:/state/telemetry.duckdb"
+
+  starrocks:
+    jdbc_url: "jdbc:mysql://starrocks-fe:9030/containerclaw"
+    username: "root"
+    password: ""
+
+# Source configuration (Fluss)
+source:
+  fluss:
+    bootstrap_servers: "coordinator-server:9123"
+    database: "containerclaw"
+    table: "chatroom"
+
+# Flink job parameters
+job:
+  # State TTL in hours — prevents unbounded memory growth
+  state_ttl_hours: 4
+  # Maximum messages to retain in the Snorkel context window
+  snorkel_max_messages: 100
+  # Metrics tumbling window size in seconds
+  metrics_window_seconds: 1

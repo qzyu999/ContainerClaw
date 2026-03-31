@@ -155,9 +155,13 @@ services:
       context: ./bridge
     # Keeps bridge tightly coupled to the agent's network stack
     network_mode: "service:claw-agent"
+    volumes:
+      - ${PROJECT_DIR:-.}/.claw_state:/state:rw
     environment:
       - AGENT_URL=localhost:50051
       - PYTHONUNBUFFERED=1
+      - TELEMETRY_ENGINE=${TELEMETRY_ENGINE:-}
+      - TELEMETRY_DUCKDB_PATH=/state/telemetry.duckdb
     depends_on:
       claw-agent:
         condition: service_started
@@ -184,6 +188,72 @@ services:
     depends_on:
       coordinator-server:
         condition: service_started
+
+  # ── Telemetry: Flink (Side-car Telemetry Pipeline) ──────────────
+  flink-jobmanager:
+    build:
+      context: ./telemetry
+      dockerfile: Dockerfile
+    command: standalone-job --job-classname com.containerclaw.telemetry.TelemetryJob
+    ports:
+      - "8081:8081"
+    profiles: ["telemetry-local", "telemetry-enterprise"]
+    restart: on-failure
+    volumes:
+      - ${PROJECT_DIR:-.}/.claw_state:/state:rw
+      - ${PROJECT_DIR:-.}/telemetry/telemetry-config.yaml:/config/telemetry-config.yaml:ro
+    environment:
+      - TELEMETRY_CONFIG=/config/telemetry-config.yaml
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        state.backend: hashmap
+        state.checkpoints.dir: file:///state/flink-checkpoints
+        taskmanager.memory.process.size: 512m
+        execution.checkpointing.interval: 30s
+    networks:
+      - internal
+    depends_on:
+      coordinator-server:
+        condition: service_started
+
+  flink-taskmanager:
+    build:
+      context: ./telemetry
+      dockerfile: Dockerfile
+    command: taskmanager
+    profiles: ["telemetry-local", "telemetry-enterprise"]
+    volumes:
+      - ${PROJECT_DIR:-.}/.claw_state:/state:rw
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        state.backend: hashmap
+        taskmanager.memory.process.size: 512m
+    networks:
+      - internal
+    depends_on:
+      - flink-jobmanager
+
+  # ── Telemetry: StarRocks (Enterprise) ──────────────────────────
+  starrocks-fe:
+    image: starrocks/fe-ubuntu:latest
+    ports:
+      - "9030:9030"
+      - "8030:8030"
+    profiles: ["telemetry-enterprise"]
+    networks:
+      - internal
+
+  starrocks-be:
+    image: starrocks/be-ubuntu:latest
+    profiles: ["telemetry-enterprise"]
+    depends_on:
+      - starrocks-fe
+    networks:
+      - internal
 
 networks:
   frontend:
