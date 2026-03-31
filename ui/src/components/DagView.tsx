@@ -390,7 +390,34 @@ export default function DagView({ sessionId }: DagViewProps) {
                 <path d="M3 3v5h5" />
               </svg>
             </button>
-            <div className="dag-zoom-info">{(viewState.scale * 100).toFixed(0)}%</div>
+          <div className="dag-zoom-info">{(viewState.scale * 100).toFixed(0)}%</div>
+          </div>
+
+          <div className="dag-legend">
+            <div className="dag-legend-item">
+              <span className="dag-legend-dot" style={{ background: '#60a5fa' }}></span>
+              <span>Root</span>
+            </div>
+            <div className="dag-legend-item">
+              <span className="dag-legend-dot" style={{ background: '#4ade80' }}></span>
+              <span>Active</span>
+            </div>
+            <div className="dag-legend-item">
+              <span className="dag-legend-dot" style={{ background: '#fbbf24' }}></span>
+              <span>Thinking</span>
+            </div>
+            <div className="dag-legend-item">
+              <span className="dag-legend-dot" style={{ background: '#6b7280' }}></span>
+              <span>Done</span>
+            </div>
+            <div className="dag-legend-item" style={{ marginLeft: '12px', opacity: 0.6 }}>
+              <svg width="24" height="2" style={{ marginRight: '6px' }}><line x1="0" y1="1" x2="24" y2="1" stroke="#52525b" strokeWidth="2" /></svg>
+              <span>Causal</span>
+            </div>
+            <div className="dag-legend-item" style={{ opacity: 0.6 }}>
+              <svg width="24" height="2" style={{ marginRight: '6px' }}><line x1="0" y1="1" x2="24" y2="1" stroke="#fbbf24" strokeDasharray="4,2" strokeWidth="2" /></svg>
+              <span>Spawn</span>
+            </div>
           </div>
         </div>
       )}
