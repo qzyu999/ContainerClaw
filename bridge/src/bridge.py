@@ -293,74 +293,100 @@ async def _get_table(table_name):
         return None
 
 
-async def _scan_dag_edges(session_id):
-    """Reconstruct DAG edges by scanning the chatroom log table.
+async def _lookup_dag_snapshot(session_id):
+    """Point lookup on dag_summaries PK table. O(1).
 
-    PK tables don't support log scanning in Fluss — only point lookups.
-    Instead, we scan the chatroom source table (which IS a log table)
-    and reconstruct edges client-side, applying the same logic as the
-    Flink DagPipeline SQL:
-      WHERE parent_actor IS NOT NULL AND parent_actor <> ''
+    Returns the full DAG as a pre-aggregated JSON blob.
+    Flink maintains this via JSON_ARRAYAGG streaming aggregation.
     """
-    import fluss
-    table = await _get_table("chatroom")
+    table = await _get_table("dag_summaries")
     if table is None:
         return []
 
-    scanner = await table.new_scan().project_by_name(
-        ["session_id", "actor_id", "parent_actor", "type", "ts"]
-    ).create_record_batch_log_scanner()
+    lookuper = table.new_lookup().create_lookuper()
+    result = await lookuper.lookup({"session_id": session_id})
+    if result is None:
+        return []
 
-    # Subscribe to all buckets from earliest
-    conn = await _ensure_fluss_conn()
-    admin = await conn.get_admin()
-    table_path = fluss.TablePath("containerclaw", "chatroom")
-    table_info = await admin.get_table_info(table_path)
-    num_buckets = table_info.num_buckets
+    edges_json = result.get("edges_json", "[]")
+    try:
+        return json.loads(edges_json)
+    except (json.JSONDecodeError, TypeError):
+        return []
 
-    scanner.subscribe_buckets(
-        {b: fluss.EARLIEST_OFFSET for b in range(num_buckets)}
-    )
 
-    edges = {}
-    empty_polls = 0
-    while empty_polls < 3:
-        batches = await scanner._async_poll_batches(500)
-        if not batches:
-            empty_polls += 1
-            continue
-        empty_polls = 0
-        for record_batch in batches:
-            batch = record_batch.batch
-            sid_arr = batch.column("session_id")
-            actor_arr = batch.column("actor_id")
-            parent_arr = batch.column("parent_actor")
-            type_arr = batch.column("type")
-            ts_arr = batch.column("ts")
-            for i in range(batch.num_rows):
-                sid = sid_arr[i].as_py()
-                if sid != session_id:
+@app.route("/telemetry/dag/<session_id>")
+def telemetry_dag(session_id):
+    """Return DAG edges via O(1) snapshot lookup on dag_summaries PK table."""
+    bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
+    if not bootstrap:
+        return {"status": "ok", "edges": []}
+    try:
+        edges = _run_async(_lookup_dag_snapshot(session_id))
+        return {"status": "ok", "edges": edges}
+    except Exception as e:
+        print(f"Bridge: Telemetry DAG Snapshot Error: {e}")
+        return {"status": "ok", "edges": []}
+
+
+@app.route("/telemetry/dag/<session_id>/stream")
+def telemetry_dag_stream(session_id):
+    """SSE endpoint: tail dag_events log table for real-time edge deltas."""
+    bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
+    if not bootstrap:
+        return Response("data: []\n\n", mimetype="text/event-stream")
+
+    def generate():
+        import fluss
+        try:
+            table = _run_async(_get_table("dag_events"))
+            if table is None:
+                yield f"data: {json.dumps({'type': 'error', 'message': 'dag_events table not available'})}\n\n"
+                return
+
+            conn = _run_async(_ensure_fluss_conn())
+            admin = _run_async(conn.get_admin())
+            table_path = fluss.TablePath("containerclaw", "dag_events")
+            table_info = _run_async(admin.get_table_info(table_path))
+            num_buckets = table_info.num_buckets
+
+            scanner = _run_async(
+                table.new_scan().create_record_batch_log_scanner()
+            )
+            # Subscribe from LATEST — only new edges after this point
+            scanner.subscribe_buckets(
+                {b: fluss.LATEST_OFFSET for b in range(num_buckets)}
+            )
+
+            while True:
+                batches = _run_async(scanner._async_poll_batches(1000))
+                if not batches:
+                    yield ": heartbeat\n\n"
                     continue
-                parent = parent_arr[i].as_py()
-                if not parent:
-                    continue
-                child = actor_arr[i].as_py()
-                evt_type = type_arr[i].as_py() or ""
-                if evt_type in ("finish", "done", "checkpoint"):
-                    status = "DONE"
-                elif evt_type == "tool_call":
-                    status = "THINKING"
-                else:
-                    status = "ACTIVE"
-                key = (sid, parent, child)
-                edges[key] = {
-                    "parent": parent,
-                    "child": child,
-                    "status": status,
-                    "updated_at": ts_arr[i].as_py(),
-                }
+                for record_batch in batches:
+                    batch = record_batch.batch
+                    sid_arr = batch.column("session_id")
+                    parent_arr = batch.column("parent_id")
+                    child_arr = batch.column("child_id")
+                    status_arr = batch.column("status")
+                    updated_arr = batch.column("updated_at")
+                    for i in range(batch.num_rows):
+                        if sid_arr[i].as_py() != session_id:
+                            continue
+                        edge = {
+                            "parent": parent_arr[i].as_py(),
+                            "child": child_arr[i].as_py(),
+                            "status": status_arr[i].as_py(),
+                            "updated_at": updated_arr[i].as_py(),
+                        }
+                        yield f"data: {json.dumps(edge)}\n\n"
+        except GeneratorExit:
+            return
+        except Exception as e:
+            print(f"Bridge: DAG Stream Error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
-    return list(edges.values())
+    return Response(generate(), mimetype="text/event-stream")
 
 
 
@@ -373,20 +399,6 @@ async def _lookup_metrics(session_id):
     lookuper = table.new_lookup().create_lookuper()
     result = await lookuper.lookup({"session_id": session_id})
     return result
-
-
-@app.route("/telemetry/dag/<session_id>")
-def telemetry_dag(session_id):
-    """Return DAG edges for the swarm visualization."""
-    bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
-    if not bootstrap:
-        return {"status": "ok", "edges": []}
-    try:
-        edges = _run_async(_scan_dag_edges(session_id))
-        return {"status": "ok", "edges": edges}
-    except Exception as e:
-        print(f"Bridge: Telemetry DAG Error: {e}")
-        return {"status": "ok", "edges": []}
 
 
 @app.route("/telemetry/metrics/<session_id>")

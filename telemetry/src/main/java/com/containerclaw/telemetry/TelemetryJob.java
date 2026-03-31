@@ -1,16 +1,13 @@
 /*
- * ContainerClaw Telemetry — Flink Job Entry Point (Pt.3: Fluss-Native)
+ * ContainerClaw Telemetry — Flink Job Entry Point
+ * Hybrid Snapshot + Delta Architecture (Fluss-Native)
  *
- * Reads from the chatroom log table (Fluss), computes derived views,
- * and writes BACK to Fluss Primary Key tables:
- *
- *   1. dag_edges    — parent/child agent relationships (PK table, upsert)
- *   2. live_metrics — per-session running aggregates   (PK table, upsert)
+ * Reads from the chatroom log table (Fluss), computes:
+ *   1. dag_summaries  — full DAG as JSON blob per session (PK table, O(1) lookup)
+ *   2. dag_events     — individual edge updates (Log table, SSE tailing)
+ *   3. live_metrics   — per-session running aggregates  (PK table, O(1) lookup)
  *
  * Zero external databases. Zero JDBC. Fluss is both source and sink.
- *
- * STARTUP: Retries connecting to the Fluss database on a 5-second interval
- * since the agent creates the database on first boot (race condition).
  */
 package com.containerclaw.telemetry;
 
@@ -28,7 +25,7 @@ public class TelemetryJob {
     private static final long RETRY_INTERVAL_MS = 5000;
 
     public static void main(String[] args) throws Exception {
-        LOG.info("=== ContainerClaw Telemetry Job Starting (Fluss-Native) ===");
+        LOG.info("=== ContainerClaw Telemetry Job Starting (Hybrid Snapshot+Delta) ===");
 
         // Load config
         String configPath = System.getenv("TELEMETRY_CONFIG");
@@ -59,12 +56,13 @@ public class TelemetryJob {
         // Wait for the agent to create the database
         waitForDatabase(tableEnv, config.getFlussDatabase(), config.getFlussBootstrapServers());
 
-        // Create PK sink tables (idempotent — IF NOT EXISTS)
+        // Create sink tables (idempotent — IF NOT EXISTS)
         createSinkTables(tableEnv, config.getFlussDatabase());
 
         // Submit the pipelines as a single statement set
         var stmtSet = tableEnv.createStatementSet();
-        stmtSet.addInsertSql(DagPipeline.getInsertSql());
+        stmtSet.addInsertSql(DagPipeline.getSnapshotInsertSql());
+        stmtSet.addInsertSql(DagPipeline.getDeltaInsertSql());
         stmtSet.addInsertSql(MetricsPipeline.getInsertSql());
 
         LOG.info("Pipelines registered. Submitting statement set...");
@@ -73,24 +71,36 @@ public class TelemetryJob {
     }
 
     /**
-     * Create the PK tables that the pipelines write to.
-     * Uses CREATE TABLE IF NOT EXISTS so it's safe to run on every restart.
+     * Create the sink tables that the pipelines write to.
      */
     private static void createSinkTables(StreamTableEnvironment tableEnv, String database) {
-        LOG.info("Creating PK sink tables in database '{}'...", database);
+        LOG.info("Creating sink tables in database '{}'...", database);
 
+        // PK table: full DAG snapshot per session (JSON blob)
         tableEnv.executeSql(
-            "CREATE TABLE IF NOT EXISTS fluss_catalog." + database + ".dag_edges ("
+            "CREATE TABLE IF NOT EXISTS fluss_catalog." + database + ".dag_summaries ("
+            + "    session_id STRING,"
+            + "    edges_json STRING,"
+            + "    edge_count BIGINT,"
+            + "    updated_at BIGINT,"
+            + "    PRIMARY KEY (session_id) NOT ENFORCED"
+            + ") WITH ('bucket.num' = '4', 'bucket.key' = 'session_id')"
+        );
+        LOG.info("PK table dag_summaries ready.");
+
+        // Log table: individual edge events for SSE streaming
+        tableEnv.executeSql(
+            "CREATE TABLE IF NOT EXISTS fluss_catalog." + database + ".dag_events ("
             + "    session_id STRING,"
             + "    parent_id STRING,"
             + "    child_id STRING,"
             + "    status STRING,"
-            + "    updated_at BIGINT,"
-            + "    PRIMARY KEY (session_id, parent_id, child_id) NOT ENFORCED"
+            + "    updated_at BIGINT"
             + ") WITH ('bucket.num' = '4', 'bucket.key' = 'session_id')"
         );
-        LOG.info("PK table dag_edges ready.");
+        LOG.info("Log table dag_events ready.");
 
+        // PK table: live metrics per session
         tableEnv.executeSql(
             "CREATE TABLE IF NOT EXISTS fluss_catalog." + database + ".live_metrics ("
             + "    session_id STRING,"
