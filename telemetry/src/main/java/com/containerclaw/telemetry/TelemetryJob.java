@@ -1,13 +1,6 @@
 /*
  * ContainerClaw Telemetry — Flink Job Entry Point
  * Hybrid Snapshot + Delta Architecture (Fluss-Native)
- *
- * Reads from the chatroom log table (Fluss), computes:
- *   1. dag_summaries  — full DAG as JSON blob per session (PK table, O(1) lookup)
- *   2. dag_events     — individual edge updates (Log table, SSE tailing)
- *   3. live_metrics   — per-session running aggregates  (PK table, O(1) lookup)
- *
- * Zero external databases. Zero JDBC. Fluss is both source and sink.
  */
 package com.containerclaw.telemetry;
 
@@ -42,6 +35,9 @@ public class TelemetryJob {
         StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env,
                 EnvironmentSettings.newInstance().inStreamingMode().build());
 
+        // Set state retention to prevent unbounded join state growth (10 minutes)
+        tableEnv.getConfig().setIdleStateRetention(java.time.Duration.ofMinutes(10));
+
         // Register the Fluss catalog
         String createCatalog = String.format(
             "CREATE CATALOG fluss_catalog WITH ("
@@ -61,6 +57,7 @@ public class TelemetryJob {
 
         // Submit the pipelines as a single statement set
         var stmtSet = tableEnv.createStatementSet();
+        stmtSet.addInsertSql(DagPipeline.getActorHeadsInsertSql());
         stmtSet.addInsertSql(DagPipeline.getSnapshotInsertSql());
         stmtSet.addInsertSql(DagPipeline.getDeltaInsertSql());
         stmtSet.addInsertSql(MetricsPipeline.getInsertSql());
@@ -76,6 +73,17 @@ public class TelemetryJob {
     private static void createSinkTables(StreamTableEnvironment tableEnv, String database) {
         LOG.info("Creating sink tables in database '{}'...", database);
 
+        // PK table: track the most recent turn for each actor per session
+        tableEnv.executeSql(
+            "CREATE TABLE IF NOT EXISTS fluss_catalog." + database + ".actor_heads ("
+            + "    session_id STRING,"
+            + "    actor_id STRING,"
+            + "    last_event_id STRING,"
+            + "    last_ts BIGINT,"
+            + "    PRIMARY KEY (session_id, actor_id) NOT ENFORCED"
+            + ") WITH ('bucket.num' = '4', 'bucket.key' = 'session_id,actor_id')"
+        );
+
         // PK table: full DAG snapshot per session (JSON blob)
         tableEnv.executeSql(
             "CREATE TABLE IF NOT EXISTS fluss_catalog." + database + ".dag_summaries ("
@@ -86,19 +94,18 @@ public class TelemetryJob {
             + "    PRIMARY KEY (session_id) NOT ENFORCED"
             + ") WITH ('bucket.num' = '4', 'bucket.key' = 'session_id')"
         );
-        LOG.info("PK table dag_summaries ready.");
 
-        // Log table: individual edge events for SSE streaming
+        // PK table: individual edge events for SSE streaming
         tableEnv.executeSql(
             "CREATE TABLE IF NOT EXISTS fluss_catalog." + database + ".dag_events ("
             + "    session_id STRING,"
             + "    parent_id STRING,"
             + "    child_id STRING,"
             + "    status STRING,"
-            + "    updated_at BIGINT"
+            + "    updated_at BIGINT,"
+            + "    PRIMARY KEY (session_id, child_id) NOT ENFORCED"
             + ") WITH ('bucket.num' = '4', 'bucket.key' = 'session_id')"
         );
-        LOG.info("Log table dag_events ready.");
 
         // PK table: live metrics per session
         tableEnv.executeSql(
@@ -111,21 +118,17 @@ public class TelemetryJob {
             + "    PRIMARY KEY (session_id) NOT ENFORCED"
             + ") WITH ('bucket.num' = '4', 'bucket.key' = 'session_id')"
         );
-        LOG.info("PK table live_metrics ready.");
     }
 
-    /**
-     * Retry loop that waits for the Fluss database to become available.
-     */
     private static void waitForDatabase(StreamTableEnvironment tableEnv, String database, String bootstrapServers) throws Exception {
         for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
             try {
                 tableEnv.useDatabase(database);
-                LOG.info("Connected to Fluss database '{}' on attempt {}", database, attempt);
+                LOG.info("Connected to Fluss database '{}'", database);
                 return;
             } catch (Exception e) {
-                LOG.warn("Attempt {}/{}: Database '{}' not ready — {}. Retrying in {}ms...",
-                    attempt, MAX_RETRIES, database, e.getMessage(), RETRY_INTERVAL_MS);
+                LOG.warn("Attempt {}/{}: Database '{}' not ready. Retrying in {}ms...",
+                    attempt, MAX_RETRIES, database, RETRY_INTERVAL_MS);
                 Thread.sleep(RETRY_INTERVAL_MS);
                 try {
                     tableEnv.executeSql("DROP CATALOG IF EXISTS fluss_catalog");
@@ -140,6 +143,6 @@ public class TelemetryJob {
                 tableEnv.useCatalog("fluss_catalog");
             }
         }
-        throw new RuntimeException("Database '" + database + "' did not become available after " + MAX_RETRIES + " attempts");
+        throw new RuntimeException("Database '" + database + "' not available");
     }
 }

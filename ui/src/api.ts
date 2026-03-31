@@ -163,8 +163,11 @@ export const createSession = async (title?: string): Promise<Session | null> => 
 export interface DagEdge {
   parent: string;
   child: string;
+  parent_label?: string;
+  child_label?: string;
   status: 'ACTIVE' | 'THINKING' | 'DONE';
   updated_at: number;
+  ts?: number;
 }
 
 export interface MetricsWindow {

@@ -245,7 +245,7 @@ h1, h2, h3 {
   border-radius: 12px;
   overflow: hidden;
   height: 100%;
-  max-height: 600px;
+  max-height: 1200px;
   min-height: 0;
 }
 
@@ -489,7 +489,7 @@ h1, h2, h3 {
   border: 1px solid var(--card-border);
   border-radius: 0 0 12px 12px;
   overflow: hidden;
-  height: 600px;
+  height: 1400px;
   background: #0d0d10;
 }
 
@@ -1033,7 +1033,7 @@ h1, h2, h3 {
   border: 1px solid var(--card-border);
   border-radius: 0 0 12px 12px;
   background: #0d0d10;
-  min-height: 400px;
+  min-height: 1400px;
   display: flex;
   flex-direction: column;
 }

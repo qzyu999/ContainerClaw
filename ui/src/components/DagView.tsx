@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { fetchDagEdges } from '../api';
 import type { DagEdge } from '../api';
 
@@ -7,9 +7,12 @@ interface DagViewProps {
 }
 
 interface NodeLayout {
-  id: string;
+  id: string;          // Compound key: "Actor|event_id"
+  label: string;       // Display name: "Actor"
   x: number;
   y: number;
+  tier: number;        // Nesting depth (0 = main timeline)
+  ts: number;          // Chronological timestamp
   status: 'ACTIVE' | 'THINKING' | 'DONE' | 'ROOT';
 }
 
@@ -27,13 +30,41 @@ const STATUS_GLOW: Record<string, string> = {
   ROOT: 'rgba(96, 165, 250, 0.3)',
 };
 
+const TIER_COLORS = [
+  'rgba(96, 165, 250, 0.05)',   // Tier 0 — main timeline (subtle blue)
+  'rgba(74, 222, 128, 0.05)',   // Tier 1 — sub-agents (subtle green)
+  'rgba(251, 191, 36, 0.05)',   // Tier 2 — sub-sub (subtle amber)
+  'rgba(192, 132, 252, 0.05)',  // Tier 3+ — purple
+];
+
+// Spacing constants for Vertical Spacetime
+const TIERS_X_SPACING = 280;   // Distance between vertical lanes
+const DEPTH_Y_SPACING = 250;   // Vertical movement forward in time
+const START_X = 140;
+const START_Y = 120;
+const NODE_RADIUS = 32;
+
+function extractLabel(compoundId: string): string {
+  const pipeIdx = compoundId.indexOf('|');
+  return pipeIdx >= 0 ? compoundId.substring(0, pipeIdx) : compoundId;
+}
+
 export default function DagView({ sessionId }: DagViewProps) {
   const [edges, setEdges] = useState<DagEdge[]>([]);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
+  
+  // Navigation state (Pan & Zoom)
+  const [viewState, setViewState] = useState({ x: 0, y: 0, scale: 1.0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const loadDag = useCallback(async () => {
-    const data = await fetchDagEdges(sessionId);
-    setEdges(data);
+    try {
+      const data = await fetchDagEdges(sessionId);
+      setEdges(data);
+    } catch (err) {
+      console.error('Failed to fetch DAG:', err);
+    }
   }, [sessionId]);
 
   useEffect(() => {
@@ -42,87 +73,134 @@ export default function DagView({ sessionId }: DagViewProps) {
     return () => clearInterval(interval);
   }, [loadDag]);
 
-  // Build the graph layout from edges
-  const { nodes, layoutEdges } = useMemo(() => {
+  // ── Chronological Vertical Layout Engine ───────────────────────
+  const { nodes, layoutEdges, maxTier, maxDepth } = useMemo(() => {
     if (edges.length === 0) {
-      return { nodes: [] as NodeLayout[], layoutEdges: [] as { from: NodeLayout; to: NodeLayout; status: string }[] };
+      return { nodes: [], layoutEdges: [], maxTier: 0, maxDepth: 0 };
     }
 
-    // Collect unique nodes
     const nodeSet = new Set<string>();
-    const childStatus = new Map<string, string>();
-    edges.forEach(e => {
+    const nodeStatus = new Map<string, string>();
+    const nodeLabels = new Map<string, string>();
+    const nodeTimestamps = new Map<string, number>();
+    const childrenOf = new Map<string, string[]>();
+
+    edges.forEach((e: DagEdge) => {
       nodeSet.add(e.parent);
       nodeSet.add(e.child);
-      childStatus.set(e.child, e.status);
+      nodeStatus.set(e.child, e.status);
+      nodeLabels.set(e.parent, e.parent_label || extractLabel(e.parent));
+      nodeLabels.set(e.child, e.child_label || extractLabel(e.child));
+      
+      // Inherit/capture timestamps — assume child timestamp is reliable
+      if (!nodeTimestamps.has(e.child)) nodeTimestamps.set(e.child, Number(e.ts));
+      if (!nodeTimestamps.has(e.parent)) nodeTimestamps.set(e.parent, Number(e.ts) - 500); // Hack for root
+
+      if (!childrenOf.has(e.parent)) childrenOf.set(e.parent, []);
+      childrenOf.get(e.parent)!.push(e.child);
     });
 
-    // Find roots (nodes that are parents but never children)
-    const children = new Set(edges.map(e => e.child));
-    const roots = [...nodeSet].filter(n => !children.has(n));
+    const childSet = new Set(edges.map((e: DagEdge) => e.child));
+    const roots = [...nodeSet].filter(n => !childSet.has(n));
 
-    // BFS to assign layers
-    const layers = new Map<string, number>();
-    const queue = [...roots];
-    roots.forEach(r => layers.set(r, 0));
+    // 1. Assign Tiers (Dimensional Depth) using BFS
+    const nodeTiers = new Map<string, number>();
+    const visitQueue: { id: string; tier: number }[] = [];
+    roots.forEach(r => visitQueue.push({ id: r, tier: 0 }));
 
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-      const currentLayer = layers.get(current)!;
-      edges.filter(e => e.parent === current).forEach(e => {
-        if (!layers.has(e.child)) {
-          layers.set(e.child, currentLayer + 1);
-          queue.push(e.child);
-        }
-      });
+    while (visitQueue.length > 0) {
+      const { id, tier } = visitQueue.shift()!;
+      if (nodeTiers.has(id)) continue;
+      nodeTiers.set(id, tier);
+
+      const children = childrenOf.get(id) || [];
+      if (children.length === 1) {
+        visitQueue.push({ id: children[0], tier });
+      } else if (children.length > 1) {
+        const mainChild = children.find(c => 
+          (nodeLabels.get(c) || '').toLowerCase().includes('moderator')
+        ) || children[0];
+        visitQueue.push({ id: mainChild, tier });
+        children.filter(c => c !== mainChild).forEach(sub => {
+          visitQueue.push({ id: sub, tier: tier + 1 });
+        });
+      }
     }
 
-    // Group nodes by layer
-    const layerGroups = new Map<number, string[]>();
-    layers.forEach((layer, node) => {
-      if (!layerGroups.has(layer)) layerGroups.set(layer, []);
-      layerGroups.get(layer)!.push(node);
+    // fallback for orphans
+    nodeSet.forEach(n => { if (!nodeTiers.has(n)) nodeTiers.set(n, 0); });
+
+    // 2. Assign Y-Coordinates via Global Chronological Sequence
+    const uniqueNodes = Array.from(nodeSet);
+    const sortedNodes = uniqueNodes.sort((a,b) => {
+      const tA = nodeTimestamps.get(a) || 0;
+      const tB = nodeTimestamps.get(b) || 0;
+      return tA - tB;
     });
 
-    const maxLayer = Math.max(...layerGroups.keys(), 0);
+    const chronoRankMap = new Map<string, number>();
+    sortedNodes.forEach((id, index) => chronoRankMap.set(id, index));
 
-    // Position nodes
-    const NODE_W = 140;
-    const LAYER_H = 100;
-    const PADDING_X = 80;
-    const PADDING_Y = 60;
+    const nodeLayouts: NodeLayout[] = sortedNodes.map(id => ({
+      id,
+      label: nodeLabels.get(id) || extractLabel(id),
+      tier: nodeTiers.get(id) || 0,
+      x: START_X + (nodeTiers.get(id) || 0) * TIERS_X_SPACING,
+      y: START_Y + (chronoRankMap.get(id) || 0) * DEPTH_Y_SPACING,
+      ts: nodeTimestamps.get(id) || 0,
+      status: (nodeStatus.get(id) || (roots.includes(id) ? 'ROOT' : 'ACTIVE')) as NodeLayout['status'],
+    }));
 
-    const nodeLayouts: NodeLayout[] = [];
-    layerGroups.forEach((group, layer) => {
-      const totalWidth = group.length * NODE_W;
-      const startX = PADDING_X + ((maxLayer + 1) * NODE_W - totalWidth) / 2;
-      group.forEach((nodeId, idx) => {
-        const status = childStatus.get(nodeId) || (roots.includes(nodeId) ? 'ROOT' : 'ACTIVE');
-        nodeLayouts.push({
-          id: nodeId,
-          x: startX + idx * NODE_W + NODE_W / 2,
-          y: PADDING_Y + layer * LAYER_H + 20,
-          status: status as NodeLayout['status'],
-        });
-      });
-    });
+    const lMap = new Map(nodeLayouts.map(n => [n.id, n]));
+    const lEdges = edges.map((e: DagEdge) => {
+      const from = lMap.get(e.parent);
+      const to = lMap.get(e.child);
+      if (from && to) return { from, to, status: e.status };
+      return null;
+    }).filter(Boolean);
 
-    // Build edge coordinates
-    const nodeMap = new Map(nodeLayouts.map(n => [n.id, n]));
-    const lEdges = edges
-      .map(e => {
-        const from = nodeMap.get(e.parent);
-        const to = nodeMap.get(e.child);
-        if (from && to) return { from, to, status: e.status };
-        return null;
-      })
-      .filter(Boolean) as { from: NodeLayout; to: NodeLayout; status: string }[];
-
-    return { nodes: nodeLayouts, layoutEdges: lEdges };
+    return { 
+      nodes: nodeLayouts, 
+      layoutEdges: lEdges as { from: NodeLayout; to: NodeLayout; status: string }[], 
+      maxTier: Math.max(0, ...Array.from(nodeTiers.values())),
+      maxDepth: sortedNodes.length,
+    };
   }, [edges]);
 
-  const svgWidth = Math.max(600, ...nodes.map(n => n.x + 80));
-  const svgHeight = Math.max(300, ...nodes.map(n => n.y + 80));
+  // ── Navigation Handlers ──────────────────────────────────────────
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    setIsDragging(true);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging) return;
+    setViewState(prev => ({
+      ...prev,
+      x: prev.x + e.movementX,
+      y: prev.y + e.movementY,
+    }));
+  };
+
+  const handleMouseUp = () => setIsDragging(false);
+
+  const handleWheel = (e: React.WheelEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      const scaleDelta = e.deltaY > 0 ? 0.95 : 1.05;
+      setViewState(prev => ({
+        ...prev,
+        scale: Math.min(Math.max(prev.scale * scaleDelta, 0.1), 4),
+      }));
+    } else {
+      setViewState(prev => ({
+        ...prev,
+        x: prev.x - e.deltaX,
+        y: prev.y - e.deltaY,
+      }));
+    }
+  };
+
+  const resetView = () => setViewState({ x: 0, y: 0, scale: 1.0 });
 
   return (
     <div className="dag-container">
@@ -135,116 +213,162 @@ export default function DagView({ sessionId }: DagViewProps) {
             <line x1="12" y1="7.5" x2="6" y2="14.5" />
             <line x1="12" y1="7.5" x2="18" y2="14.5" />
           </svg>
-          <div className="dag-empty-title">No DAG Data</div>
+          <div className="dag-empty-title">Waiting for Stream...</div>
           <div className="dag-empty-sub">
-            Agent interactions will appear here as a directed graph when telemetry is active.
+            The Spacetime DAG will populate top to down as activities occur.
           </div>
         </div>
       ) : (
-        <div className="dag-scroll">
-          <svg width={svgWidth} height={svgHeight} className="dag-svg">
+        <div 
+          className="dag-canvas-area"
+          ref={containerRef}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          onWheel={handleWheel}
+          style={{ cursor: isDragging ? 'grabbing' : 'grab', height: '1400px' }}
+        >
+          <svg width="100%" height="100%" className="dag-svg-root">
             <defs>
-              <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-                <polygon points="0 0, 8 3, 0 6" fill="#52525b" />
+              <marker id="arrowhead" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">
+                <polygon points="0 0, 10 4, 0 8" fill="#52525b" />
               </marker>
-              <marker id="arrowhead-active" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-                <polygon points="0 0, 8 3, 0 6" fill="#4ade80" />
+              <marker id="arrowhead-active" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">
+                <polygon points="0 0, 10 4, 0 8" fill="#4ade80" />
+              </marker>
+              <marker id="arrowhead-spawn" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">
+                <polygon points="0 0, 10 4, 0 8" fill="#fbbf24" />
               </marker>
             </defs>
 
-            {/* Edges */}
-            {layoutEdges.map((edge, i) => {
-              const isActive = edge.status === 'ACTIVE';
-              return (
-                <line
-                  key={`edge-${i}`}
-                  x1={edge.from.x}
-                  y1={edge.from.y + 16}
-                  x2={edge.to.x}
-                  y2={edge.to.y - 16}
-                  stroke={isActive ? '#4ade80' : '#333'}
-                  strokeWidth={isActive ? 2 : 1.5}
-                  markerEnd={isActive ? 'url(#arrowhead-active)' : 'url(#arrowhead)'}
-                  opacity={isActive ? 1 : 0.5}
-                />
-              );
-            })}
+            <g transform={`translate(${viewState.x}, ${viewState.y}) scale(${viewState.scale})`}>
+              {/* Vertical Tier Lanes */}
+              {Array.from({ length: maxTier + 1 }, (_, tier) => {
+                const laneX = START_X + tier * TIERS_X_SPACING;
+                const laneHeight = Math.max(1400, (maxDepth + 5) * DEPTH_Y_SPACING);
+                return (
+                  <g key={`tier-lane-${tier}`}>
+                    <rect
+                      x={laneX - 100}
+                      y={0}
+                      width={200}
+                      height={laneHeight}
+                      fill={TIER_COLORS[Math.min(tier, TIER_COLORS.length - 1)]}
+                      rx={16}
+                    />
+                    <text
+                      x={laneX}
+                      y={60}
+                      fill="#71717a"
+                      fontSize={14}
+                      fontWeight={700}
+                      textAnchor="middle"
+                      style={{ opacity: 0.8, letterSpacing: '0.1em' }}
+                    >
+                      {tier === 0 ? 'CENTRAL TIMELINE' : `TIER ${tier}`}
+                    </text>
+                  </g>
+                );
+              })}
 
-            {/* Nodes */}
-            {nodes.map(node => {
-              const color = STATUS_COLORS[node.status] || '#71717a';
-              const glow = STATUS_GLOW[node.status] || 'transparent';
-              const isHovered = hoveredNode === node.id;
+              {/* Edges */}
+              {layoutEdges.map((edge, i) => {
+                const isSpawn = edge.from.tier !== edge.to.tier;
+                const isActive = edge.status === 'ACTIVE';
+                const dy = edge.to.y - edge.from.y;
 
-              return (
-                <g
-                  key={node.id}
-                  onMouseEnter={() => setHoveredNode(node.id)}
-                  onMouseLeave={() => setHoveredNode(null)}
-                  style={{ cursor: 'pointer' }}
-                >
-                  {/* Glow */}
-                  {(node.status === 'ACTIVE' || node.status === 'THINKING') && (
-                    <circle cx={node.x} cy={node.y} r={isHovered ? 28 : 24} fill={glow}>
-                      {node.status === 'ACTIVE' && (
-                        <animate attributeName="r" values="22;26;22" dur="2s" repeatCount="indefinite" />
-                      )}
-                    </circle>
-                  )}
+                // Bezier for spawns and long causal links
+                const cp1y = edge.from.y + dy * 0.4;
+                const cp2y = edge.from.y + dy * 0.6;
+                const cp1x = edge.from.x;
+                const cp2x = edge.to.x;
+                const d = `M ${edge.from.x} ${edge.from.y + NODE_RADIUS} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${edge.to.x} ${edge.to.y - NODE_RADIUS}`;
 
-                  {/* Node circle */}
-                  <circle
-                    cx={node.x}
-                    cy={node.y}
-                    r={isHovered ? 20 : 16}
-                    fill="#18181b"
-                    stroke={color}
-                    strokeWidth={2}
-                    style={{ transition: 'r 0.15s ease' }}
+                return (
+                  <path
+                    key={`edge-${i}`}
+                    d={d}
+                    fill="none"
+                    stroke={isSpawn ? '#fbbf24' : (isActive ? '#4ade80' : '#333')}
+                    strokeWidth={isActive ? 3 : 2}
+                    strokeDasharray={isSpawn ? "8,4" : "none"}
+                    markerEnd={isSpawn ? "url(#arrowhead-spawn)" : (isActive ? "url(#arrowhead-active)" : "url(#arrowhead)")}
                   />
+                );
+              })}
 
-                  {/* Node label */}
-                  <text
-                    x={node.x}
-                    y={node.y + 1}
-                    textAnchor="middle"
-                    dominantBaseline="central"
-                    fill={color}
-                    fontSize={isHovered ? 10 : 9}
-                    fontWeight={600}
-                    fontFamily="'Inter', sans-serif"
-                  >
-                    {node.id.length > 10 ? node.id.slice(0, 9) + '…' : node.id}
-                  </text>
+              {/* Nodes */}
+              {nodes.map(node => {
+                const color = STATUS_COLORS[node.status] || '#71717a';
+                const isHovered = hoveredNode === node.id;
 
-                  {/* Status label below */}
-                  <text
-                    x={node.x}
-                    y={node.y + 30}
-                    textAnchor="middle"
-                    fill="#52525b"
-                    fontSize={8}
-                    fontFamily="'Inter', sans-serif"
+                return (
+                  <g
+                    key={node.id}
+                    onMouseEnter={() => setHoveredNode(node.id)}
+                    onMouseLeave={() => setHoveredNode(null)}
                   >
-                    {node.status}
-                  </text>
-                </g>
-              );
-            })}
+                    {/* Node Glow */}
+                    {(node.status === 'ACTIVE' || node.status === 'THINKING') && (
+                      <circle cx={node.x} cy={node.y} r={isHovered ? NODE_RADIUS * 1.5 : NODE_RADIUS * 1.3} fill={STATUS_GLOW[node.status]}>
+                        {node.status === 'ACTIVE' && (
+                          <animate attributeName="r" values={`${NODE_RADIUS*1.1};${NODE_RADIUS*1.4};${NODE_RADIUS*1.1}`} dur="2s" repeatCount="indefinite" />
+                        )}
+                      </circle>
+                    )}
+
+                    <circle
+                      cx={node.x}
+                      cy={node.y}
+                      r={isHovered ? NODE_RADIUS * 1.2 : NODE_RADIUS}
+                      fill="#09090b"
+                      stroke={color}
+                      strokeWidth={3}
+                      style={{ transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)' }}
+                    />
+
+                    <text
+                      x={node.x}
+                      y={node.y}
+                      textAnchor="middle"
+                      dominantBaseline="central"
+                      fill={color}
+                      fontSize={isHovered ? 14 : 11}
+                      fontWeight={700}
+                      style={{ transition: 'font-size 0.2s' }}
+                    >
+                      {node.label.length > 15 ? node.label.slice(0, 14) + '…' : node.label}
+                    </text>
+
+                    <text
+                      x={node.x}
+                      y={node.y + NODE_RADIUS + 25}
+                      textAnchor="middle"
+                      fill="#a1a1aa"
+                      fontSize={10}
+                      fontWeight={500}
+                      style={{ pointerEvents: 'none' }}
+                    >
+                      {node.status}
+                    </text>
+                  </g>
+                );
+              })}
+            </g>
           </svg>
+          
+          <div className="dag-controls">
+            <button onClick={resetView} className="dag-btn" title="Reset View">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                <path d="M3 3v5h5" />
+              </svg>
+            </button>
+            <div className="dag-zoom-info">{(viewState.scale * 100).toFixed(0)}%</div>
+          </div>
         </div>
       )}
-
-      {/* Legend */}
-      <div className="dag-legend">
-        {Object.entries(STATUS_COLORS).map(([status, color]) => (
-          <div key={status} className="dag-legend-item">
-            <span className="dag-legend-dot" style={{ background: color }} />
-            <span>{status}</span>
-          </div>
-        ))}
-        <span className="dag-legend-count">{edges.length} edge{edges.length !== 1 ? 's' : ''}</span>
-      </div>
     </div>
   );
 }

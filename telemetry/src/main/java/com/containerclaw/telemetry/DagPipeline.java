@@ -1,67 +1,92 @@
 /*
- * DagPipeline — Hybrid Snapshot + Delta DAG Reconstruction.
+ * DagPipeline — Final Spacetime DAG Generation.
  *
- * Two outputs from the same chatroom source:
- *
- * 1. SNAPSHOT (dag_summaries PK table):
- *    Uses JSON_ARRAYAGG + JSON_OBJECT + GROUP BY session_id to aggregate
- *    ALL edges into a single JSON blob per session. Flink's retract stream
- *    keeps this up-to-date via upsert on the PK table.
- *
- * 2. DELTA (dag_events Log table):
- *    Simple INSERT that appends individual edge events for real-time
- *    SSE tailing by the bridge.
+ * This version uses a Self-Joining stream with a 1-second forward-tolerance
+ * to correctly link turns. 
  */
 package com.containerclaw.telemetry;
 
 public class DagPipeline {
 
     /**
-     * Snapshot: Aggregate all edges into a JSON array per session.
-     * Written to dag_summaries PK table (key=session_id).
-     * Each chatroom event with parent_actor produces/updates the full snapshot.
+     * Snapshot: Resolve causal links by self-joining chatroom log.
      */
     public static String getSnapshotInsertSql() {
         return
             "INSERT INTO fluss_catalog.containerclaw.dag_summaries\n"
+            + "WITH causal_links AS (\n"
+            + "    SELECT\n"
+            + "        c1.session_id,\n"
+            + "        CASE \n"
+            + "            WHEN c2.event_id IS NULL THEN 'ROOT'\n"
+            + "            ELSE CONCAT(c2.actor_id, '|', c2.event_id)\n"
+            + "        END AS parent_id,\n"
+            + "        CONCAT(c1.actor_id, '|', c1.event_id) AS child_id,\n"
+            + "        COALESCE(c2.actor_id, 'Root') AS parent_label,\n"
+            + "        c1.actor_id AS child_label,\n"
+            + "        CASE\n"
+            + "            WHEN c1.`type` IN ('finish', 'done', 'checkpoint') THEN 'DONE'\n"
+            + "            WHEN c1.`type` = 'tool_call' THEN 'THINKING'\n"
+            + "            ELSE 'ACTIVE'\n"
+            + "        END AS status,\n"
+            + "        c1.ts,\n"
+            + "        ROW_NUMBER() OVER (PARTITION BY c1.event_id ORDER BY c2.ts DESC) as rn\n"
+            + "    FROM fluss_catalog.containerclaw.chatroom c1\n"
+            + "    LEFT JOIN fluss_catalog.containerclaw.chatroom c2 ON c1.session_id = c2.session_id \n"
+            + "      AND c1.parent_actor = c2.actor_id\n"
+            + "      -- Tolerance: Parent must be before or very close (1s) to account for bridge jitter\n"
+            + "      AND c2.ts <= c1.ts + 1000\n"
+            + ")\n"
             + "SELECT\n"
             + "    session_id,\n"
             + "    JSON_ARRAYAGG(\n"
             + "        JSON_OBJECT(\n"
-            + "            'parent' VALUE parent_actor,\n"
-            + "            'child' VALUE actor_id,\n"
-            + "            'status' VALUE CASE\n"
-            + "                WHEN `type` IN ('finish', 'done', 'checkpoint') THEN 'DONE'\n"
-            + "                WHEN `type` = 'tool_call' THEN 'THINKING'\n"
-            + "                ELSE 'ACTIVE'\n"
-            + "            END\n"
+            + "            'parent' VALUE parent_id,\n"
+            + "            'child' VALUE child_id,\n"
+            + "            'parent_label' VALUE parent_label,\n"
+            + "            'child_label' VALUE child_label,\n"
+            + "            'status' VALUE status,\n"
+            + "            'ts' VALUE ts\n"
             + "        )\n"
             + "    ) AS edges_json,\n"
             + "    COUNT(*) AS edge_count,\n"
             + "    MAX(ts) AS updated_at\n"
-            + "FROM fluss_catalog.containerclaw.chatroom\n"
-            + "WHERE parent_actor IS NOT NULL AND parent_actor <> ''\n"
+            + "FROM causal_links\n"
+            + "WHERE rn = 1\n"
             + "GROUP BY session_id";
     }
 
     /**
-     * Delta: Append individual edge events to the dag_events log table.
-     * Used by the bridge for real-time SSE streaming to the UI.
+     * Delta: SSE updates using the same join logic.
      */
     public static String getDeltaInsertSql() {
         return
             "INSERT INTO fluss_catalog.containerclaw.dag_events\n"
-            + "SELECT\n"
-            + "    session_id,\n"
-            + "    parent_actor AS parent_id,\n"
-            + "    actor_id AS child_id,\n"
-            + "    CASE\n"
-            + "        WHEN `type` IN ('finish', 'done', 'checkpoint') THEN 'DONE'\n"
-            + "        WHEN `type` = 'tool_call' THEN 'THINKING'\n"
-            + "        ELSE 'ACTIVE'\n"
-            + "    END AS status,\n"
-            + "    ts AS updated_at\n"
-            + "FROM fluss_catalog.containerclaw.chatroom\n"
-            + "WHERE parent_actor IS NOT NULL AND parent_actor <> ''";
+            + "SELECT session_id, parent_id, child_id, status, ts AS updated_at\n"
+            + "FROM (\n"
+            + "    SELECT\n"
+            + "        c1.session_id,\n"
+            + "        CASE \n"
+            + "            WHEN c2.event_id IS NULL THEN 'ROOT'\n"
+            + "            ELSE CONCAT(c2.actor_id, '|', c2.event_id)\n"
+            + "        END AS parent_id,\n"
+            + "        CONCAT(c1.actor_id, '|', c1.event_id) AS child_id,\n"
+            + "        CASE\n"
+            + "            WHEN c1.`type` IN ('finish', 'done', 'checkpoint') THEN 'DONE'\n"
+            + "            WHEN c1.`type` = 'tool_call' THEN 'THINKING'\n"
+            + "            ELSE 'ACTIVE'\n"
+            + "        END AS status,\n"
+            + "        c1.ts,\n"
+            + "        ROW_NUMBER() OVER (PARTITION BY c1.event_id ORDER BY c2.ts DESC) as rn\n"
+            + "    FROM fluss_catalog.containerclaw.chatroom c1\n"
+            + "    LEFT JOIN fluss_catalog.containerclaw.chatroom c2 ON c1.session_id = c2.session_id \n"
+            + "      AND c1.parent_actor = c2.actor_id\n"
+            + "      AND c2.ts <= c1.ts + 1000\n"
+            + ") WHERE rn = 1";
+    }
+
+    // Unchanged actor heads insert if still needed, but not used in current snapshot/delta
+    public static String getActorHeadsInsertSql() {
+        return "INSERT INTO fluss_catalog.containerclaw.actor_heads SELECT session_id, actor_id, event_id, ts FROM fluss_catalog.containerclaw.chatroom";
     }
 }
