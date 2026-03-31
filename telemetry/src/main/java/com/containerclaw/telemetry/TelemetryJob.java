@@ -1,20 +1,16 @@
 /*
- * ContainerClaw Telemetry — Flink Job Entry Point
+ * ContainerClaw Telemetry — Flink Job Entry Point (Pt.3: Fluss-Native)
  *
- * This job consumes the chatroom event stream from Fluss via the Flink SQL
- * catalog integration and materializes derived views into a pluggable
- * JDBC sink (DuckDB for local, StarRocks for enterprise):
+ * Reads from the chatroom log table (Fluss), computes derived views,
+ * and writes BACK to Fluss Primary Key tables:
  *
- *   1. DAG Edges     — parent/child agent relationships
- *   2. Live Metrics  — bucketed message/tool aggregates
+ *   1. dag_edges    — parent/child agent relationships (PK table, upsert)
+ *   2. live_metrics — per-session running aggregates   (PK table, upsert)
  *
- * The core agent runtime is completely unaware of this job. It simply
- * writes to Fluss; this job observes the stream as a side-car.
+ * Zero external databases. Zero JDBC. Fluss is both source and sink.
  *
- * STARTUP: The Flink job retries connecting to the Fluss database on a
- * 5-second interval. The agent creates the database and tables on first
- * boot, so there's a race condition at startup. The retry loop ensures
- * the telemetry job survives this without manual intervention.
+ * STARTUP: Retries connecting to the Fluss database on a 5-second interval
+ * since the agent creates the database on first boot (race condition).
  */
 package com.containerclaw.telemetry;
 
@@ -28,19 +24,20 @@ import org.slf4j.LoggerFactory;
 public class TelemetryJob {
     private static final Logger LOG = LoggerFactory.getLogger(TelemetryJob.class);
 
-    private static final int MAX_RETRIES = 60;       // 5 minutes total
-    private static final long RETRY_INTERVAL_MS = 5000; // 5 seconds
+    private static final int MAX_RETRIES = 60;
+    private static final long RETRY_INTERVAL_MS = 5000;
 
     public static void main(String[] args) throws Exception {
-        LOG.info("=== ContainerClaw Telemetry Job Starting ===");
+        LOG.info("=== ContainerClaw Telemetry Job Starting (Fluss-Native) ===");
 
-        // Load config from the mounted YAML file
+        // Load config
         String configPath = System.getenv("TELEMETRY_CONFIG");
         if (configPath == null || configPath.isEmpty()) {
             configPath = "/config/telemetry-config.yaml";
         }
         TelemetryConfig config = TelemetryConfig.load(configPath);
-        LOG.info("Loaded config: engine={}, fluss={}", config.getSinkEngine(), config.getFlussBootstrapServers());
+        LOG.info("Loaded config: fluss={}, database={}",
+            config.getFlussBootstrapServers(), config.getFlussDatabase());
 
         // Set up Flink streaming + table environment
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
@@ -59,13 +56,11 @@ public class TelemetryJob {
         tableEnv.executeSql(createCatalog);
         tableEnv.useCatalog("fluss_catalog");
 
-        // Wait for the agent to create the database + tables in Fluss.
-        // The agent initializes Fluss on first boot, which may take 30+ seconds.
+        // Wait for the agent to create the database
         waitForDatabase(tableEnv, config.getFlussDatabase(), config.getFlussBootstrapServers());
 
-        // Register the JDBC sink tables based on the configured engine
-        SinkRegistrar.registerAll(tableEnv, config);
-        LOG.info("JDBC sink tables registered for engine: {}", config.getSinkEngine());
+        // Create PK sink tables (idempotent — IF NOT EXISTS)
+        createSinkTables(tableEnv, config.getFlussDatabase());
 
         // Submit the pipelines as a single statement set
         var stmtSet = tableEnv.createStatementSet();
@@ -78,9 +73,39 @@ public class TelemetryJob {
     }
 
     /**
+     * Create the PK tables that the pipelines write to.
+     * Uses CREATE TABLE IF NOT EXISTS so it's safe to run on every restart.
+     */
+    private static void createSinkTables(StreamTableEnvironment tableEnv, String database) {
+        LOG.info("Creating PK sink tables in database '{}'...", database);
+
+        tableEnv.executeSql(
+            "CREATE TABLE IF NOT EXISTS fluss_catalog." + database + ".dag_edges ("
+            + "    session_id STRING,"
+            + "    parent_id STRING,"
+            + "    child_id STRING,"
+            + "    status STRING,"
+            + "    updated_at BIGINT,"
+            + "    PRIMARY KEY (session_id, parent_id, child_id) NOT ENFORCED"
+            + ") WITH ('bucket.num' = '4', 'bucket.key' = 'session_id')"
+        );
+        LOG.info("PK table dag_edges ready.");
+
+        tableEnv.executeSql(
+            "CREATE TABLE IF NOT EXISTS fluss_catalog." + database + ".live_metrics ("
+            + "    session_id STRING,"
+            + "    total_messages BIGINT,"
+            + "    tool_calls BIGINT,"
+            + "    tool_successes BIGINT,"
+            + "    last_updated_at BIGINT,"
+            + "    PRIMARY KEY (session_id) NOT ENFORCED"
+            + ") WITH ('bucket.num' = '4', 'bucket.key' = 'session_id')"
+        );
+        LOG.info("PK table live_metrics ready.");
+    }
+
+    /**
      * Retry loop that waits for the Fluss database to become available.
-     * The agent creates the 'containerclaw' database on first boot,
-     * but the Flink job may start before that completes.
      */
     private static void waitForDatabase(StreamTableEnvironment tableEnv, String database, String bootstrapServers) throws Exception {
         for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -92,7 +117,6 @@ public class TelemetryJob {
                 LOG.warn("Attempt {}/{}: Database '{}' not ready — {}. Retrying in {}ms...",
                     attempt, MAX_RETRIES, database, e.getMessage(), RETRY_INTERVAL_MS);
                 Thread.sleep(RETRY_INTERVAL_MS);
-                // Re-register catalog to refresh metadata
                 try {
                     tableEnv.executeSql("DROP CATALOG IF EXISTS fluss_catalog");
                 } catch (Exception ignored) {}

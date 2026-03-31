@@ -229,144 +229,190 @@ def workspace_diff(session_id):
         return {"status": "error", "message": str(e)}, 500
 
 
-# ── Telemetry Endpoints (Engine-Agnostic) ─────────────────────────
+# ── Telemetry Endpoints (Fluss-Native) ─────────────────────────────
+#
+# Reads from Fluss PK tables written by the Flink telemetry job.
+# - dag_edges:    log scan filtered by session_id
+# - live_metrics: point lookup by session_id (O(1))
+#
+# Uses a dedicated background event loop thread to run async Fluss
+# operations, since Flask threads can't use asyncio.run() safely.
 
-def _init_duckdb(db_path):
-    """Create and initialize the DuckDB file with telemetry schema if it doesn't exist."""
-    import duckdb
-    conn = duckdb.connect(db_path)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS dag_edges (
-            session_id VARCHAR NOT NULL,
-            parent_id VARCHAR NOT NULL,
-            child_id VARCHAR NOT NULL,
-            status VARCHAR DEFAULT 'ACTIVE',
-            created_at BIGINT,
-            updated_at BIGINT,
-            PRIMARY KEY (session_id, parent_id, child_id)
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS agent_context_snorkel (
-            agent_id VARCHAR NOT NULL,
-            session_id VARCHAR NOT NULL,
-            run_id VARCHAR DEFAULT '',
-            context_json JSON,
-            last_updated_at BIGINT,
-            PRIMARY KEY (agent_id, session_id)
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS live_metrics (
-            session_id VARCHAR NOT NULL,
-            window_start BIGINT NOT NULL,
-            total_messages INTEGER DEFAULT 0,
-            tool_calls INTEGER DEFAULT 0,
-            tool_successes INTEGER DEFAULT 0,
-            avg_latency_ms DOUBLE DEFAULT 0.0,
-            PRIMARY KEY (session_id, window_start)
-        )
-    """)
-    conn.close()
-    print(f"Bridge: Initialized DuckDB at {db_path}")
+import asyncio
+import concurrent.futures
+
+# Dedicated event loop for Fluss async operations
+_fluss_loop = asyncio.new_event_loop()
+_fluss_thread = threading.Thread(target=_fluss_loop.run_forever, daemon=True)
+_fluss_thread.start()
+
+_fluss_conn = None
+_fluss_tables = {}
 
 
-def get_telemetry_connection():
-    """Return a DB-API 2.0 connection based on the configured engine.
+def _run_async(coro):
+    """Run an async coroutine on the dedicated Fluss event loop thread."""
+    future = asyncio.run_coroutine_threadsafe(coro, _fluss_loop)
+    return future.result(timeout=15)
 
-    Returns None if telemetry is not enabled, allowing endpoints
-    to gracefully degrade with a 404.
+
+async def _ensure_fluss_conn():
+    """Lazy-init a persistent Fluss connection."""
+    global _fluss_conn
+    if _fluss_conn is not None:
+        return _fluss_conn
+
+    bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
+    if not bootstrap:
+        return None
+
+    import fluss
+    config = fluss.Config({"bootstrap.servers": bootstrap})
+    _fluss_conn = await fluss.FlussConnection.create(config)
+    print(f"✅ Bridge: Connected to Fluss at {bootstrap}")
+    return _fluss_conn
+
+
+async def _get_table(table_name):
+    """Get a Fluss table handle, cached."""
+    import fluss
+    if table_name in _fluss_tables:
+        return _fluss_tables[table_name]
+
+    conn = await _ensure_fluss_conn()
+    if conn is None:
+        return None
+
+    try:
+        table_path = fluss.TablePath("containerclaw", table_name)
+        table = await conn.get_table(table_path)
+        _fluss_tables[table_name] = table
+        return table
+    except Exception as e:
+        print(f"⚠️ Bridge: Table '{table_name}' not available: {e}")
+        return None
+
+
+async def _scan_dag_edges(session_id):
+    """Reconstruct DAG edges by scanning the chatroom log table.
+
+    PK tables don't support log scanning in Fluss — only point lookups.
+    Instead, we scan the chatroom source table (which IS a log table)
+    and reconstruct edges client-side, applying the same logic as the
+    Flink DagPipeline SQL:
+      WHERE parent_actor IS NOT NULL AND parent_actor <> ''
     """
-    engine = os.getenv("TELEMETRY_ENGINE", "")
-    if not engine:
+    import fluss
+    table = await _get_table("chatroom")
+    if table is None:
+        return []
+
+    scanner = await table.new_scan().project_by_name(
+        ["session_id", "actor_id", "parent_actor", "type", "ts"]
+    ).create_record_batch_log_scanner()
+
+    # Subscribe to all buckets from earliest
+    conn = await _ensure_fluss_conn()
+    admin = await conn.get_admin()
+    table_path = fluss.TablePath("containerclaw", "chatroom")
+    table_info = await admin.get_table_info(table_path)
+    num_buckets = table_info.num_buckets
+
+    scanner.subscribe_buckets(
+        {b: fluss.EARLIEST_OFFSET for b in range(num_buckets)}
+    )
+
+    edges = {}
+    empty_polls = 0
+    while empty_polls < 3:
+        batches = await scanner._async_poll_batches(500)
+        if not batches:
+            empty_polls += 1
+            continue
+        empty_polls = 0
+        for record_batch in batches:
+            batch = record_batch.batch
+            sid_arr = batch.column("session_id")
+            actor_arr = batch.column("actor_id")
+            parent_arr = batch.column("parent_actor")
+            type_arr = batch.column("type")
+            ts_arr = batch.column("ts")
+            for i in range(batch.num_rows):
+                sid = sid_arr[i].as_py()
+                if sid != session_id:
+                    continue
+                parent = parent_arr[i].as_py()
+                if not parent:
+                    continue
+                child = actor_arr[i].as_py()
+                evt_type = type_arr[i].as_py() or ""
+                if evt_type in ("finish", "done", "checkpoint"):
+                    status = "DONE"
+                elif evt_type == "tool_call":
+                    status = "THINKING"
+                else:
+                    status = "ACTIVE"
+                key = (sid, parent, child)
+                edges[key] = {
+                    "parent": parent,
+                    "child": child,
+                    "status": status,
+                    "updated_at": ts_arr[i].as_py(),
+                }
+
+    return list(edges.values())
+
+
+
+async def _lookup_metrics(session_id):
+    """Point lookup on live_metrics PK table. O(1)."""
+    table = await _get_table("live_metrics")
+    if table is None:
         return None
-    if engine == "duckdb":
-        import duckdb
-        db_path = os.getenv("TELEMETRY_DUCKDB_PATH", "/state/telemetry.duckdb")
-        if not os.path.exists(db_path):
-            _init_duckdb(db_path)
-        return duckdb.connect(db_path, read_only=True)
-    elif engine == "starrocks":
-        import pymysql
-        return pymysql.connect(
-            host=os.getenv("STARROCKS_HOST", "starrocks-fe"),
-            port=int(os.getenv("STARROCKS_PORT", "9030")),
-            user="root",
-            database="containerclaw",
-        )
-    else:
-        print(f"⚠️ Bridge: Unknown telemetry engine: {engine}")
-        return None
+
+    lookuper = table.new_lookup().create_lookuper()
+    result = await lookuper.lookup({"session_id": session_id})
+    return result
 
 
 @app.route("/telemetry/dag/<session_id>")
 def telemetry_dag(session_id):
     """Return DAG edges for the swarm visualization."""
-    conn = get_telemetry_connection()
-    if not conn:
-        return {"status": "error", "message": "Telemetry not enabled"}, 404
+    bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
+    if not bootstrap:
+        return {"status": "ok", "edges": []}
     try:
-        rows = conn.execute(
-            "SELECT parent_id, child_id, status, updated_at FROM dag_edges WHERE session_id = ?",
-            [session_id],
-        ).fetchall()
-        edges = [
-            {"parent": r[0], "child": r[1], "status": r[2], "updated_at": r[3]}
-            for r in rows
-        ]
+        edges = _run_async(_scan_dag_edges(session_id))
         return {"status": "ok", "edges": edges}
     except Exception as e:
         print(f"Bridge: Telemetry DAG Error: {e}")
-        return {"status": "error", "message": str(e)}, 500
-
-
-@app.route("/telemetry/snorkel/<agent_id>/<session_id>")
-def telemetry_snorkel(agent_id, session_id):
-    """Return the materialized context window for a specific agent."""
-    conn = get_telemetry_connection()
-    if not conn:
-        return {"status": "error", "message": "Telemetry not enabled"}, 404
-    try:
-        row = conn.execute(
-            "SELECT context_json, last_updated_at FROM agent_context_snorkel WHERE agent_id = ? AND session_id = ?",
-            [agent_id, session_id],
-        ).fetchone()
-        if row:
-            return {"status": "ok", "context": row[0], "updated_at": row[1]}
-        return {"status": "ok", "context": None}
-    except Exception as e:
-        print(f"Bridge: Telemetry Snorkel Error: {e}")
-        return {"status": "error", "message": str(e)}, 500
+        return {"status": "ok", "edges": []}
 
 
 @app.route("/telemetry/metrics/<session_id>")
 def telemetry_metrics(session_id):
     """Return aggregated metrics for HUD sparklines."""
-    conn = get_telemetry_connection()
-    if not conn:
-        return {"status": "error", "message": "Telemetry not enabled"}, 404
+    bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
+    if not bootstrap:
+        return {"status": "ok", "metrics": []}
     try:
-        rows = conn.execute(
-            "SELECT window_start, total_messages, tool_calls, tool_successes, avg_latency_ms "
-            "FROM live_metrics WHERE session_id = ? ORDER BY window_start DESC LIMIT 60",
-            [session_id],
-        ).fetchall()
-        metrics = [
-            {
-                "window_start": r[0],
-                "total_messages": r[1],
-                "tool_calls": r[2],
-                "tool_successes": r[3],
-                "avg_latency_ms": r[4],
-            }
-            for r in rows
-        ]
+        result = _run_async(_lookup_metrics(session_id))
+        if result is None:
+            return {"status": "ok", "metrics": []}
+        metrics = [{
+            "window_start": result.get("last_updated_at", 0),
+            "total_messages": result.get("total_messages", 0),
+            "tool_calls": result.get("tool_calls", 0),
+            "tool_successes": result.get("tool_successes", 0),
+            "avg_latency_ms": 0.0,
+        }]
         return {"status": "ok", "metrics": metrics}
     except Exception as e:
         print(f"Bridge: Telemetry Metrics Error: {e}")
-        return {"status": "error", "message": str(e)}, 500
+        return {"status": "ok", "metrics": []}
 
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001, threaded=True)
+
 

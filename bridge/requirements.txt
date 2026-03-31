@@ -4,4 +4,4 @@ grpcio
 grpcio-tools
 protobuf
 requests
-duckdb
+pyarrow

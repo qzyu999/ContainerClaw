@@ -11,19 +11,8 @@ TELEMETRY_PROFILE=""
 while [[ $# -gt 0 ]]; do
   case $1 in
     --telemetry)
-      case $2 in
-        local)
-          TELEMETRY_PROFILE="telemetry-local"
-          ;;
-        enterprise)
-          TELEMETRY_PROFILE="telemetry-enterprise"
-          ;;
-        *)
-          echo "❌ Unknown telemetry mode: $2. Use 'local' or 'enterprise'."
-          exit 1
-          ;;
-      esac
-      shift 2
+      TELEMETRY_PROFILE="telemetry"
+      shift
       ;;
     *)
       SESSION_ID=$1
@@ -44,18 +33,12 @@ fi
 PROFILE_FLAG=""
 if [ -n "$TELEMETRY_PROFILE" ]; then
   PROFILE_FLAG="--profile $TELEMETRY_PROFILE"
-  echo "📊 Telemetry mode: $TELEMETRY_PROFILE"
-  # Export engine type so docker-compose passes it to the bridge container
-  if [ "$TELEMETRY_PROFILE" = "telemetry-local" ]; then
-    export TELEMETRY_ENGINE="duckdb"
-  elif [ "$TELEMETRY_PROFILE" = "telemetry-enterprise" ]; then
-    export TELEMETRY_ENGINE="starrocks"
-  fi
+  echo "📊 Telemetry enabled (Fluss-native pipeline)"
 fi
 
 # For teardown commands (down/clean/restart), always activate ALL profiles
 # so docker compose can see and stop every container, even profiled ones.
-ALL_PROFILES="--profile telemetry-local --profile telemetry-enterprise"
+ALL_PROFILES="--profile telemetry"
 
 case $COMMAND in
   up)
@@ -113,7 +96,7 @@ case $COMMAND in
     echo "Deep cleaning ContainerClaw environment..."
     # Use ALL_PROFILES to guarantee every profiled container is stopped
     $DOCKER_COMPOSE $ALL_PROFILES down -v --remove-orphans
-    rm -rf .fluss_data .zk_data .claw_state/telemetry.duckdb
+    rm -rf .fluss_data .zk_data
     docker network prune -f
     ;;
   logs)
@@ -133,8 +116,7 @@ case $COMMAND in
     echo "Workspace cleared."
     ;;
   *)
-    echo "Usage: $0 {up|down|purge|status|restart|clean|logs|clear-workspace} [session_id] [--telemetry local|enterprise]"
+    echo "Usage: $0 {up|down|purge|status|restart|clean|logs|clear-workspace} [session_id] [--telemetry]"
     exit 1
     ;;
 esac
-

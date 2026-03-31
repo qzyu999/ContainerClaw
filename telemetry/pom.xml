@@ -12,8 +12,8 @@
     <name>ContainerClaw Telemetry Flink Job</name>
     <description>
         Stateful Flink job that consumes events from Fluss (chatroom log)
-        and materializes DAG edges, Snorkel context, and live metrics
-        into a pluggable JDBC backend (DuckDB or StarRocks).
+        and materializes DAG edges and live metrics back into Fluss PK tables.
+        Zero external databases — Fluss is both source and sink.
     </description>
 
     <properties>
@@ -22,7 +22,6 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <flink.version>1.20.1</flink.version>
         <fluss.version>0.9.0-incubating</fluss.version>
-        <duckdb.jdbc.version>1.2.1</duckdb.jdbc.version>
         <snakeyaml.version>2.3</snakeyaml.version>
     </properties>
 
@@ -53,25 +52,11 @@
             <scope>provided</scope>
         </dependency>
 
-        <!-- Flink JDBC Connector (sink to DuckDB or StarRocks) -->
-        <dependency>
-            <groupId>org.apache.flink</groupId>
-            <artifactId>flink-connector-jdbc</artifactId>
-            <version>3.2.0-1.19</version>
-        </dependency>
-
-        <!-- Fluss-Flink Connector (source from Fluss) -->
+        <!-- Fluss-Flink Connector (source AND sink via Fluss catalog) -->
         <dependency>
             <groupId>org.apache.fluss</groupId>
             <artifactId>fluss-flink-1.20</artifactId>
             <version>${fluss.version}</version>
-        </dependency>
-
-        <!-- DuckDB JDBC driver (bundled for local MVP) -->
-        <dependency>
-            <groupId>org.duckdb</groupId>
-            <artifactId>duckdb_jdbc</artifactId>
-            <version>${duckdb.jdbc.version}</version>
         </dependency>
 
         <!-- YAML config parsing -->

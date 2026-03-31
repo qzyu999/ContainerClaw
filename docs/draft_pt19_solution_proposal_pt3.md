@@ -63,7 +63,7 @@ FROM fluss_catalog.containerclaw.chatroom
 WHERE parent_actor IS NOT NULL AND parent_actor <> '';
 ```
 
-This is verified by [FlinkTableSinkITCase.java](file:///Users/jaredyu/Desktop/open_source/fluss/fluss-flink/fluss-flink-common/src/test/java/org/apache/fluss/flink/sink/FlinkTableSinkITCase.java#L431-L490)  (`testPut`), which demonstrates INSERT INTO a PK table with upsert semantics via the Fluss catalog.
+This is verified by [FlinkTableSinkITCase.java](file:///Users/.../fluss/fluss-flink/fluss-flink-common/src/test/java/org/apache/fluss/flink/sink/FlinkTableSinkITCase.java#L431-L490)  (`testPut`), which demonstrates INSERT INTO a PK table with upsert semantics via the Fluss catalog.
 
 ### 1.3 The Speed of Light Argument
 
@@ -328,7 +328,7 @@ This keeps the agent pure and lets the Flink job own its sink schema.
 
 ### 7.2 Files to MODIFY
 
-#### [MODIFY] [TelemetryJob.java](file:///Users/jaredyu/Desktop/open_source/ContainerClaw/telemetry/src/main/java/com/containerclaw/telemetry/TelemetryJob.java)
+#### [MODIFY] [TelemetryJob.java](file:///Users/.../ContainerClaw/telemetry/src/main/java/com/containerclaw/telemetry/TelemetryJob.java)
 
 **Changes**:
 1. Remove `SinkRegistrar.registerAll()` call — sinks are Fluss PK tables, auto-discovered via catalog.
@@ -336,19 +336,19 @@ This keeps the agent pure and lets the Flink job own its sink schema.
 3. Both pipeline INSERTs target `fluss_catalog.containerclaw.<table>` instead of `default_catalog.default_database.<sink>`.
 4. Remove all references to `default_catalog` — everything is in the Fluss catalog.
 
-#### [MODIFY] [DagPipeline.java](file:///Users/jaredyu/Desktop/open_source/ContainerClaw/telemetry/src/main/java/com/containerclaw/telemetry/DagPipeline.java)
+#### [MODIFY] [DagPipeline.java](file:///Users/.../ContainerClaw/telemetry/src/main/java/com/containerclaw/telemetry/DagPipeline.java)
 
 **Change**: Replace `INSERT INTO default_catalog.default_database.dag_edges_sink` with `INSERT INTO fluss_catalog.containerclaw.dag_edges`.
 
-#### [MODIFY] [MetricsPipeline.java](file:///Users/jaredyu/Desktop/open_source/ContainerClaw/telemetry/src/main/java/com/containerclaw/telemetry/MetricsPipeline.java)
+#### [MODIFY] [MetricsPipeline.java](file:///Users/.../ContainerClaw/telemetry/src/main/java/com/containerclaw/telemetry/MetricsPipeline.java)
 
 **Change**: Replace bucketed window with simple `GROUP BY session_id`. Target: `INSERT INTO fluss_catalog.containerclaw.live_metrics`.
 
-#### [MODIFY] [TelemetryConfig.java](file:///Users/jaredyu/Desktop/open_source/ContainerClaw/telemetry/src/main/java/com/containerclaw/telemetry/TelemetryConfig.java)
+#### [MODIFY] [TelemetryConfig.java](file:///Users/.../ContainerClaw/telemetry/src/main/java/com/containerclaw/telemetry/TelemetryConfig.java)
 
 **Change**: Remove all JDBC/sink engine configuration. The config only needs Fluss source settings and job parameters. The `sink` section is deleted entirely.
 
-#### [MODIFY] [telemetry-config.yaml](file:///Users/jaredyu/Desktop/open_source/ContainerClaw/telemetry/telemetry-config.yaml)
+#### [MODIFY] [telemetry-config.yaml](file:///Users/.../ContainerClaw/telemetry/telemetry-config.yaml)
 
 **Change**: Remove entire `sink` block (DuckDB/StarRocks). Keep only:
 ```yaml
@@ -360,7 +360,7 @@ job:
   state_ttl_hours: 4
 ```
 
-#### [MODIFY] [pom.xml](file:///Users/jaredyu/Desktop/open_source/ContainerClaw/telemetry/pom.xml)
+#### [MODIFY] [pom.xml](file:///Users/.../ContainerClaw/telemetry/pom.xml)
 
 **Change**: Remove `flink-connector-jdbc`, `duckdb_jdbc`, `mysql-connector-j` dependencies. Only keep:
 - `flink-table-api-java-bridge` (Flink SQL)
@@ -370,7 +370,7 @@ job:
 
 This dramatically shrinks the fat JAR and eliminates all JDBC surface area.
 
-#### [MODIFY] [Dockerfile](file:///Users/jaredyu/Desktop/open_source/ContainerClaw/telemetry/Dockerfile)
+#### [MODIFY] [Dockerfile](file:///Users/.../ContainerClaw/telemetry/Dockerfile)
 
 **Change**: No JDBC JARs to copy. The simplified Dockerfile:
 ```dockerfile
@@ -385,7 +385,7 @@ FROM flink:1.20
 COPY --from=builder /build/target/telemetry-flink-job-1.0-SNAPSHOT.jar /opt/flink/usrlib/telemetry-job.jar
 ```
 
-#### [MODIFY] [docker-compose.yml](file:///Users/jaredyu/Desktop/open_source/ContainerClaw/docker-compose.yml)
+#### [MODIFY] [docker-compose.yml](file:///Users/.../ContainerClaw/docker-compose.yml)
 
 **Changes**:
 1. Remove `TELEMETRY_ENGINE` and `TELEMETRY_DUCKDB_PATH` from bridge environment.
@@ -395,14 +395,14 @@ COPY --from=builder /build/target/telemetry-flink-job-1.0-SNAPSHOT.jar /opt/flin
 5. Simplify Flink service — no `.claw_state` volume needed for DuckDB.
 6. Bridge volume can revert to `:ro` (no DuckDB writes).
 
-#### [MODIFY] [claw.sh](file:///Users/jaredyu/Desktop/open_source/ContainerClaw/claw.sh)
+#### [MODIFY] [claw.sh](file:///Users/.../ContainerClaw/claw.sh)
 
 **Changes**:
 1. Simplify `--telemetry` flag: no `local`/`enterprise` distinction. `--telemetry` enables the Flink job.
 2. Remove `TELEMETRY_ENGINE` export.
 3. Remove `telemetry-enterprise` from `ALL_PROFILES`.
 
-#### [MODIFY] [bridge.py](file:///Users/jaredyu/Desktop/open_source/ContainerClaw/bridge/src/bridge.py)
+#### [MODIFY] [bridge.py](file:///Users/.../ContainerClaw/bridge/src/bridge.py)
 
 **Changes**:
 1. Remove `_init_duckdb()`, `get_telemetry_connection()`, and all DuckDB/StarRocks/pymysql code.
@@ -411,7 +411,7 @@ COPY --from=builder /build/target/telemetry-flink-job-1.0-SNAPSHOT.jar /opt/flin
    - `/telemetry/dag/<session_id>` — scan `dag_edges` PK table changelog, filter by session
    - `/telemetry/metrics/<session_id>` — point lookup on `live_metrics` PK table
 
-#### [MODIFY] [bridge/requirements.txt](file:///Users/jaredyu/Desktop/open_source/ContainerClaw/bridge/requirements.txt)
+#### [MODIFY] [bridge/requirements.txt](file:///Users/.../ContainerClaw/bridge/requirements.txt)
 
 **Change**: Remove `duckdb`. Add `fluss` (the Python SDK). The bridge already runs in the agent's network namespace, so it can reach the Fluss coordinator.
 
