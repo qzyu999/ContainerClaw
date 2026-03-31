@@ -1,6 +1,6 @@
-# Draft Pt.19 — Real-Time Telemetry: Flink-StarRocks Analytics Pipeline
+# Draft Pt.19 — Real-Time Telemetry: Flink-DuckDB Analytics Pipeline
 
-> **Scope**: Implement a high-performance observability layer for ContainerClaw using Apache Flink for stream processing and StarRocks for real-time OLAP. This enables the "Snorkel" (context window debugger), the "Agentic DAG" (swarm visualization), and live system metrics.
+> **Scope**: Implement a high-performance observability layer for ContainerClaw using Apache Flink for stream processing and a pluggable serving layer (DuckDB as the local MVP, StarRocks for Enterprise scale). This enables the "Snorkel" (context window debugger), the "Agentic DAG" (swarm visualization), and live system metrics.
 >
 > **Philosophy**: Observability is not an afterthought; it is the feedback loop that prevents agentic entropy. The "Speed of Light" constraint dictates that the time from an agent's thought to its visualization must be sub-second, requiring a zero-blocked, push-based analytics architecture.
 
@@ -35,9 +35,9 @@ To minimize `T_vis`, we must eliminate `T_query` latency by moving from **Pull-o
 
 ### 2.2 The State vs. Stream Duality
 - **The Stream (Fluss)**: The immutable record of what happened. Essential for reproducibility and audit trails.
-- **The State (StarRocks)**: The materialized view of the "Now." Essential for the UI and Agent Awareness.
+- **The State (DuckDB / StarRocks)**: The materialized view of the "Now." Essential for the UI and Agent Awareness.
 
-**Design Consequence**: We treat Flink as the "State Machine" that consumes the Fluss stream and updates the StarRocks "Current State" in real-time.
+**Design Consequence**: We treat Flink as the "State Machine" that consumes the Fluss stream and updates the analytical serving layer (e.g., DuckDB) with the "Current State" in real-time.
 
 ---
 
@@ -91,11 +91,11 @@ graph TB
 ### 4.1 Flink Job: The DAG Reconstructor
 **Logic**: Consumes `chatroom` events. It watches for `type="spawn"` or messages with a `parent_actor` field. 
 - **State**: Maintains a `KeyedState` of active agent IDs and their parent-child relationships.
-- **Output**: Sinks an adjacency list `(parent_id, child_id, status)` to StarRocks.
+- **Output**: Sinks an adjacency list `(parent_id, child_id, status)` to DuckDB (MVP) or StarRocks.
 - **Defense**: Doing this in Flink ensures that even if events arrive out of order (due to async subagents), the stateful processing guarantees a consistent tree structure.
 
-### 4.2 StarRocks Schema: The "Snorkel" Table
-The Snorkel requires the "actual context window." Instead of the UI asking "give me everything and I'll filter," we use StarRocks **Primary Key (PK) tables**.
+### 4.2 OLAP Schema: The "Snorkel" Table
+The Snorkel requires the "actual context window." Instead of the UI asking "give me everything and I'll filter," we use an analytical backend (DuckDB for local, StarRocks PK tables for Enterprise).
 
 ```sql
 CREATE TABLE agent_context_snorkel (
@@ -109,15 +109,15 @@ PRIMARY KEY(agent_id, session_id)
 DISTRIBUTED BY HASH(agent_id);
 ```
 
-**Defense**: By using a PK table, Flink simply issues an `UPSERT`. The UI query becomes a simple $O(1)$ point-lookup: `SELECT context_json FROM snorkel WHERE agent_id = 'Alice'`. This is the "Speed of Light" optimization.
+**Defense**: By using analytical engines via fast updates (e.g. StarRocks PK or DuckDB `INSERT OR REPLACE`), Flink simply issues an upsert. The UI query becomes a simple $O(1)$ point-lookup: `SELECT context_json FROM snorkel WHERE agent_id = 'Alice'`. This is the "Speed of Light" optimization.
 
-### 4.3 Live Flink Metrics (The StarRocks "Speed Layer")
+### 4.3 Live Flink Metrics (The OLAP "Speed Layer")
 We utilize Flink's windowing capabilities to calculate:
 - **Throughput**: Tokens per second (TPS).
 - **Tool Efficiency**: `SUM(tool_success) / COUNT(tool_calls)`.
 - **Latency**: Time between `election_start` and `output_published`.
 
-These are sunk into a StarRocks table with a `1s` granularity, allowing the HUD to show "Sparklines" of agent performance.
+These are sunk into a DuckDB / StarRocks table with a `1s` granularity, allowing the HUD to show "Sparklines" of agent performance.
 
 ---
 
@@ -154,24 +154,24 @@ Create a semantic Flink job that monitors for errors or `is_done=false` stalls t
 
 ## 6. Implementation Phases (MVP)
 
-### Phase 1: StarRocks & Flink Infrastructure
-1. Deploy StarRocks (FE/BE) and Flink (JobManager/TaskManager) via `docker-compose.yml`.
-2. Define the StarRocks tables for `metrics`, `dag_edges`, and `agent_snorkel`.
-3. **Verification**: Manually insert a row into StarRocks and verify the React UI reflects it in <50ms.
+### Phase 1: DuckDB & Flink Infrastructure
+1. Deploy a lightweight Flink cluster (JobManager/TaskManager) via `docker-compose.yml`. (StarRocks deployed via separate enterprise `docker-compose` profile X).
+2. Define the DuckDB local schema for `metrics`, `dag_edges`, and `agent_snorkel`.
+3. **Verification**: Manually insert a row into `telemetry.duckdb` and verify the React UI reflects it in <50ms.
 
 ### Phase 2: Flink-Fluss Connector
 1. Implement the `FlussSource` in Flink to consume the `chatroom` Arrow stream.
 2. Create the first Flink Job: **Simple Throughput**.
-3. **Verification**: Ensure every message written to Fluss by `LLMAgent` increments the count in StarRocks.
+3. **Verification**: Ensure every message written to Fluss by `LLMAgent` increments the count in DuckDB.
 
 ### Phase 3: The Snorkel (Context Materialization)
 1. Flink Job logic: For each `agent_id`, maintain a `ListState` of the last $N$ messages.
-2. Every time a new message arrives, update the state and sink the full `context_json` to the StarRocks PK table.
+2. Every time a new message arrives, update the state and sink the full `context_json` to the DuckDB connection.
 3. **Verification**: Open the Snorkel tab in the UI; it should show the exact history `LLMAgent` is currently using for its next prompt.
 
 ### Phase 4: The Agentic DAG
 1. Flink Job logic: Parse `actor_id` and `parent_actor`.
-2. Construct the graph edges and sink to StarRocks.
+2. Construct the graph edges and sink to DuckDB.
 3. Update the UI to use a graph-rendering library (e.g., `react-flow`) to pull from the `dag_edges` table.
 
 ---
@@ -185,10 +185,10 @@ To handle systems with varying resource constraints, the Flink-StarRocks telemet
 ```yaml
 infrastructure:
   telemetry:
-    enabled: true  # Default is true. Set to false to disable Flink/StarRocks.
-    starrocks:
-      host: "starrocks-fe"
-      port: 9030
+    enabled: true  # Default is true. Set to false to disable telemetry processing.
+    engine: "duckdb" # "duckdb" for local MVP, "starrocks" for K8s enterprise
+    duckdb:
+      path: "./telemetry.duckdb"
     flink:
       host: "flink-jobmanager"
       port: 8081
@@ -196,7 +196,7 @@ infrastructure:
 
 ### 7.2 Component-Level Impact
 - **When `enabled: false`**: 
-    - The `docker-compose.yml` profiles for StarRocks and Flink will not be started.
+    - The `docker-compose.yml` profiles for Flink (and StarRocks if configured) will not be started.
     - The UI will fallback to "Scan-Based" Fluss queries for history (slower, but lighter).
     - Advanced metrics and the real-time DAG visualization will be disabled.
     - `LLMAgent` will skip the push-to-telemetry hooks.
@@ -222,9 +222,9 @@ infrastructure:
 
 ### 9.2 Consistency Check
 1. Run a complex task involving multiple subagents.
-2. Compare the `dag_edges` table in StarRocks with the manual audit of the Fluss `chatroom` log.
+2. Compare the `dag_edges` table in DuckDB/StarRocks with the manual audit of the Fluss `chatroom` log.
 3. **Target**: 100% structural parity.
 
 ### 9.3 Snorkel Accuracy
 1. Pause an agent mid-thought.
-2. Verify the `context_json` in StarRocks matches the `messages` array generated by `LLMAgent._format_history()`.
+2. Verify the `context_json` in the telemetry backend matches the `messages` array generated by `LLMAgent._format_history()`.
