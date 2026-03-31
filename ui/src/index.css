@@ -1102,6 +1102,53 @@ h1, h2, h3 {
   color: #52525b;
 }
 
+/* Floating Controls */
+.dag-controls {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(13, 13, 16, 0.8);
+  backdrop-filter: blur(8px);
+  padding: 6px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  z-index: 100;
+}
+
+.dag-btn {
+  background: #1c1c21;
+  color: #a1a1aa;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.dag-btn:hover {
+  background: #27272a;
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.dag-zoom-info {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #71717a;
+  padding: 0 8px;
+  font-family: var(--font-mono);
+  min-width: 48px;
+  text-align: center;
+}
+
 /* ================================================
    METRICS VIEW
    ================================================ */

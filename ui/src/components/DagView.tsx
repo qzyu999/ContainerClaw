@@ -187,12 +187,12 @@ export default function DagView({ sessionId }: DagViewProps) {
   const handleWheel = (e: React.WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
       const scaleDelta = e.deltaY > 0 ? 0.95 : 1.05;
-      setViewState(prev => ({
+      setViewState((prev: { x: number; y: number; scale: number }) => ({
         ...prev,
         scale: Math.min(Math.max(prev.scale * scaleDelta, 0.1), 4),
       }));
     } else {
-      setViewState(prev => ({
+      setViewState((prev: { x: number; y: number; scale: number }) => ({
         ...prev,
         x: prev.x - e.deltaX,
         y: prev.y - e.deltaY,
@@ -201,6 +201,20 @@ export default function DagView({ sessionId }: DagViewProps) {
   };
 
   const resetView = () => setViewState({ x: 0, y: 0, scale: 1.0 });
+
+  const zoomIn = () => {
+    setViewState((prev: { x: number; y: number; scale: number }) => ({
+      ...prev,
+      scale: Math.min(prev.scale * 1.2, 4)
+    }));
+  };
+
+  const zoomOut = () => {
+    setViewState((prev: { x: number; y: number; scale: number }) => ({
+      ...prev,
+      scale: Math.max(prev.scale / 1.2, 0.1)
+    }));
+  };
 
   return (
     <div className="dag-container">
@@ -359,6 +373,17 @@ export default function DagView({ sessionId }: DagViewProps) {
           </svg>
           
           <div className="dag-controls">
+            <button onClick={zoomIn} className="dag-btn" title="Zoom In">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <line x1="12" y1="5" x2="12" y2="19" />
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+            </button>
+            <button onClick={zoomOut} className="dag-btn" title="Zoom Out">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <line x1="5" y1="12" x2="19" y2="12" />
+              </svg>
+            </button>
             <button onClick={resetView} className="dag-btn" title="Reset View">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
