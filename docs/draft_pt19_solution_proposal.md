@@ -1,7 +1,7 @@
-# ContainerClaw Telemetry Strategy: The Speed-of-Light Architecture
+# ContainerClaw Telemetry Strategy: The Dual-Tier Speed-of-Light Architecture
 **(Solution Proposal for Draft Pt.19)**
 
-This document serves as the low-level implementation plan for the ContainerClaw telemetry stack (`draft_pt19.md` & `draft_pt19_technicals.md`). It rigorously outlines and defends the transition from simple scan-based polling to a stateful streaming data architecture driven by Apache Fluss, Apache Flink, and StarRocks.
+This document serves as the low-level implementation plan for the ContainerClaw telemetry stack. It rigorously outlines and defends the transition from simple scan-based polling to a **dual-tier** stateful streaming data architecture driven by Apache Fluss, Apache Flink, and a pluggable Serving Layer (DuckDB or StarRocks).
 
 ---
 
@@ -14,74 +14,63 @@ $$T_{visual} = T_{network} + T_{serialize} + T_{process} + T_{query}$$
 
 ### The Sub-Optimal Baseline
 In the legacy python-scanning model (`fluss_client.py` pulling $N$ events directly):
-- $T_{serialize}$: Python spends significant CPU converting Arrow IPC blocks to dictionary dictionaries to sort them.
-- $T_{process}$: Python rebuilds state trees (DAGs) repeatedly for every refresh.
+- $T_{serialize}$: Python spends significant CPU converting Arrow IPC blocks to dictionary format.
+- $T_{process}$: Python rebuilds state trees (DAGs) repeatedly for every UI refresh.
 - $T_{query}$: $O(N)$ linear scans against the Fluss coordinator.
 
 ### The Optimal Target
-By separating concerns across Flink and StarRocks:
+By isolating stateful computation into Flink, and querying directly from an OLAP engine:
 - $T_{serialize} \to 0$ (Zero-copy Arrow reads from Fluss into Flink).
 - $T_{process} \to 0$ (Graph inferences occur eagerly as streams, never at query time).
-- $T_{query} \to O(1)$ (StarRocks Primary Key point-lookups).
-This restricts the entire stack's latency strictly to $T_{network}$ and fundamental hardware limits.
+- $T_{query} \to O(1)$ (Direct index lookups).
 
 ---
 
-## 2. Infrastructure Topology: Docker Compose Integration
+## 2. The Dual-Tier Architecture Pipeline
 
-The telemetry stack will be strictly **opt-in**, leveraging Docker profiles. The solution brings up four distinct components alongside the existing `coordinator-server` and `tablet-server` for Fluss.
-
-### 2.1 The Container Specs
-```yaml
-# Simplified docker-compose definition
-services:
-  # --- StarRocks (Serving Layer) ---
-  starrocks-fe:
-    image: starrocks/frontend-ubuntu:latest
-    ports: ["9030:9030", "8030:8030"]
-    profiles: ["telemetry"]
-  
-  starrocks-be:
-    image: starrocks/backend-ubuntu:latest
-    depends_on: [starrocks-fe]
-    profiles: ["telemetry"]
-
-  # --- Flink (State Engine) ---
-  flink-jobmanager:
-    image: flink:1.19
-    command: jobmanager
-    ports: ["8081:8081"]
-    profiles: ["telemetry"]
-    
-  flink-taskmanager:
-    image: flink:1.19
-    depends_on: [flink-jobmanager]
-    command: taskmanager
-    profiles: ["telemetry"]
-```
-
-**Defense**: Isolating the FE/BE of StarRocks ensures that Flink JobManager scheduling never starves the analytical serving queries. Using `profiles` ensures users opting out via `config.yaml` (`telemetry.enabled: false`) pay zero compute overhead.
-
----
-
-## 3. Data Ingestion: The Fluss-Flink Connector
-
-The bridge between raw AI outputs and Flink is defined by the `fluss-flink` connector (e.g., `fluss-flink-1.19`).
+We recognize that scaling to enterprise Kubernetes (K8s) is distinct from running an MVP locally on a developer laptop. Thus, the Flink Sink and the Serving Layer are **pluggable**. The React UI and FastAPI backend remain entirely agnostic to the underlying engine.
 
 ```mermaid
 graph LR
     subgraph "ContainerClaw Runtime"
         Agent(Python Claws) -->|Arrow IPC| Fluss(Fluss Storage)
     end
-    subgraph "Flink Cluster"
+    subgraph "Flink (State Engine)"
         Fluss -->|Zero-Copy Fetch| TableAPI(Fluss Table Source)
-        TableAPI --> DataStream(DataStream/SQL API)
+        TableAPI -->|KeyedState DAG| Pipeline(DataStream/SQL API)
     end
-    Agent -. "Serialization Tax Evaded" .-> TableAPI
+    subgraph "Pluggable Serving Layer"
+        Pipeline -->|PyFlink / JDBC| DuckDB[(DuckDB Local MVP)]
+        Pipeline -->|Stream Load API| StarRocks[(StarRocks Enterprise)]
+    end
+    subgraph "FastAPI Agnostic Abstraction"
+        DuckDB -->|SQL| API(Telemetry API)
+        StarRocks -->|SQL| API
+    end
+    API --> UI(React HUD)
 ```
 
-### 3.1 Flink SQL DDL
-We will register the Fluss tables dynamically in Flink. This treats Fluss log buckets as a native Flink streaming table:
+---
+
+## 3. Infrastructure Topology: Local vs Enterprise
+
+### 3.1 Tier 1: Local Laptop MVP (DuckDB)
+For single-laptop deployments driven by `docker-compose`, spinning up a distributed MPP database like StarRocks is unnecessarily resource-intensive.
+- **Why DuckDB?**: It is an in-process SQL OLAP engine. By sinking Flink state into a local `telemetry.duckdb` file, we achieve analytical query speeds without maintaining JVMs, Frontend nodes, or Backend nodes.
+- **Topology**: The `docker-compose.yml` only runs a lightweight Flink cluster (JobManager + TaskManager). The FastAPI backend natively imports `duckdb.connect('telemetry.duckdb')` to serve queries.
+
+### 3.2 Tier 2: Enterprise Grade K8s Scale (StarRocks)
+When the swarm scales across hundreds of pods, the telemetry database must handle massive horizontal reads/writes.
+- **Why StarRocks?**: It handles true high-concurrency micro-batch UPSERTs via the `Stream Load` API, distributing the read-load natively across backend nodes.
+
+---
+
+## 4. Data Ingestion: The Fluss-Flink Connector
+
+The bridge between raw AI outputs and Flink is identically managed regardless of the serving tier, utilizing the `fluss-flink` connector.
+
+### 4.1 Flink SQL DDL
+We dynamically register the Fluss log buckets as a native Flink streaming table:
 
 ```sql
 CREATE TABLE chatroom (
@@ -101,19 +90,19 @@ CREATE TABLE chatroom (
 );
 ```
 
-**Defense**: Creating watermarks (`WATERMARK FOR ts`) is vital. Agents are inherently asynchronous, and out-of-order logs are guaranteed. Watermarking allows Flink's windowing functions to confidently emit metrics without missing delayed thoughts.
+**Defense**: Creating watermarks allows Flink to robustly handle out-of-order latency variations from asynchronous agents before committing graph state.
 
 ---
 
-## 4. Stateful Compute: The DAG Reconstructor
+## 5. Stateful Compute: The DAG Reconstructor
 
-The core intelligence of the observability stack is **building the graph before it's asked for**. Flink utilizes `KeyedState` to hold the swarm's lineage.
+Flink utilizes `KeyedState` to hold the swarm's lineage, computing graph edges before they are ever queried.
 
 ```mermaid
 sequenceDiagram
     participant S as Flink Source
     participant K as Flink KeyedState (actor_id)
-    participant O as StarRocks Sink
+    participant O as Pluggable Sink
     
     S->>K: [t=10] type=spawn, actor=Sub-A, parent=Main
     Note over K: Update Adjacency Map<br/>(Sub-A parent is Main)
@@ -125,60 +114,39 @@ sequenceDiagram
     
     S->>K: [t=15] type=done, actor=Sub-A
     Note over K: Mark Done, Pop State
-    K->>O: UPSERT Edge(Main -> Sub-A, status=DONE, len=5s)
+    K->>O: UPSERT Edge(Main -> Sub-A, status=DONE)
 ```
 
-### 4.1 Memory Management & TTL
-Because an LLM swarm can generate tens of thousands of messages, keeping graph state indefinitely in Flink will result in `OutofMemoryError` exceptions across the TaskManagers.
-
-* **Implementation Details**: We configure Flink's `StateTtlConfig` with a 4-hour lifespan.
-  ```java
-  StateTtlConfig ttlConfig = StateTtlConfig
-      .newBuilder(Time.hours(4))
-      .setUpdateType(StateTtlConfig.UpdateType.OnCreateAndWrite)
-      .setStateVisibility(StateTtlConfig.StateVisibility.NeverReturnExpired)
-      .build();
-  ```
-* **Defense**: Agents and tasks almost never run for >4 hours contiguously. Using RocksDB for the state backend combined with TTL ensures Flink scales linearly with *throughput*, not with *total historical storage*.
+**Defense (State TTL)**: To prevent linear RAM growth and `OutOfMemoryError`s in Flink TaskManagers, we enforce a strict 4-hour `StateTtlConfig` inside RocksDB.
 
 ---
 
-## 5. Data Serving: StarRocks Primary Key Optimization
+## 6. Data Serving & Pluggable Sinks
 
-The final mile is serving data to the React UI in $<50\text{ms}$. We avoid aggregates at read-time by strictly enforcing the Primary Key (PK) Engine.
+The implementation requires the Flink sink to be a configurable toggle.
 
-### 5.1 The "Active" Snorkel DDL
-
-```sql
-CREATE TABLE agent_context_snorkel (
-    agent_id VARCHAR(64),
-    session_id VARCHAR(64),
-    run_id VARCHAR(64),
-    context_json JSON,
-    last_updated_at DATETIME
-) ENGINE=OLAP
-PRIMARY KEY(agent_id, session_id)
-DISTRIBUTED BY HASH(agent_id)
-PROPERTIES (
-    "enable_persistent_index" = "true"
-);
+### 6.1 The DuckDB Sink (Local MVP)
+For the MVP, a PyFlink job utilizes the native DuckDB Python library (e.g., `duckdb.connect()`) or the JDBC connector.
+Using Python's DuckDB library, we can execute extremely fast ingestion natively from DataFrames or Arrow buffers emitted by Flink:
+```python
+import duckdb
+conn = duckdb.connect('telemetry.duckdb')
+# Upsert Flink buffer directly using relation API or raw SQL
+conn.execute("INSERT OR REPLACE INTO snorkel VALUES (?, ?, ?, ?, ?)", [agent_id, session_id, run_id, context_json, ts])
 ```
+**Defense**: DuckDB operates locally without network roundtrips for the FastAPI backend, preserving the $T_{network}$ budget. The FastAPI layer simply queries `telemetry.duckdb` directly, delivering high-performance OLAP metrics to a single developer laptop with near-zero idle compute cost.
 
-### 5.2 The Stream Load Pipeline
-We utilize Flink's **StarRocks Connector** configured for extreme velocity micro-batching:
-* `sink.buffer-flush.interval-ms` = `500` (Half a second)
-* `sink.properties.format` = `json`
-
-**Defense**: Why StarRocks PK instead of standard aggregate tables? 
-When the React UI needs to visualize what "Agent Alice" is thinking, it executes `SELECT context_json FROM snorkel WHERE agent_id = 'Alice'`.
-With `enable_persistent_index = "true"` and the PK model, StarRocks bypasses typical column-scan execution. It performs a direct index lookup on the disk/memory blocks, guaranteeing $O(1)$ sub-millisecond query execution. This fulfills the "Speed of Light" mandate perfectly.
+### 6.2 The StarRocks Sink (Enterprise)
+For K8s deployments, we utilize Flink's StarRocks connector with extreme velocity micro-batching (`sink.buffer-flush.interval-ms = 500`). 
+By strictly enforcing **Primary Key Tables** with `enable_persistent_index = "true"`, StarRocks bypasses typical column-scans, performing direct index lookups. When the UI asks for an agent's context window, it runs in $O(1)$ sub-millisecond query execution.
 
 ---
 
-## 6. Wrap Up: Deriving the Implementation
+## 7. Wrap Up: Deriving the Implementation
 
-Given this proposal, the precise sequence of execution to integrate this solution will be:
-1. **Docker Config**: Update `docker-compose.yml` with the StarRocks and Flink services mapped to the `telemetry` profile.
-2. **Schema Init**: Write the initialization scripts `init_starrocks.sql` to define the Primary Key tables.
-3. **Flink App**: Author the Java/Python Flink job that registers the Fluss source, applies the stateful Map functions for the DAG and Snorkel, and connects the Flink-StarRocks sink.
-4. **App Config**: Update ContainerClaw's application backend to route HUD requests directly to StarRocks port 9030 rather than scanning `fluss_client.py` when `infrastructure.telemetry.enabled` is `true`.
+To physically implement this dual-tier architecture:
+1. **Config Toggle**: Expose `infrastructure.telemetry.engine` mapping to either `duckdb` (default) or `starrocks` in `config.yaml`.
+2. **Dynamic Docker Profiles**:
+   - `docker-compose --profile local-telemetry up` spins up Flink and mounts a volume for `telemetry.duckdb`.
+   - `docker-compose --profile enterprise-telemetry up` spins up StarRocks and Flink.
+3. **Agnostic FastAPI**: Wrap the python backend data retrieval in a repository pattern that switches its connection pool. If `duckdb`, use `duckdb.connect()`. If `starrocks`, use standard endpoints (e.g., `asyncpg` / `MySQLdb`). Both engines share almost identical SQL syntax for our analytical reads.
