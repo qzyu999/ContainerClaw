@@ -36,6 +36,7 @@ class StageModerator:
         self.election = ElectionProtocol()
         self.executor = None  # Initialized in run() after tool_dispatcher check
         self.publisher = None  # Initialized in run() after _handle_single_message is bound
+        self._last_human_event_id = ""  # Captured from incoming batches for backbone linking
 
     # ── Fluss I/O ──────────────────────────────────────────────────
 
@@ -251,7 +252,8 @@ class StageModerator:
                 )
 
                 winner, election_log, is_job_done = await self.election.run_election(
-                    self.agents, self.roster_str, context_window, self.publish
+                    self.agents, self.roster_str, context_window, self.publish,
+                    parent_event_id=election_start_id,
                 )
 
                 # Tally + Summary: children of election-start (side branches, not backbone)

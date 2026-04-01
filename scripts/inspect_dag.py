@@ -133,24 +133,40 @@ async def inspect():
                         print("   showing latest 5:")
                         for row in all_records[-5:]:
                             pprint.pprint(row, indent=5, width=120)
-                
-                # --- STANDARD LOG TABLES ---
+
+                # --- STANDARD LOG TABLES WITH TS SORTING ---
+                all_rows = []
+                empty_polls = 0
+
+                while empty_polls < 3:
+                    batches = await scanner._async_poll_batches(500)
+                    if not batches:
+                        empty_polls += 1
+                        continue
+                    empty_polls = 0
+
+                    for b in batches:
+                        d = b.batch.to_pydict()
+                        keys = list(d.keys())
+                        if keys:
+                            for i in range(len(d[keys[0]])):
+                                all_rows.append({k: d[k][i] for k in keys})
+
+                # --- SAFE SORTING ---
+                if not all_rows:
+                    print("   (Table is empty)")
                 else:
-                    print("   Type: Log Table (Scanning and printing all historical data...)")
-                    while empty_polls < 3: 
-                        batches = await scanner._async_poll_batches(500)
-                        if not batches:
-                            empty_polls += 1
-                            continue
-                        empty_polls = 0
-                        total_batches += len(batches)
-                        for b in batches:
-                            pprint.pprint(b.batch.to_pydict(), indent=5, width=120)
-                    
-                    if total_batches == 0:
-                        print("   (Table is empty)")
-                    else:
-                        print(f"   ✅ Finished scanning {total_batches} batches.")
+                    try:
+                        if "ts" in all_rows[0]:
+                            all_rows.sort(key=lambda r: r.get("ts", 0))
+                            print("   🔃 Sorted by 'ts'")
+                        else:
+                            print("   ⚠️ No 'ts' column found — printing unsorted")
+                    except Exception as e:
+                        print(f"   ⚠️ Sorting failed: {e} — printing unsorted")
+
+                    for row in all_rows:
+                        pprint.pprint(row, indent=5, width=120)
 
         except Exception as e:
             print(f"   ❌ Table Error: {e}")

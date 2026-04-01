@@ -26,6 +26,7 @@ class ElectionProtocol:
         roster_str: str,
         history: list[dict],
         publish_fn: Callable[..., Awaitable[None]],
+        parent_event_id: str = "",
     ) -> tuple[str | None, str, bool]:
         """Run a 3-round election.
         
@@ -34,6 +35,7 @@ class ElectionProtocol:
             roster_str: Human-readable roster (e.g., "Alice (architect), Bob (PM)").
             history: Context window messages for voting context.
             publish_fn: Async callback to publish events to Fluss.
+            parent_event_id: Causal parent for election status messages.
         
         Returns:
             (winner, election_log, is_job_done) where:
@@ -47,7 +49,8 @@ class ElectionProtocol:
 
         for r in range(1, 4):
             election_log_collector.append(f"--- Round {r} ---")
-            await publish_fn("Moderator", f"🗳️ Election Round {r}...", "thought")
+            await publish_fn("Moderator", f"🗳️ Election Round {r}...", "thought",
+                             parent_event_id=parent_event_id, edge_type="SEQUENTIAL")
             print(f"🗳️ [Moderator] Election Round {r} starting...")
 
             # Stagger votes with random jitter to avoid thundering-herd SSL drops
@@ -96,7 +99,8 @@ class ElectionProtocol:
 
             tally_str = f"Tally: {tally}"
             election_log_collector.append(tally_str)
-            await publish_fn("Moderator", f"Round {r} {tally_str}", "thought")
+            await publish_fn("Moderator", f"Round {r} {tally_str}", "thought",
+                             parent_event_id=parent_event_id, edge_type="SEQUENTIAL")
             print(f"📊 [Moderator] Round {r} {tally_str}")
 
             # If everyone agrees the task is finished, return immediately

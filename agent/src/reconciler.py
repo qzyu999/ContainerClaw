@@ -7,6 +7,8 @@ reconciliation loop where:
   2. Commands are always responsive (processed every tick)
   3. State transitions are explicit and auditable
   4. The heartbeat proves liveness to external observers
+  5. The causal backbone (parent_event_id) is threaded through
+     every publish call for deterministic DAG reconstruction
 
 The controller wraps the existing StageModerator components (election,
 context, publisher, executor) and re-sequences them around a state
@@ -19,6 +21,14 @@ States:
   PUBLISHING  - Agent response being published
   SUSPENDED   - /stop received, system quiescent
 
+Backbone Tracking:
+  self.backbone_id holds the event_id of the most recent
+  backbone-advancing event. It is updated at exactly four points:
+    1. Boot event ("System Online")
+    2. Human message arrival (captured from incoming Fluss batch)
+    3. Agent final output
+    4. Cycle checkpoint
+
 Usage:
     controller = ReconciliationController(moderator, heartbeat_emitter)
     await controller.run(autonomous_steps=5)
@@ -26,7 +36,6 @@ Usage:
 
 import asyncio
 import enum
-from typing import Callable, Awaitable
 
 from fluss_client import FlussClient
 
@@ -55,9 +64,14 @@ class ReconciliationController:
         self.heartbeat = heartbeat_emitter
         self.state = State.IDLE
 
-        # Tracked async tasks for cancellation
+        # Head of the linear backbone — the event_id of the most recent
+        # backbone-advancing event. Promoted to instance attribute because
+        # _run_election_and_execute() runs in a separate asyncio.Task
+        # scope and cannot access run()'s local variables.
+        self.backbone_id: str = ""
+
+        # Tracked async task for cancellation
         self._election_task: asyncio.Task | None = None
-        self._execution_task: asyncio.Task | None = None
 
         # Buffer for human interrupts that arrive during election/execution.
         # The stream is consumed once — if we don't remember the interrupt,
@@ -90,16 +104,18 @@ class ReconciliationController:
                 self.mod.tool_dispatcher,
                 publish_fn=self.mod.publish,
                 get_context_fn=self.mod.context.get_window,
-                poll_fn=self._poll_once,
+                poll_fn=self.mod._poll_once,
             )
 
         await self.mod._replay_history()
 
         conchshell_status = "enabled" if self.mod.tool_dispatcher else "disabled"
-        await self.mod.publish(
+        self.backbone_id = await self.mod.publish(
             "Moderator",
             f"Multi-Agent System Online (Reconciliation Mode). ConchShell: {conchshell_status}.",
             "thought",
+            parent_event_id="",
+            edge_type="ROOT",
         )
         print(f"⚖️ [Reconciler] Active with agents: {self.mod.agent_names}")
 
@@ -134,6 +150,10 @@ class ReconciliationController:
                     case State.IDLE:
                         if self._should_activate(human_interrupted):
                             self._pending_human_interrupt = False  # Consumed
+                            # Capture human event as backbone head before dispatching
+                            if self.mod._last_human_event_id:
+                                self.backbone_id = self.mod._last_human_event_id
+                                self.mod._last_human_event_id = ""
                             self.state = State.ELECTING
                             self._election_task = asyncio.create_task(
                                 self._run_election_and_execute()
@@ -148,7 +168,11 @@ class ReconciliationController:
                         if self._election_task and self._election_task.done():
                             self._election_task = None
                             self.state = State.IDLE
-                            await self.mod.publish("Moderator", "Cycle complete.", "checkpoint")
+                            self.backbone_id = await self.mod.publish(
+                                "Moderator", "Cycle complete.", "checkpoint",
+                                parent_event_id=self.backbone_id,
+                                edge_type="SEQUENTIAL",
+                            )
 
                     case State.SUSPENDED:
                         # A human message should always wake the system up
@@ -156,6 +180,9 @@ class ReconciliationController:
                         # already consumed from the stream — waiting for the
                         # next tick would miss it)
                         if human_interrupted:
+                            if self.mod._last_human_event_id:
+                                self.backbone_id = self.mod._last_human_event_id
+                                self.mod._last_human_event_id = ""
                             self.state = State.ELECTING
                             self._election_task = asyncio.create_task(
                                 self._run_election_and_execute()
@@ -198,6 +225,9 @@ class ReconciliationController:
         This is dispatched from the main loop as an asyncio.Task,
         so the main loop continues to poll, process commands, and
         emit heartbeats while this runs.
+
+        Backbone threading: every publish() call passes parent_event_id
+        and edge_type to maintain the deterministic causal DAG.
         """
         try:
             if self.heartbeat:
@@ -213,19 +243,36 @@ class ReconciliationController:
                     f"steps remaining..."
                 )
 
+            # Election start — branches from backbone
+            election_start_id = await self.mod.publish(
+                "Moderator", "🗳️ Starting Election...", "thought",
+                parent_event_id=self.backbone_id,
+                edge_type="SEQUENTIAL",
+            )
+
             await asyncio.sleep(1.0)
             context_window = self.mod.context.get_window()
 
-            # Election
+            # Election — pass parent so internal round messages can chain
             winner, election_log, is_job_done = await self.mod.election.run_election(
-                self.mod.agents, self.mod.roster_str, context_window, self.mod.publish
+                self.mod.agents, self.mod.roster_str, context_window, self.mod.publish,
+                parent_event_id=election_start_id,
             )
 
-            await self.mod.publish("Moderator", f"Election Summary:\n{election_log}", "voting")
+            # Summary: child of election-start (collapsible detail, not backbone)
+            await self.mod.publish(
+                "Moderator", f"Election Summary:\n{election_log}", "voting",
+                parent_event_id=election_start_id,
+                edge_type="SEQUENTIAL",
+            )
 
             if is_job_done:
                 print("🎉 [Reconciler] Job is complete!")
-                await self.mod.publish("Moderator", "Consensus: Task Complete.", "finish")
+                self.backbone_id = await self.mod.publish(
+                    "Moderator", "Consensus: Task Complete.", "finish",
+                    parent_event_id=self.backbone_id,
+                    edge_type="SEQUENTIAL",
+                )
                 if self.mod.tool_dispatcher:
                     self.mod.tool_dispatcher.cleanup()
                 self.mod.current_steps = 0
@@ -238,13 +285,20 @@ class ReconciliationController:
 
                 winning_agent = next(a for a in self.mod.agents if a.agent_id == winner)
                 print(f"🧠 [Reconciler] {winner} won. Executing...")
-                await self.mod.publish("Moderator", f"🏆 Winner: {winner}", "thought")
 
-                # Execution
+                # Winner announcement: child of election-start
+                winner_id = await self.mod.publish(
+                    "Moderator", f"🏆 Winner: {winner}", "thought",
+                    parent_event_id=election_start_id,
+                    edge_type="SEQUENTIAL",
+                )
+
+                # Execution — pass winner_id so tool calls chain from it
                 if self.mod.executor:
                     resp = await self.mod.executor.execute_with_tools(
                         winning_agent,
                         check_halt_fn=lambda: self.mod.current_steps == 0,
+                        parent_event_id=winner_id,
                     )
                 else:
                     from tool_executor import ToolExecutor
@@ -258,23 +312,38 @@ class ReconciliationController:
 
                 if resp and "[WAIT]" not in resp:
                     print(f"📢 [{winner} says]: {resp}")
-                    await self.mod.publish(winner, resp, "output")
+                    # Agent output advances the backbone
+                    self.backbone_id = await self.mod.publish(
+                        winner, resp, "output",
+                        parent_event_id=winner_id,
+                        edge_type="SEQUENTIAL",
+                    )
                 else:
                     print(f"💤 [{winner}] chose to WAIT. Nudging...")
                     await self.mod.publish(
-                        "Moderator", f"💤 {winner} is waiting. Nudging...", "thought"
+                        "Moderator", f"💤 {winner} is waiting. Nudging...", "thought",
+                        parent_event_id=winner_id,
+                        edge_type="SEQUENTIAL",
                     )
                     nudge_text = (
                         f"@{winner}, you won the election but chose to WAIT. "
                         f"Could you briefly explain why so the team knows what you're waiting for?"
                     )
-                    await self.mod.publish("Moderator", nudge_text, "system")
+                    await self.mod.publish(
+                        "Moderator", nudge_text, "system",
+                        parent_event_id=winner_id,
+                        edge_type="SEQUENTIAL",
+                    )
                     await self._poll_once()
                     nudge_context = self.mod.context.get_window()
                     resp = await winning_agent._think(nudge_context)
                     if resp:
                         print(f"📢 [{winner} explanation]: {resp}")
-                        await self.mod.publish(winner, resp, "output")
+                        self.backbone_id = await self.mod.publish(
+                            winner, resp, "output",
+                            parent_event_id=winner_id,
+                            edge_type="SEQUENTIAL",
+                        )
 
         except asyncio.CancelledError:
             print("🛑 [Reconciler] Election/execution cancelled.")
@@ -297,9 +366,8 @@ class ReconciliationController:
         return False
 
     async def _poll_once(self) -> bool:
-        """Poll Fluss scanner once (used by ToolExecutor for mid-turn checks)."""
-        batches = await FlussClient.poll_async(self.mod.scanner, timeout_ms=600)
-        return await self.mod._process_batches(batches)
+        """Poll Fluss scanner once — delegates to moderator."""
+        return await self.mod._poll_once()
 
     def halt(self):
         """Immediately halt execution — cancels running tasks."""
