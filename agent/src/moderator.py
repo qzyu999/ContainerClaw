@@ -119,8 +119,13 @@ class StageModerator:
 
     # ── Message Processing ─────────────────────────────────────────
 
-    async def _handle_single_message(self, actor_id, content, ts) -> bool:
-        """Process a single message. Returns True if human message (non-command)."""
+    async def _handle_single_message(self, actor_id, content, ts, event_id="") -> bool:
+        """Process a single message. Returns True if human message (non-command).
+
+        The event_id kwarg is passed by the publisher's on_message callback,
+        allowing us to capture _last_human_event_id at callback time (before
+        the scanner path sees it as a duplicate).
+        """
         if not self.context.add_message(actor_id, content, ts):
             return False  # Duplicate
 
@@ -137,6 +142,11 @@ class StageModerator:
                 pass  # Command handled
             else:
                 human_was_message = True
+                # Capture event_id for backbone tracking — this fires from the
+                # publisher callback (which has event_id) BEFORE the scanner
+                # sees it, avoiding the dedup race condition.
+                if event_id:
+                    self._last_human_event_id = event_id
                 if hasattr(self, 'base_budget'):
                     self.current_steps = self.base_budget
                     if self.base_budget != 0:

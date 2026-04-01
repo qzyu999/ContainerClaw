@@ -29,7 +29,7 @@ public class DagPipeline {
             + "        ELSE parent_event_id\n"
             + "    END AS parent_id,\n"
             + "    event_id AS child_id,\n"
-            + "    actor_id AS child_actor,\n"
+            + "    actor_id AS child_label,\n"
             + "    COALESCE(edge_type, 'SEQUENTIAL') AS edge_type,\n"
             + "    CASE\n"
             + "        WHEN `type` IN ('finish', 'done', 'checkpoint') THEN 'DONE'\n"

@@ -70,6 +70,10 @@ class ReconciliationController:
         # scope and cannot access run()'s local variables.
         self.backbone_id: str = ""
 
+        # Lazy boot: the boot event is deferred until first activation
+        # to avoid ghost boot events from placeholder sessions.
+        self._booted: bool = False
+
         # Tracked async task for cancellation
         self._election_task: asyncio.Task | None = None
 
@@ -109,14 +113,6 @@ class ReconciliationController:
 
         await self.mod._replay_history()
 
-        conchshell_status = "enabled" if self.mod.tool_dispatcher else "disabled"
-        self.backbone_id = await self.mod.publish(
-            "Moderator",
-            f"Multi-Agent System Online (Reconciliation Mode). ConchShell: {conchshell_status}.",
-            "thought",
-            parent_event_id="",
-            edge_type="ROOT",
-        )
         print(f"⚖️ [Reconciler] Active with agents: {self.mod.agent_names}")
 
         if self.mod.base_budget != 0:
@@ -150,6 +146,7 @@ class ReconciliationController:
                     case State.IDLE:
                         if self._should_activate(human_interrupted):
                             self._pending_human_interrupt = False  # Consumed
+                            await self._ensure_booted()
                             # Capture human event as backbone head before dispatching
                             if self.mod._last_human_event_id:
                                 self.backbone_id = self.mod._last_human_event_id
@@ -180,6 +177,7 @@ class ReconciliationController:
                         # already consumed from the stream — waiting for the
                         # next tick would miss it)
                         if human_interrupted:
+                            await self._ensure_booted()
                             if self.mod._last_human_event_id:
                                 self.backbone_id = self.mod._last_human_event_id
                                 self.mod._last_human_event_id = ""
@@ -355,6 +353,27 @@ class ReconciliationController:
         finally:
             if self.heartbeat:
                 self.heartbeat.update_state("idle")
+
+    async def _ensure_booted(self):
+        """Publish the ROOT boot event on first activation (lazy init).
+
+        By deferring the boot event to the first real activation (human
+        message or autonomous trigger), we avoid ghost boot events from
+        placeholder sessions like 'user-session' that never receive traffic.
+        """
+        if self._booted:
+            return
+        self._booted = True
+
+        conchshell_status = "enabled" if self.mod.tool_dispatcher else "disabled"
+        self.backbone_id = await self.mod.publish(
+            "Moderator",
+            f"Multi-Agent System Online (Reconciliation Mode). ConchShell: {conchshell_status}.",
+            "thought",
+            parent_event_id="",
+            edge_type="ROOT",
+        )
+        print(f"🚀 [Reconciler] Boot event published for session {self.mod.session_id}.")
 
     def _was_human_trigger(self) -> bool:
         """Check if the last context message was from a human."""

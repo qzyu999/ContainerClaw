@@ -100,9 +100,9 @@ class FlussPublisher:
             "edge_type": edge_type,
         }
 
-        # Fire callback immediately (memory update)
+        # Fire callback immediately (memory update, includes event_id for backbone tracking)
         if self.on_message:
-            await self.on_message(actor_id, content, ts)
+            await self.on_message(actor_id, content, ts, event_id=event_id)
 
         async with self._lock:
             self._buffer.append(record)
