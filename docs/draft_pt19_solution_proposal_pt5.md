@@ -1,10 +1,16 @@
-# Solution Proposal Part 5: Deterministic DAG via In-Reply-To Causality
+# Solution Proposal Part 5: Deterministic DAG via Linear Backbone with Tiering
 
 ## Executive Summary
 
-The current DAG pipeline is **fundamentally broken** because it attempts to reconstruct causal relationships by *heuristic self-joining* the chatroom log — guessing parentage from `parent_actor` name + timestamp proximity. This is equivalent to trying to reconstruct who replied to whom in a busy email thread by looking only at sender names and clock times, then hoping the newest message from that sender within ±1 second is the parent. The result: **36 events produce exactly 1 edge** (ROOT → Moderator), because the `LEFT JOIN` on `parent_actor = actor_id` within a 1-second window is a non-unique, non-deterministic match that collapses nearly everything to `ROOT`.
+The current DAG pipeline is **fundamentally broken** because it attempts to reconstruct causal relationships by *heuristic self-joining* the chatroom log — guessing parentage from `parent_actor` name + timestamp proximity. The result: **36 events produce exactly 1 edge** (ROOT → Moderator), because the `LEFT JOIN` on `parent_actor = actor_id` within a 1-second window is a non-unique, non-deterministic match that collapses nearly everything to `ROOT`.
 
-The fix is architectural, not surgical. We must adopt the **In-Reply-To** pattern: each event carries an explicit, immutable reference to the specific event it responds to, and this reference is recorded **at event creation time** (i.e., at the speed of the writer), not inferred later. This transforms the Flink pipeline from a 60-line heuristic join into a 5-line deterministic projection.
+The fix is architectural, not surgical. We adopt the **In-Reply-To** pattern — each event carries an explicit, immutable reference to the specific event it responds to, recorded **at event creation time** — but crucially, we combine this with the **Linear Backbone with Tiering** model:
+
+- **The Backbone (Tier 0):** A single, unbroken sequence of events representing the user's experience: `System Online → Human Input → Election → Agent Output → Checkpoint → Human Input → ...`. Every cycle chains to the next via a single `backbone_id` local variable in the Moderator's `run()` loop. There is **one line**, not a tree.
+- **Tiering (Y-axis):** A tier drop occurs **only** when a `SPAWN` edge is recorded (i.e., a `delegate` tool call). The subagent's events form their own sequential chain at Tier 1 (or deeper), running in parallel with the backbone. When the subagent completes, a `RETURN` edge links its final event back to the backbone.
+- **The Flywheel:** All writers (Human, Agents, Subagents, Moderator) remain fully independent. No agent tracks the DAG. The Moderator merely passes a UUID string — already in local scope — as an additional argument to `publish()`. This is **tagging** a push to the log, not **chaining** a blocking dependency.
+
+This transforms the Flink pipeline from a 60-line heuristic join into a 5-line deterministic projection.
 
 ---
 
@@ -12,7 +18,7 @@ The fix is architectural, not surgical. We must adopt the **In-Reply-To** patter
 
 1. [First Principles: The Physics of Causality](#1-first-principles-the-physics-of-causality)
 2. [Diagnostic: Why the Current Pipeline Fails](#2-diagnostic-why-the-current-pipeline-fails)
-3. [The In-Reply-To Pattern](#3-the-in-reply-to-pattern)
+3. [The Linear Backbone with Tiering Model](#3-the-linear-backbone-with-tiering-model)
 4. [Architecture Overview](#4-architecture-overview)
 5. [Detailed Code Changes](#5-detailed-code-changes)
     - [5.1 Schema Layer](#51-schema-layer-schemasspy)
@@ -140,48 +146,186 @@ This collapses ALL edges for a session into a single JSON blob in `dag_summaries
 
 ---
 
-## 3. The In-Reply-To Pattern
+## 3. The Linear Backbone with Tiering Model
 
-### Core Concept
+### Why Not a Tree?
 
-Every event published to the chatroom carries an **optional** `parent_event_id` field. This field is the UUID of the **specific event** that this event responds to. It is:
+The previous iteration of this proposal (and the original ChatGPT review) modeled the DAG as a **tree** fanning out from ROOT, with each human message starting an independent branch:
 
-- **Recorded at creation time** (zero additional latency)
+```
+ROOT → Human: Hi Alice → Election → Alice → Checkpoint
+ROOT → Human: Bob, board → Election → Bob → Checkpoint
+ROOT → Human: Carol, spawn → Election → Carol → Delegate
+```
+
+This is **wrong**. It contradicts the user's actual experience, which is a single continuous conversation:
+
+> "Hi Alice, oatmeal recipe?" → Alice responds → "Bob, add to board" → Bob responds → "Carol, spawn subagents" → Carol delegates → ...
+
+The user sees one thread, not three. Each human message doesn't start a new conversation — it continues the existing one. The previous checkpoint is the predecessor of the next human input. This is the **Linear Backbone**.
+
+### The Mental Model: Sequence with Depth
+
+Instead of a tree, the DAG is a **Linear Backbone with Tiers** — think of it as a swimlane diagram:
+
+```mermaid
+graph LR
+    subgraph "Tier 0 — Main Backbone"
+        direction LR
+        BOOT["System Online"] --> H1["Human: Hi Alice"]
+        H1 --> E1["Election"]
+        E1 --> A1["Alice: Recipe"]
+        A1 --> CP1["Checkpoint"]
+        CP1 --> H2["Human: Bob, board"]
+        H2 --> E2["Election"]
+        E2 --> B1["Bob: Created T-001"]
+        B1 --> CP2["Checkpoint"]
+        CP2 --> H3["Human: Carol, spawn"]
+        H3 --> E3["Election"]
+        E3 --> C1["Carol: Delegates"]
+        C1 --> CP3["Checkpoint"]
+    end
+```
+
+```mermaid
+graph TD
+    subgraph "Tier 0 — Backbone continues"
+        C1_ref["Carol: Delegates"]
+    end
+
+    subgraph "Tier 1 — Spawned by Carol"
+        C1_ref -->|SPAWN| S1["Sub/bde8ee35"]
+        S1 --> S1_out["Promotion text"]
+        S1_out -->|RETURN| CONV1["🏁 Done"]
+
+        C1_ref -->|SPAWN| S2["Sub/bcb81551"]
+        S2 --> S2_tool["repo_map"]
+        S2_tool --> S2_to["⏰ Timeout"]
+        S2_to -->|RETURN| CONV2["🏁 Done"]
+
+        C1_ref -->|SPAWN| S3["Sub/f0e7b250"]
+        S3 --> S3_tool["repo_map"]
+        S3_tool --> S3_to["⏰ Timeout"]
+        S3_to -->|RETURN| CONV3["🏁 Done"]
+    end
+
+    style S1 fill:#7950f2,color:#fff
+    style S2 fill:#7950f2,color:#fff
+    style S3 fill:#7950f2,color:#fff
+```
+
+**Key rule:**
+- `SEQUENTIAL` edges stay on the **same tier** (the backbone, or within a subagent's own chain)
+- `SPAWN` edges **drop to tier + 1** (the only way to increase depth)
+- `RETURN` edges **come back up** to the parent tier
+
+The UI computes `depth(child) = depth(parent)` for SEQUENTIAL edges, and `depth(child) = depth(parent) + 1` for SPAWN edges. No heuristic needed.
+
+### The In-Reply-To Mechanism
+
+Every event published to the chatroom carries an **optional** `parent_event_id` field — the UUID of the **specific event** that this event is a continuation of. It is:
+
+- **Recorded at creation time** (zero additional latency — the speed of light)
 - **Immutable once written** (append-only log semantics preserved)
-- **Optional by design** (ROOT events have `parent_event_id = ""`)
-- **A known fact, not a guess** (the writer has this information in local scope)
+- **Optional by design** (the boot event has `parent_event_id = ""`, becoming the root)
+- **A known fact, not a guess** (the writer holds this UUID in local scope)
 
-This is the exact analog of the `In-Reply-To:` header in RFC 2822 (email), or the `thread_ts` in Slack's API. The key insight from the human's concern is preserved:
+This is the exact analog of the `In-Reply-To:` header in RFC 2822 (email), or the `thread_ts` in Slack's API.
 
 > **"Maintain the independence of all operations and merely append a known fact to an existing process"**
 
 The operations remain independent. No agent needs to "know about" the DAG, track global state, or wait for anything. Each writer simply appends one additional string field — a UUID it already holds in local scope — to the record it was already going to write.
 
-### Why This Preserves the Flywheel
+### The Backbone Variable: `backbone_id`
+
+The linear backbone is maintained by **one local variable** in the Moderator's `run()` loop: `backbone_id`. This variable holds the `event_id` of the most recent "backbone-advancing" event. It is updated at exactly four points:
+
+1. **Boot:** `backbone_id = boot_event_id`
+2. **Human input arrives:** `backbone_id = human_event_id` (captured from the incoming Fluss record)
+3. **Agent final output:** `backbone_id = agent_output_event_id`
+4. **Checkpoint:** `backbone_id = checkpoint_event_id`
+
+Election sub-events (tally, summary) are **children of the election-start event**, not of the backbone. They are side-branches that the UI can collapse. The winner announcement is also a child of the election start, but the *agent's output* chains from the winner — and the agent's output *does* advance the backbone.
+
+### Why These Three Concepts Are Non-Contradictory
+
+One might worry that "Linear Backbone" and "In-Reply-To" and "Flywheel Independence" are in tension. They are not. Here's the formal argument:
+
+**Claim:** The Linear Backbone with Tiering model can be implemented via In-Reply-To metadata recorded at event creation time, without introducing any blocking dependencies between writers.
+
+**Proof by construction:**
+
+| Writer | How it gets `parent_event_id` | Blocking? |
+|--------|------------------------------|----------|
+| **Human** (bridge/client) | Writes to Fluss with `parent_event_id = ""`. The Moderator later captures the human event's `event_id` from the incoming batch and uses it as `backbone_id`. | No — Human writes independently. |
+| **Moderator** (election, winner, checkpoint) | Uses `backbone_id` — a local variable already in scope from the previous publish call's return value. | No — local variable read, zero network cost. |
+| **Agent** (winner's output, tool calls) | Receives `parent_event_id` as an argument from the Moderator when `execute_with_tools()` is called. The agent doesn't store it — the ToolExecutor threads it through. | No — function argument, zero cost. |
+| **Subagent** (spawned by delegate) | Receives `parent_event_id` from the `DelegateTool.execute()` call → `SubagentManager.spawn()`. | No — function argument at spawn time. |
+
+Every `parent_event_id` is either:
+- `""` (root/human events) — no dependency
+- A return value from the *caller's own previous* `publish()` call — already in local scope
+- A value passed as a function argument from the immediate caller — zero-cost transfer
+
+**No writer waits for any other writer.** The backbone is merely the *consequence* of the Moderator passing its own local `backbone_id` forward through its sequential loop. The agents don't know the backbone exists.
+
+### How the Backbone Handles Human Messages
+
+Human messages present a subtle design question: the Human writes to Fluss independently (via the bridge), so the Human's `parent_event_id` is `""`. How does the backbone stay linear?
+
+The answer: **the Moderator is the backbone bookkeeper, not the Human.** When the Moderator polls a human message from Fluss, it extracts the human message's `event_id` from the incoming `RecordBatch` and sets `backbone_id = human_event_id`. The election that follows then uses this `backbone_id` as its `parent_event_id`.
+
+From the DAG's perspective, the chain is:
+```
+... → Checkpoint(event_id=X) → [gap: moderator polls] → Election(parent_event_id=H) → ...
+```
+
+Where `H` is the human message's `event_id`. The human message itself has `parent_event_id = ""`, but the Moderator's election event points to it. This creates the backbone link:
+```
+Checkpoint → Human Message → Election → Agent → Checkpoint → ...
+```
+
+The Human message is incorporated into the backbone because the Moderator *uses it as its next parent*. The Human didn't need to know the backbone existed.
+
+### Sequence Diagram: The Complete Flywheel
 
 ```mermaid
 sequenceDiagram
     participant H as Human
     participant M as Moderator
     participant F as Fluss Log
-    participant FK as Flink Pipeline
+    participant FK as Flink
 
-    Note over H,FK: CURRENT: Flywheel with information loss
-    H->>F: {content: "Hi Alice", parent_event_id: ""}
-    M->>F: {content: "Election...", parent_event_id: ""}
-    M->>F: {content: "🏆 Winner: Alice", parent_event_id: ""}
-    Note over FK: Flink JOIN: "Which Moderator event is parent?" → ??
-    FK->>FK: Heuristic fails → ROOT
+    Note over M: backbone_id = ""
 
-    Note over H,FK: PROPOSED: Flywheel with In-Reply-To header
-    H->>F: {content: "Hi Alice", event_id: "a390", parent_event_id: ""}
-    M->>F: {content: "Election...", event_id: "545c", parent_event_id: "a390"}
-    M->>F: {content: "🏆 Winner: Alice", event_id: "2102", parent_event_id: "545c"}
-    Note over FK: Flink SELECT: parent_event_id → deterministic edge
-    FK->>FK: Direct projection → correct DAG
+    M->>F: {content: "System Online", event_id: "B001", parent_event_id: "", edge: ROOT}
+    Note over M: backbone_id = "B001"
+
+    H->>F: {content: "Hi Alice", event_id: "H001", parent_event_id: ""}
+    Note over M: Polls H001 from Fluss
+    Note over M: backbone_id = "H001"
+
+    M->>F: {content: "Election", event_id: "E001", parent_event_id: "H001", edge: SEQUENTIAL}
+    M->>F: {content: "Tally", event_id: "T001", parent_event_id: "E001", edge: SEQUENTIAL}
+    M->>F: {content: "Winner: Alice", event_id: "W001", parent_event_id: "E001", edge: SEQUENTIAL}
+
+    Note over M: Alice executes with parent_event_id = "W001"
+    M->>F: {content: "Alice: Recipe", event_id: "A001", parent_event_id: "W001", edge: SEQUENTIAL}
+    Note over M: backbone_id = "A001"
+
+    M->>F: {content: "Checkpoint", event_id: "C001", parent_event_id: "A001", edge: SEQUENTIAL}
+    Note over M: backbone_id = "C001"
+
+    H->>F: {content: "Bob, board", event_id: "H002", parent_event_id: ""}
+    Note over M: Polls H002 from Fluss
+    Note over M: backbone_id = "H002"
+
+    M->>F: {content: "Election", event_id: "E002", parent_event_id: "H002", edge: SEQUENTIAL}
+    Note over FK: Flink sees: E002.parent = H002, H002.parent = ""
+    Note over FK: Backbone: B001 → H001 → E001 → ... → C001 → H002 → E002 → ...
 ```
 
-**No new network calls. No new dependencies. No blocking. The push-to-log operation is identical** — it just carries one more column that the writer already knows.
+**Result:** A single, unbroken line. The Flink pipeline just reads `parent_event_id` and emits an edge. No joins. No windows. No guessing.
 
 ---
 
@@ -222,7 +366,7 @@ flowchart TD
     style JA fill:#ff6b6b,stroke:#c92a2a,color:#fff
 ```
 
-### Proposed Architecture (Deterministic)
+### Proposed Architecture (Deterministic Linear Backbone)
 
 ```mermaid
 flowchart TD
@@ -231,6 +375,10 @@ flowchart TD
         AGT[Agents]
         SUB[Subagents]
         HUM[Human]
+    end
+
+    subgraph ModeratorState["Moderator Local State"]
+        BB["backbone_id: string<br/>(one local variable)"]
     end
 
     subgraph FlussLog["Fluss Chatroom Log"]
@@ -245,64 +393,83 @@ flowchart TD
         DE2["dag_edges<br/>PK: session_id, child_id<br/>parent_id, edge_type, ts"]
     end
 
-    Writers --> LOG
+    HUM --> LOG
+    MOD --> LOG
+    AGT --> LOG
+    SUB --> LOG
+    MOD -.->|reads backbone_id| BB
     LOG --> SEL --> DE2
 
     style SEL fill:#51cf66,stroke:#2b8a3e,color:#fff
+    style BB fill:#ffd43b,stroke:#e67700,color:#000
 ```
 
-### Causal Graph: What the DAG Should Look Like
+### Causal Graph: The Linear Backbone (What the DAG Should Look Like)
 
-Reconstructed from the production logs with correct parentage:
+Reconstructed from the production logs with the Linear Backbone model. Note: this is **one line**, not a tree. Human messages don't fan out from ROOT — they chain to the previous checkpoint.
+
+```mermaid
+graph LR
+    ROOT((ROOT)) --> BOOT["System Online"]
+    BOOT --> H1["Human: Hi Alice"]
+    H1 --> E1["Election"]
+    E1 --> WIN1["Winner: Alice"]
+    WIN1 --> ALICE["Alice: Recipe"]
+    ALICE --> CP1["Checkpoint"]
+    CP1 --> H2["Human: Bob, board"]
+    H2 --> E2["Election"]
+    E2 --> WIN2["Winner: Bob"]
+    WIN2 --> BOB_TOOL["Bob: board create"]
+    BOB_TOOL --> BOB_OUT["Bob: Done"]
+    BOB_OUT --> CP2["Checkpoint"]
+    CP2 --> H3["Human: Carol, spawn"]
+    H3 --> E3["Election"]
+    E3 --> WIN3["Winner: Carol"]
+    WIN3 --> CAROL["Carol: Delegates"]
+    CAROL --> CP3["Checkpoint"]
+
+    style ROOT fill:#6c757d,color:#fff
+    style H1 fill:#339af0,color:#fff
+    style H2 fill:#339af0,color:#fff
+    style H3 fill:#339af0,color:#fff
+    style CP1 fill:#20c997,color:#fff
+    style CP2 fill:#20c997,color:#fff
+    style CP3 fill:#20c997,color:#fff
+```
+
+And the spawned subagents live on **Tier 1**, linked by `SPAWN`/`RETURN` edges:
 
 ```mermaid
 graph TD
-    ROOT((ROOT))
+    CAROL["Carol: Delegates<br/>(Tier 0)"] -->|SPAWN| S1["Sub/bde8ee35<br/>(Tier 1)"]
+    S1 --> S1_out["Promotion text"]
+    S1_out -->|RETURN| CONV1["🏁 bde8ee35 done<br/>(Tier 0)"]
 
-    %% Session boot
-    ROOT --> |SEQUENTIAL| BOOT["Moderator: System Online<br/>6ab2ec42"]
+    CAROL -->|SPAWN| S2["Sub/bcb81551<br/>(Tier 1)"]
+    S2 --> S2_tool["repo_map"]
+    S2_tool --> S2_to["⏰ Timeout"]
+    S2_to -->|RETURN| CONV2["🏁 bcb81551 done<br/>(Tier 0)"]
 
-    %% Human asks Alice
-    ROOT --> |SEQUENTIAL| H1["Human: Hi Alice, oatmeal?<br/>a390d88c"]
-    H1 --> |SEQUENTIAL| E1["Moderator: Election Round 1<br/>545cf3ec"]
-    E1 --> |SEQUENTIAL| TALLY1["Moderator: Tally Alice=5<br/>88d3546a"]
-    E1 --> |SEQUENTIAL| SUMM1["Moderator: Summary<br/>8ed8ec27"]
-    E1 --> |SEQUENTIAL| WIN1["Moderator: 🏆 Winner: Alice<br/>21020ef8"]
-    WIN1 --> |SEQUENTIAL| ALICE["Alice: Oatmeal Recipe<br/>98eb5ea4"]
-    ALICE --> |SEQUENTIAL| CP1["Moderator: Cycle complete<br/>4cb1d292"]
+    CAROL -->|SPAWN| S3["Sub/f0e7b250<br/>(Tier 1)"]
+    S3 --> S3_tool["repo_map"]
+    S3_tool --> S3_to["⏰ Timeout"]
+    S3_to -->|RETURN| CONV3["🏁 f0e7b250 done<br/>(Tier 0)"]
 
-    %% Human asks Bob
-    ROOT --> |SEQUENTIAL| H2["Human: Bob, add to board<br/>a7fca5d2"]
-    H2 --> |SEQUENTIAL| E2["Moderator: Election Round 1<br/>4c35010c"]
-    E2 --> |SEQUENTIAL| WIN2["Moderator: 🏆 Winner: Bob<br/>3d2464b9"]
-    WIN2 --> |SEQUENTIAL| BOB_TOOL["Bob: $ board create<br/>1765baa5"]
-    BOB_TOOL --> |SEQUENTIAL| BOB_RES["Bob: ✅ Created T-001<br/>404d9aa6"]
-    BOB_RES --> |SEQUENTIAL| BOB_OUT["Bob: Task Created<br/>43f172c5"]
+    style S1 fill:#7950f2,color:#fff
+    style S2 fill:#7950f2,color:#fff
+    style S3 fill:#7950f2,color:#fff
+    style CAROL fill:#ff922b,color:#fff
+```
 
-    %% Human asks Carol
-    ROOT --> |SEQUENTIAL| H3["Human: Carol, spawn agents<br/>13ec6acc"]
-    H3 --> |SEQUENTIAL| WIN3["Moderator: 🏆 Winner: Carol<br/>a02941a5"]
-    WIN3 --> |SEQUENTIAL| CAROL_DEL1["Carol: $ delegate<br/>faf5b7d1"]
+**Election sub-events** (tally, summary) are children of the election-start event — they branch off the backbone as collapsible detail. Only the **winner announcement → agent output → checkpoint** sequence advances the backbone.
 
-    %% Spawns
-    CAROL_DEL1 --> |SPAWN| SUB_BDE["🔱 Sub/bde8ee35<br/>90bf5218"]
-    SUB_BDE --> |SEQUENTIAL| SUB_BDE_OUT["Sub/bde8ee35: Promotion<br/>b139ae7e"]
-    SUB_BDE_OUT --> |RETURN| CONV_BDE["Moderator: 🏁 bde8ee35 done<br/>9e72afb7"]
+This means the UI can compute tier depth trivially:
 
-    CAROL_DEL1 --> |SPAWN| SUB_BCB["🔱 Sub/bcb81551<br/>5b274f8d"]
-    SUB_BCB --> |SEQUENTIAL| SUB_BCB_TOOL["Sub/bcb81551: $ repo_map<br/>e7ffc029"]
-    SUB_BCB --> |SEQUENTIAL| SUB_BCB_TO["Sub/bcb81551: ⏰ Timeout<br/>0bf68afa"]
-    SUB_BCB_TO --> |RETURN| CONV_BCB["Moderator: 🏁 bcb81551 done<br/>a1679619"]
-
-    CAROL_DEL1 --> |SPAWN| SUB_F0E["🔱 Sub/f0e7b250<br/>6d189b6a"]
-    SUB_F0E --> |SEQUENTIAL| SUB_F0E_TOOL["Sub/f0e7b250: $ repo_map<br/>f70edc34"]
-    SUB_F0E --> |SEQUENTIAL| SUB_F0E_TO["Sub/f0e7b250: ⏰ Timeout<br/>a1e8c91e"]
-    SUB_F0E_TO --> |RETURN| CONV_F0E["Moderator: 🏁 f0e7b250 done<br/>a3378dd3"]
-
-    style ROOT fill:#6c757d,color:#fff
-    style SUB_BDE fill:#7950f2,color:#fff
-    style SUB_BCB fill:#7950f2,color:#fff
-    style SUB_F0E fill:#7950f2,color:#fff
+```
+depth(event) =
+  if edge_type == SPAWN  → depth(parent) + 1
+  if edge_type == RETURN → depth(parent) - 1
+  else                   → depth(parent)
 ```
 
 ---
@@ -394,20 +561,25 @@ And in `_flush_locked()`, the batch construction adds the two new arrays:
 
 ---
 
-### 5.3 Moderator Layer (`moderator.py`)
+### 5.3 Moderator Layer (`moderator.py`) — The Backbone Bookkeeper
 
-**What changes:** The `publish()` wrapper and the `run()` method now thread `parent_event_id` through the control flow.
+**What changes:** The `publish()` wrapper returns `event_id`. The `run()` method maintains the `backbone_id` local variable. The `_process_batches` method extracts `event_id` from human messages.
 
-**Why — the Moderator is the primary orchestator:**
-The Moderator governs the election → execution → cycle loop. At each stage, it publishes events and knows the causal predecessor:
+**Why — the Moderator is the sole backbone bookkeeper:**
+The Moderator governs the `poll → elect → execute → checkpoint` loop. It is the only component that sees the linear sequencing of the conversation. It doesn't "track the DAG" — it merely remembers **one string**: the `event_id` of the most recent backbone-advancing event.
 
-1. **System boot** → `parent_event_id=""`, `edge_type="ROOT"`
-2. **Election start** → `parent_event_id` = the event that triggered the election (human input or previous cycle checkpoint)
-3. **Election tally/summary/winner** → `parent_event_id` = the election-start event
-4. **Agent output** → `parent_event_id` = the winner-announcement event
-5. **Cycle checkpoint** → `parent_event_id` = the agent's output event
+**The backbone_id variable advances at exactly four points:**
 
-The Moderator doesn't need to "track the DAG" — it simply passes forward the `event_id` it just received. This is a **local variable**, not global state.
+| Point | What sets `backbone_id` | Why |
+|-------|------------------------|-----|
+| Boot | `publish("System Online")` return value | Session starts |
+| Human input | `event_id` extracted from incoming Fluss batch | New user intent |
+| Agent final output | `publish(agent_output)` return value | Agent completed work |
+| Checkpoint | `publish("Cycle complete.")` return value | Cycle closes |
+
+Election sub-events (tally, summary) are **children of the election-start event** — they hang off the backbone as collapsible detail but do NOT advance `backbone_id`. This addresses the concern about Moderator message noise: the backbone stays clean, and the UI can collapse election internals.
+
+**Publish wrapper — now returns event_id:**
 
 ```diff
      async def publish(self, actor_id, content, m_type="output",
@@ -433,13 +605,37 @@ The Moderator doesn't need to "track the DAG" — it simply passes forward the `
 +            return ""
 ```
 
-**In `run()`:**
+**Capturing human event_id from incoming batches:**
+
+The `_process_batches` method already iterates over incoming records. We extend it to capture the `event_id` of human messages so the backbone can link to them:
+
+```diff
+     async def _process_batches(self, batches) -> bool:
+         any_human_interrupted = False
+         for poll in batches:
+             if poll.num_rows > 0:
+                 df = poll.to_pandas()
+                 for _, row in df.iterrows():
+                     sid = row.get("session_id")
+                     if sid != self.session_id:
+                         continue
+                     if await self._handle_single_message(row['actor_id'], row['content'], row['ts']):
+                         any_human_interrupted = True
++                        # Capture the human event's ID to become the next backbone parent
++                        self._last_human_event_id = row.get('event_id', '')
+```
+
+This is the critical bridge: the Human writes independently with `parent_event_id = ""`, but the Moderator **picks up** the human event's `event_id` from the stream and uses it as `backbone_id` for the next election. The backbone stays linear without requiring the Human to know anything about it.
+
+**The `run()` loop — the Linear Backbone in action:**
 
 ```python
 async def run(self, autonomous_steps=0):
     ...
-    # Boot event — no parent, this is a ROOT
-    boot_id = await self.publish(
+    self._last_human_event_id = ""  # Captured from incoming batches
+
+    # Boot event — the backbone starts here
+    backbone_id = await self.publish(
         "Moderator",
         f"Multi-Agent System Online. ConchShell: {conchshell_status}.",
         "thought",
@@ -447,23 +643,29 @@ async def run(self, autonomous_steps=0):
         edge_type="ROOT",
     )
 
-    # Track the "head" of the causal chain
-    last_event_id = boot_id
-
     while True:
-        ...
+        batches = await FlussClient.poll_async(self.scanner, timeout_ms=500)
+        human_interrupted = await self._process_batches(batches)
+
         if human_interrupted or (self.current_steps != 0):
             ...
-            # Election start — caused by the last event (human input or checkpoint)
+
+            # If a human triggered this cycle, their event IS the backbone parent
+            if self._last_human_event_id:
+                backbone_id = self._last_human_event_id
+                self._last_human_event_id = ""  # Consume it
+
+            # ── Election ──────────────────────────────────────
+            # Election start is a child of the backbone
             election_start_id = await self.publish(
                 "Moderator", f"🗳️ Election Round 1...", "thought",
-                parent_event_id=last_event_id,
+                parent_event_id=backbone_id,
                 edge_type="SEQUENTIAL",
             )
 
             winner, election_log, is_job_done = await self.election.run_election(...)
 
-            # Election summary — child of election start
+            # Tally + Summary: children of election-start (side branches, not backbone)
             await self.publish(
                 "Moderator", f"Election Summary:\n{election_log}", "voting",
                 parent_event_id=election_start_id,
@@ -471,36 +673,60 @@ async def run(self, autonomous_steps=0):
             )
 
             if winner:
-                # Winner announcement — child of election start
+                # Winner announcement: child of election-start
                 winner_id = await self.publish(
                     "Moderator", f"🏆 Winner: {winner}", "thought",
                     parent_event_id=election_start_id,
                     edge_type="SEQUENTIAL",
                 )
 
-                # Agent execution — the result is a child of the winner announcement
-                resp = await self.executor.execute_with_tools(
-                    winning_agent,
-                    check_halt_fn=...,
-                    parent_event_id=winner_id,  # NEW: pass context down
-                )
+                # ── Agent Execution ───────────────────────────
+                # Pass winner_id down; tool calls chain from it
+                if self.executor:
+                    resp = await self.executor.execute_with_tools(
+                        winning_agent,
+                        check_halt_fn=lambda: self.current_steps == 0,
+                        parent_event_id=winner_id,
+                    )
+                else:
+                    resp = await ToolExecutor.execute_text_only(
+                        winning_agent, self.context.get_window
+                    )
 
                 if resp and "[WAIT]" not in resp:
-                    last_event_id = await self.publish(
+                    # Agent output advances the backbone
+                    backbone_id = await self.publish(
                         winner, resp, "output",
                         parent_event_id=winner_id,
                         edge_type="SEQUENTIAL",
                     )
 
-            # Checkpoint — closes the cycle
-            last_event_id = await self.publish(
+            # ── Checkpoint ────────────────────────────────────
+            # Closes this cycle, becomes the backbone head for the next
+            backbone_id = await self.publish(
                 "Moderator", "Cycle complete.", "checkpoint",
-                parent_event_id=last_event_id,
+                parent_event_id=backbone_id,
                 edge_type="SEQUENTIAL",
             )
 ```
 
-**Critical insight: `_handle_single_message` does NOT need modification.** It only processes *incoming* messages from the log for context building. The causal metadata is only needed on the *write* path. The read path remains untouched.
+**What this produces (concrete example from the production logs):**
+
+| Step | `backbone_id` before | Event published | `parent_event_id` | `backbone_id` after |
+|------|---------------------|-----------------|-------------------|--------------------|
+| Boot | `""` | System Online (`B001`) | `""` | `B001` |
+| Human polls in | `B001` | *(not published by moderator)* | | `H001` (captured) |
+| Election start | `H001` | Election Round 1 (`E001`) | `H001` | `H001` (unchanged) |
+| Winner | `H001` | 🏆 Winner: Alice (`W001`) | `E001` | `H001` (unchanged) |
+| Agent output | `H001` | Alice: Recipe (`A001`) | `W001` | `A001` ✅ advances |
+| Checkpoint | `A001` | Cycle complete (`C001`) | `A001` | `C001` ✅ advances |
+| Human polls in | `C001` | *(not published by moderator)* | | `H002` (captured) |
+| Election start | `H002` | Election Round 1 (`E002`) | `H002` | `H002` (unchanged) |
+| ... | | | | |
+
+The backbone is: `B001 → H001 → E001 → W001 → A001 → C001 → H002 → E002 → ...`
+
+**Critical insight: `_handle_single_message` does NOT need modification beyond the event_id capture.** It only processes *incoming* messages from the log for context building. The causal metadata is only needed on the *write* path. The read path remains untouched.
 
 ---
 
@@ -769,32 +995,65 @@ stmtSet.addInsertSql(MetricsPipeline.getInsertSql());
 
 ## 6. Invariants and Correctness Proof
 
-### Invariant 1: Every non-root event has exactly one parent
+### Invariant 1: The backbone is linear
+
+**Proof:** The `backbone_id` variable in `moderator.run()` is a **single scalar** that is overwritten exactly once per cycle-advancing event. It cannot fork because it is a Python local variable, not a concurrent data structure. The only code paths that write to it are:
+1. `backbone_id = boot_event_id` (once at startup)
+2. `backbone_id = self._last_human_event_id` (once per human input)
+3. `backbone_id = agent_output_event_id` (once per agent response)
+4. `backbone_id = checkpoint_event_id` (once per cycle close)
+
+Each write replaces the previous value. The sequence is strictly linear by construction.
+
+### Invariant 2: Every non-root event has exactly one parent
 
 **Proof:** The `parent_event_id` is set by the writer at creation time. It is either:
-- `""` (root event) → `parent_id = "ROOT"` in the DAG
-- A specific UUID → the writer held this UUID in local scope
+- `""` (root/human event) → `parent_id = "ROOT"` in the DAG
+- A specific UUID → the writer held this UUID in local scope from a previous `publish()` return value
 
 There is no code path where `parent_event_id` is set to a non-existent UUID because:
-1. The UUID comes from a previous `publish()` return value
+1. The UUID comes from a previous `publish()` return value (already generated and in-memory)
 2. `publish()` generates the UUID synchronously before returning
 3. The UUID is a local variable, not read from the network
 
-### Invariant 2: Causality flows strictly backward in time
+### Invariant 3: Causality flows strictly backward in time
 
 **Proof:** If event `e₂` has `parent_event_id = e₁.event_id`, then `e₁` was published *before* `e₂` (because `e₂`'s writer needed `e₁.event_id` to construct the record, and `e₁.event_id` was only available after `e₁` was published). Therefore `e₁.ts < e₂.ts` in all cases where the wall clock is monotonic.
 
 **Note:** In the degenerate case where the wall clock is non-monotonic (NTP adjustment), `ts` might not be ordered, but `parent_event_id` is still correct. This is a strict upgrade over the current system, which relies on `ts` ordering AND name matching AND proximity windowing.
 
-### Invariant 3: The DAG is acyclic
+### Invariant 4: The DAG is acyclic
 
-**Proof:** Since causality flows strictly backward in time (Invariant 2), and each event has at most one parent (Invariant 1), the graph is a **forest** (set of trees). A forest is acyclic by definition.
+**Proof:** Since causality flows strictly backward in time (Invariant 3), and each event has at most one parent (Invariant 2), the graph is a **forest** (set of trees). A forest is acyclic by definition. The backbone is the primary trunk; subagent chains are branches.
 
-### Invariant 4: The flywheel is preserved
+### Invariant 5: The flywheel is preserved (writers remain independent)
 
-**Proof:** No agent, tool, or moderator code waits for any new network call, downstream pipeline, or external state as a result of these changes. The only new operation is passing a UUID string (which is already in local scope) as an additional argument to `publish()`.
+**Proof:** No agent, tool, or human writer waits for any other writer, any downstream pipeline result, or any external state as a result of these changes. Specifically:
 
-**Performance impact:** One additional string field per record. At 36 characters (UUID v4), this adds ~36 bytes per event. For a session with 1000 events, this is 36KB — negligible.
+| Writer | What it needs to write | Where it gets it | Blocking? |
+|--------|----------------------|------------------|-----------|
+| Human → Fluss | `parent_event_id = ""` | Constant | No |
+| Moderator → Fluss | `parent_event_id = backbone_id` | Local variable | No |
+| ToolExecutor → Fluss | `parent_event_id = current_parent` | Function argument from caller | No |
+| Subagent → Fluss | `parent_event_id = spawn_event_id` | Passed at construction | No |
+
+The only "new state" is one string variable (`backbone_id`) in the Moderator's `run()` loop. This variable is set from the return value of the Moderator's own `publish()` calls — which are already happening. Adding `return` to the existing `await self.publisher.publish(...)` call is the entirety of the state tracking.
+
+### Invariant 6: Tier depth is deterministic
+
+**Proof:** Given the `edge_type` field on each event, the tier depth is computable by a single DFS from the root:
+
+```
+depth(ROOT) = 0
+depth(child) = 
+  if edge_type == SPAWN  → depth(parent) + 1
+  if edge_type == RETURN → depth(parent) - 1  
+  else                   → depth(parent)        # SEQUENTIAL
+```
+
+This requires no joins, no windowing, and no heuristics. The UI or Flink can compute it in O(n) time.
+
+**Performance impact:** Two additional string fields per record. At ~46 characters total (36 for UUID + 10 for edge_type), this adds ~46 bytes per event. For a session with 1000 events, this is 46KB — negligible.
 
 ---
 
