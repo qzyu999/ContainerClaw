@@ -949,6 +949,7 @@ class DelegateTool(Tool):
         persona = params.get("persona", "General-purpose software engineer")
         timeout_s = params.get("timeout_s", 120)
         tool_names = params.get("tools")
+        parent_event_id = params.pop("_parent_event_id", "")  # Injected by ToolExecutor
 
         try:
             task_id = await self.subagent_manager.spawn(
@@ -957,6 +958,7 @@ class DelegateTool(Tool):
                 tool_names=tool_names,
                 available_tools=self.available_tools,
                 timeout_s=timeout_s,
+                parent_event_id=parent_event_id,
             )
             return ToolResult(
                 success=True,

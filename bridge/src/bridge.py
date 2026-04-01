@@ -293,45 +293,99 @@ async def _get_table(table_name):
         return None
 
 
-async def _lookup_dag_snapshot(session_id):
-    """Point lookup on dag_summaries PK table. O(1).
+async def _lookup_dag_edges(session_id):
+    """Scan the chatroom log table and project DAG edges.
 
-    Returns the full DAG as a pre-aggregated JSON blob.
-    Flink maintains this via JSON_ARRAYAGG streaming aggregation.
+    The chatroom log (append-only) contains parent_event_id and edge_type
+    fields on each event. We project these into edge dicts for the UI.
+    This avoids scanning the dag_edges PK table (which doesn't support
+    log scanning in the Fluss Python SDK).
     """
-    table = await _get_table("dag_summaries")
+    table = await _get_table("chatroom")
     if table is None:
         return []
 
-    lookuper = table.new_lookup().create_lookuper()
-    result = await lookuper.lookup({"session_id": session_id})
-    if result is None:
-        return []
-
-    edges_json = result.get("edges_json", "[]")
+    edges = []
     try:
-        return json.loads(edges_json)
-    except (json.JSONDecodeError, TypeError):
-        return []
+        import fluss
+        conn = await _ensure_fluss_conn()
+        admin = await conn.get_admin()
+        table_path = fluss.TablePath("containerclaw", "chatroom")
+        table_info = await admin.get_table_info(table_path)
+        num_buckets = table_info.num_buckets
+
+        scanner = await table.new_scan().create_record_batch_log_scanner()
+        scanner.subscribe_buckets(
+            {b: fluss.EARLIEST_OFFSET for b in range(num_buckets)}
+        )
+
+        for _ in range(20):  # Poll up to 20 times
+            batches = await scanner._async_poll_batches(500)
+            if not batches:
+                break
+            for record_batch in batches:
+                batch = record_batch.batch
+                sid_arr = batch.column("session_id")
+                eid_arr = batch.column("event_id")
+                actor_arr = batch.column("actor_id")
+                type_arr = batch.column("type")
+                ts_arr = batch.column("ts")
+
+                # These columns may not exist on old tables
+                has_parent_event_id = "parent_event_id" in batch.schema.names
+                has_edge_type = "edge_type" in batch.schema.names
+                parent_eid_arr = batch.column("parent_event_id") if has_parent_event_id else None
+                edge_type_arr = batch.column("edge_type") if has_edge_type else None
+
+                for i in range(batch.num_rows):
+                    if sid_arr[i].as_py() != session_id:
+                        continue
+
+                    parent_eid = parent_eid_arr[i].as_py() if parent_eid_arr else ""
+                    edge_type = edge_type_arr[i].as_py() if edge_type_arr else "SEQUENTIAL"
+                    event_type = type_arr[i].as_py()
+
+                    # Determine status from event type
+                    if event_type in ("finish", "done", "checkpoint"):
+                        status = "DONE"
+                    elif event_type == "action":
+                        status = "THINKING"
+                    else:
+                        status = "ACTIVE"
+
+                    edges.append({
+                        "parent": parent_eid if parent_eid else "ROOT",
+                        "child": eid_arr[i].as_py(),
+                        "child_label": actor_arr[i].as_py(),
+                        "edge_type": edge_type if edge_type else "SEQUENTIAL",
+                        "status": status,
+                        "updated_at": ts_arr[i].as_py(),
+                    })
+    except Exception as e:
+        print(f"Bridge: DAG edges scan error: {e}")
+        import traceback
+        traceback.print_exc()
+
+    return edges
 
 
 @app.route("/telemetry/dag/<session_id>")
 def telemetry_dag(session_id):
-    """Return DAG edges via O(1) snapshot lookup on dag_summaries PK table."""
+    """Return DAG edges by scanning the chatroom log table directly."""
     bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
     if not bootstrap:
         return {"status": "ok", "edges": []}
     try:
-        edges = _run_async(_lookup_dag_snapshot(session_id))
+        edges = _run_async(_lookup_dag_edges(session_id))
         return {"status": "ok", "edges": edges}
     except Exception as e:
-        print(f"Bridge: Telemetry DAG Snapshot Error: {e}")
+        print(f"Bridge: Telemetry DAG Error: {e}")
         return {"status": "ok", "edges": []}
 
 
 @app.route("/telemetry/dag/<session_id>/stream")
 def telemetry_dag_stream(session_id):
-    """SSE endpoint: tail dag_events log table for real-time edge deltas."""
+    """SSE endpoint: tail the chatroom log for real-time DAG edge updates."""
     bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
     if not bootstrap:
         return Response("data: []\n\n", mimetype="text/event-stream")
@@ -339,21 +393,21 @@ def telemetry_dag_stream(session_id):
     def generate():
         import fluss
         try:
-            table = _run_async(_get_table("dag_events"))
+            table = _run_async(_get_table("chatroom"))
             if table is None:
-                yield f"data: {json.dumps({'type': 'error', 'message': 'dag_events table not available'})}\n\n"
+                yield f"data: {json.dumps({'type': 'error', 'message': 'chatroom table not available'})}\n\n"
                 return
 
             conn = _run_async(_ensure_fluss_conn())
             admin = _run_async(conn.get_admin())
-            table_path = fluss.TablePath("containerclaw", "dag_events")
+            table_path = fluss.TablePath("containerclaw", "chatroom")
             table_info = _run_async(admin.get_table_info(table_path))
             num_buckets = table_info.num_buckets
 
             scanner = _run_async(
                 table.new_scan().create_record_batch_log_scanner()
             )
-            # Subscribe from LATEST — only new edges after this point
+            # Subscribe from LATEST — only new events after this point
             scanner.subscribe_buckets(
                 {b: fluss.LATEST_OFFSET for b in range(num_buckets)}
             )
@@ -366,18 +420,38 @@ def telemetry_dag_stream(session_id):
                 for record_batch in batches:
                     batch = record_batch.batch
                     sid_arr = batch.column("session_id")
-                    parent_arr = batch.column("parent_id")
-                    child_arr = batch.column("child_id")
-                    status_arr = batch.column("status")
-                    updated_arr = batch.column("updated_at")
+                    eid_arr = batch.column("event_id")
+                    actor_arr = batch.column("actor_id")
+                    type_arr = batch.column("type")
+                    ts_arr = batch.column("ts")
+
+                    has_parent_event_id = "parent_event_id" in batch.schema.names
+                    has_edge_type = "edge_type" in batch.schema.names
+                    parent_eid_arr = batch.column("parent_event_id") if has_parent_event_id else None
+                    edge_type_arr = batch.column("edge_type") if has_edge_type else None
+
                     for i in range(batch.num_rows):
                         if sid_arr[i].as_py() != session_id:
                             continue
+
+                        parent_eid = parent_eid_arr[i].as_py() if parent_eid_arr else ""
+                        edge_type = edge_type_arr[i].as_py() if edge_type_arr else "SEQUENTIAL"
+                        event_type = type_arr[i].as_py()
+
+                        if event_type in ("finish", "done", "checkpoint"):
+                            status = "DONE"
+                        elif event_type == "action":
+                            status = "THINKING"
+                        else:
+                            status = "ACTIVE"
+
                         edge = {
-                            "parent": parent_arr[i].as_py(),
-                            "child": child_arr[i].as_py(),
-                            "status": status_arr[i].as_py(),
-                            "updated_at": updated_arr[i].as_py(),
+                            "parent": parent_eid if parent_eid else "ROOT",
+                            "child": eid_arr[i].as_py(),
+                            "child_label": actor_arr[i].as_py(),
+                            "edge_type": edge_type if edge_type else "SEQUENTIAL",
+                            "status": status,
+                            "updated_at": ts_arr[i].as_py(),
                         }
                         yield f"data: {json.dumps(edge)}\n\n"
         except GeneratorExit:

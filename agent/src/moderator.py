@@ -40,22 +40,25 @@ class StageModerator:
     # ── Fluss I/O ──────────────────────────────────────────────────
 
     async def publish(self, actor_id, content, m_type="output",
-                      tool_name="", tool_success=False, parent_actor=""):
-        """Publish a message via the batched FlussPublisher."""
+                      tool_name="", tool_success=False, parent_actor="",
+                      parent_event_id="", edge_type="SEQUENTIAL"):
+        """Publish a message via the batched FlussPublisher. Returns event_id."""
         try:
-            await self.publisher.publish(
+            return await self.publisher.publish(
                 actor_id=actor_id,
                 content=content,
                 m_type=m_type,
                 tool_name=tool_name,
                 tool_success=tool_success,
                 parent_actor=parent_actor,
+                parent_event_id=parent_event_id,
+                edge_type=edge_type,
             )
-            print(f"📝 [Moderator] Published: {actor_id} ({m_type})")
         except Exception as e:
             print(f"❌ [Moderator] Failed to publish: {e}")
             import traceback
             traceback.print_exc()
+            return ""
 
     async def _replay_history(self):
         """Replay the Fluss log from session creation time to rebuild context."""
@@ -154,6 +157,8 @@ class StageModerator:
                         continue
                     if await self._handle_single_message(row['actor_id'], row['content'], row['ts']):
                         any_human_interrupted = True
+                        # Capture the human event's ID to become the next backbone parent
+                        self._last_human_event_id = row.get('event_id', '')
 
         if batches:
             self.context.sort()
@@ -172,6 +177,7 @@ class StageModerator:
         """Main moderator loop: poll → elect → execute → repeat."""
         self.base_budget = autonomous_steps
         self.current_steps = 0
+        self._last_human_event_id = ""  # Captured from incoming batches for backbone linking
 
         # Initialize FlussPublisher with immediate memory callback
         self.publisher = FlussPublisher(
@@ -197,7 +203,16 @@ class StageModerator:
         await self._replay_history()
 
         conchshell_status = "enabled" if self.tool_dispatcher else "disabled"
-        await self.publish("Moderator", f"Multi-Agent System Online. ConchShell: {conchshell_status}.", "thought")
+
+        # Boot event — the backbone starts here (ROOT edge, no parent)
+        backbone_id = await self.publish(
+            "Moderator",
+            f"Multi-Agent System Online. ConchShell: {conchshell_status}.",
+            "thought",
+            parent_event_id="",
+            edge_type="ROOT",
+        )
+
         print(f"⚖️ [Moderator] Active with agents: {self.agent_names}")
         print(f"🐚 [Moderator] ConchShell: {conchshell_status}")
         if self.base_budget != 0:
@@ -219,19 +234,40 @@ class StageModerator:
                         self.current_steps -= 1
                     print(f"🤖 [Autonomous Turn] {self.current_steps if self.current_steps >= 0 else 'inf'} steps remaining...")
 
+                # If a human triggered this cycle, their event IS the backbone parent
+                if self._last_human_event_id:
+                    backbone_id = self._last_human_event_id
+                    self._last_human_event_id = ""  # Consume it
+
                 await asyncio.sleep(1.0)
                 context_window = self.context.get_window()
 
-                # Election
+                # ── Election ──────────────────────────────────────
+                # Election start is a child of the backbone
+                election_start_id = await self.publish(
+                    "Moderator", "🗳️ Starting Election...", "thought",
+                    parent_event_id=backbone_id,
+                    edge_type="SEQUENTIAL",
+                )
+
                 winner, election_log, is_job_done = await self.election.run_election(
                     self.agents, self.roster_str, context_window, self.publish
                 )
 
-                await self.publish("Moderator", f"Election Summary:\n{election_log}", "voting")
+                # Tally + Summary: children of election-start (side branches, not backbone)
+                await self.publish(
+                    "Moderator", f"Election Summary:\n{election_log}", "voting",
+                    parent_event_id=election_start_id,
+                    edge_type="SEQUENTIAL",
+                )
 
                 if is_job_done:
                     print("🎉 [Moderator] Job is complete! Pausing the multi-agent loop.")
-                    await self.publish("Moderator", "Consensus: Task Complete.", "finish")
+                    backbone_id = await self.publish(
+                        "Moderator", "Consensus: Task Complete.", "finish",
+                        parent_event_id=backbone_id,
+                        edge_type="SEQUENTIAL",
+                    )
                     if self.tool_dispatcher:
                         self.tool_dispatcher.cleanup()
                     self.current_steps = 0
@@ -240,13 +276,21 @@ class StageModerator:
                 if winner:
                     winning_agent = next(a for a in self.agents if a.agent_id == winner)
                     print(f"🧠 [Moderator] {winner} won the election. Executing...")
-                    await self.publish("Moderator", f"🏆 Winner: {winner}", "thought")
 
-                    # Execution
+                    # Winner announcement: child of election-start
+                    winner_id = await self.publish(
+                        "Moderator", f"🏆 Winner: {winner}", "thought",
+                        parent_event_id=election_start_id,
+                        edge_type="SEQUENTIAL",
+                    )
+
+                    # ── Agent Execution ───────────────────────────
+                    # Pass winner_id down; tool calls chain from it
                     if self.executor:
                         resp = await self.executor.execute_with_tools(
                             winning_agent,
                             check_halt_fn=lambda: self.current_steps == 0,
+                            parent_event_id=winner_id,
                         )
                     else:
                         resp = await ToolExecutor.execute_text_only(
@@ -255,22 +299,45 @@ class StageModerator:
 
                     if resp and "[WAIT]" not in resp:
                         print(f"📢 [{winner} says]: {resp}")
-                        await self.publish(winner, resp, "output")
+                        # Agent output advances the backbone
+                        backbone_id = await self.publish(
+                            winner, resp, "output",
+                            parent_event_id=winner_id,
+                            edge_type="SEQUENTIAL",
+                        )
                     else:
                         print(f"💤 [{winner}] chose to WAIT or failed to respond. Nudging...")
-                        await self.publish("Moderator", f"💤 {winner} is waiting. Nudging...", "thought")
+                        await self.publish(
+                            "Moderator", f"💤 {winner} is waiting. Nudging...", "thought",
+                            parent_event_id=winner_id,
+                            edge_type="SEQUENTIAL",
+                        )
                         nudge_text = f"@{winner}, you won the election but chose to WAIT. Could you briefly explain why so the team knows what you're waiting for?"
-                        await self.publish("Moderator", nudge_text, "system")
+                        await self.publish(
+                            "Moderator", nudge_text, "system",
+                            parent_event_id=winner_id,
+                            edge_type="SEQUENTIAL",
+                        )
                         await self._poll_once()
                         nudge_context = self.context.get_window()
                         resp = await winning_agent._think(nudge_context)
 
                         if resp:
                             print(f"📢 [{winner} explanation]: {resp}")
-                            await self.publish(winner, resp, "output")
+                            backbone_id = await self.publish(
+                                winner, resp, "output",
+                                parent_event_id=winner_id,
+                                edge_type="SEQUENTIAL",
+                            )
                         else:
                             print(f"❌ [{winner}] remains silent after nudge.")
 
-                await self.publish("Moderator", "Cycle complete.", "checkpoint")
+                # ── Checkpoint ────────────────────────────────────
+                # Closes this cycle, becomes the backbone head for the next
+                backbone_id = await self.publish(
+                    "Moderator", "Cycle complete.", "checkpoint",
+                    parent_event_id=backbone_id,
+                    edge_type="SEQUENTIAL",
+                )
 
             await asyncio.sleep(1)

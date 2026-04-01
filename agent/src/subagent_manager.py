@@ -77,6 +77,7 @@ class SubagentManager:
         tool_names: list[str] | None = None,
         available_tools: list[Tool] | None = None,
         timeout_s: int = 120,
+        parent_event_id: str = "",
     ) -> str:
         """Spawn a new subagent. Returns a task_id for tracking.
 
@@ -87,6 +88,8 @@ class SubagentManager:
                         If None, all available_tools are granted.
             available_tools: Pool of Tool instances to select from.
             timeout_s: Maximum wall-clock time before forced termination.
+            parent_event_id: The event_id of the delegate tool call that
+                             triggered this spawn (for SPAWN edge).
 
         Returns:
             task_id (8-char UUID prefix) for status queries.
@@ -125,9 +128,19 @@ class SubagentManager:
         )
         await ctx.start()
 
-        # Launch the autonomous loop as a task
+        # System announcement — this is a SPAWN edge
+        spawn_event_id = await self.publisher.publish(
+            actor_id="Moderator",
+            content=f"🔱 Spawned subagent {task_id} ({agent_persona}): {task_desc}",
+            m_type="system",
+            parent_event_id=parent_event_id,
+            edge_type="SPAWN",
+        )
+
+        # Launch the autonomous loop as a task, passing spawn_event_id for chaining
         async_task = asyncio.create_task(
-            self._run_subagent(task_id, ctx, task_desc, timeout_s)
+            self._run_subagent(task_id, ctx, task_desc, timeout_s,
+                               parent_event_id=spawn_event_id)
         )
 
         handle = SubagentHandle(
@@ -139,18 +152,15 @@ class SubagentManager:
         )
         self._active[task_id] = handle
 
-        await self.publisher.publish(
-            actor_id="Moderator",
-            content=f"🔱 Spawned subagent {task_id} ({agent_persona}): {task_desc}",
-            m_type="system",
-        )
         print(f"🔱 [SubagentManager] Spawned {task_id}: {task_desc}")
         return task_id
 
     async def _run_subagent(
-        self, task_id: str, ctx: AgentContext, task_desc: str, timeout_s: int
+        self, task_id: str, ctx: AgentContext, task_desc: str, timeout_s: int,
+        parent_event_id: str = "",
     ):
         """Execute a subagent's autonomous tool-calling loop with timeout."""
+        last_event_id = parent_event_id  # Track head of subagent's event chain
         try:
             async with asyncio.timeout(timeout_s):
                 # Seed the context with the task
@@ -170,12 +180,13 @@ class SubagentManager:
                         actor_id, content, m_type="output", **kwargs
                     ):
                         if ctx.publisher:
-                            await ctx.publisher.publish(
+                            return await ctx.publisher.publish(
                                 actor_id=actor_id,
                                 content=content,
                                 m_type=m_type,
                                 **kwargs,
                             )
+                        return ""
 
                     executor = ToolExecutor(
                         ctx.tool_dispatcher,
@@ -188,9 +199,14 @@ class SubagentManager:
                         result = await executor.execute_with_tools(
                             ctx.agent,
                             check_halt_fn=lambda: not ctx._running,
+                            parent_event_id=last_event_id,
                         )
                         if result:
-                            await ctx.publish(result, "output")
+                            last_event_id = await ctx.publish(
+                                result, "output",
+                                parent_event_id=last_event_id,
+                                edge_type="SEQUENTIAL",
+                            )
                             if "[DONE]" in result or "[STUCK]" in result:
                                 break
                         else:
@@ -201,24 +217,34 @@ class SubagentManager:
                     context = ctx.get_context_window()
                     result = await ctx.agent._think(context)
                     if result:
-                        await ctx.publish(result, "output")
+                        last_event_id = await ctx.publish(
+                            result, "output",
+                            parent_event_id=last_event_id,
+                            edge_type="SEQUENTIAL",
+                        )
 
         except TimeoutError:
-            await ctx.publish(
+            last_event_id = await ctx.publish(
                 f"⏰ Subagent {task_id} timed out after {timeout_s}s.",
                 "system",
+                parent_event_id=last_event_id,
+                edge_type="SEQUENTIAL",
             )
             print(f"⏰ [SubagentManager] {task_id} timed out.")
         except asyncio.CancelledError:
-            await ctx.publish(
+            last_event_id = await ctx.publish(
                 f"🛑 Subagent {task_id} cancelled.",
                 "system",
+                parent_event_id=last_event_id,
+                edge_type="SEQUENTIAL",
             )
             print(f"🛑 [SubagentManager] {task_id} cancelled.")
         except Exception as e:
-            await ctx.publish(
+            last_event_id = await ctx.publish(
                 f"💥 Subagent {task_id} failed: {e}",
                 "system",
+                parent_event_id=last_event_id,
+                edge_type="SEQUENTIAL",
             )
             print(f"💥 [SubagentManager] {task_id} error: {e}")
             import traceback
@@ -230,11 +256,13 @@ class SubagentManager:
             if handle:
                 handle.status = "completed"
 
-            # Publish convergence event to main stream
+            # Publish convergence event — RETURN edge back to main thread
             await self.publisher.publish(
                 actor_id="Moderator",
                 content=f"🏁 Subagent {task_id} completed.",
                 m_type="convergence",
+                parent_event_id=last_event_id,
+                edge_type="RETURN",
             )
             print(f"🏁 [SubagentManager] {task_id} finished.")
 

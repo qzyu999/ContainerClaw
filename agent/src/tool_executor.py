@@ -40,13 +40,16 @@ class ToolExecutor:
         self.get_context = get_context_fn
         self.poll = poll_fn
 
-    async def execute_with_tools(self, agent, check_halt_fn: Callable[[], bool]) -> str | None:
+    async def execute_with_tools(self, agent, check_halt_fn: Callable[[], bool],
+                                  parent_event_id: str = "") -> str | None:
         """Run an agent's full tool-augmented turn.
 
         Args:
             agent: GeminiAgent instance.
             check_halt_fn: Returns True if execution should be aborted
                            (e.g., user sent /stop mid-turn).
+            parent_event_id: The event_id this execution chains from
+                             (e.g., the winner announcement).
         
         Returns:
             Agent's final text response, or None.
@@ -60,6 +63,7 @@ class ToolExecutor:
         final_text = None
         last_round_results = []
         consecutive_failures = 0
+        current_parent = parent_event_id  # Track head of tool-call chain
 
         for round_num in range(config.MAX_TOOL_ROUNDS):
             if round_num == 0:
@@ -99,11 +103,17 @@ class ToolExecutor:
                 call_id = call["id"]
 
                 print(f"🔧 [{agent.agent_id}] Tool call: {tool_name}({json.dumps(tool_args)[:200]})")
-                await self.publish(
+                tool_call_id = await self.publish(
                     agent.agent_id,
                     f"$ {tool_name} {json.dumps(tool_args)[:200]}",
                     "action",
+                    parent_event_id=current_parent,
+                    edge_type="SEQUENTIAL",
                 )
+
+                # Inject parent_event_id for delegate tool (so subagents can chain)
+                if tool_name == "delegate":
+                    tool_args["_parent_event_id"] = tool_call_id
 
                 result = await self.dispatcher.execute(
                     agent.agent_id, tool_name, tool_args
@@ -118,19 +128,25 @@ class ToolExecutor:
                 if consecutive_failures >= 3:
                     msg = f"🛑 Circuit Breaker: {agent.agent_id} halted after 3 consecutive tool failures."
                     print(f"⚠️ [Circuit Breaker] {msg}")
-                    await self.publish("Moderator", msg, "system")
+                    await self.publish(
+                        "Moderator", msg, "system",
+                        parent_event_id=tool_call_id,
+                        edge_type="SEQUENTIAL",
+                    )
                     return "🛑 Execution stopped due to consecutive tool failures."
 
-                # Log tool result
+                # Log tool result (child of tool call)
                 result_summary = result.output[:500] if result.success else f"ERROR: {result.error}"
                 print(f"  → {'✅' if result.success else '❌'} {result_summary[:200]}")
-                await self.publish(
+                tool_result_id = await self.publish(
                     agent.agent_id,
                     f"{'✅' if result.success else '❌'} {result_summary[:500]}",
                     "action",
+                    parent_event_id=tool_call_id,
+                    edge_type="SEQUENTIAL",
                 )
 
-                # Publish full tool result to Fluss
+                # Publish full tool result to Fluss (child of tool call)
                 tool_result_content = (
                     f"[Tool Result for {agent.agent_id}] {tool_name}: "
                     f"{'SUCCESS' if result.success else 'FAILED'}\n"
@@ -142,7 +158,12 @@ class ToolExecutor:
                     tool_name=tool_name,
                     tool_success=result.success,
                     parent_actor=agent.agent_id,
+                    parent_event_id=tool_call_id,
+                    edge_type="SEQUENTIAL",
                 )
+
+                # Advance chain head for next tool call
+                current_parent = tool_result_id
 
                 # Accumulate results for functionResponse construction
                 # Adaptive Verbosity: allow more context for read-heavy tools

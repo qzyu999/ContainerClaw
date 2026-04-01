@@ -35,9 +35,6 @@ public class TelemetryJob {
         StreamTableEnvironment tableEnv = StreamTableEnvironment.create(env,
                 EnvironmentSettings.newInstance().inStreamingMode().build());
 
-        // Set state retention to prevent unbounded join state growth (10 minutes)
-        tableEnv.getConfig().setIdleStateRetention(java.time.Duration.ofMinutes(10));
-
         // Register the Fluss catalog
         String createCatalog = String.format(
             "CREATE CATALOG fluss_catalog WITH ("
@@ -58,8 +55,7 @@ public class TelemetryJob {
         // Submit the pipelines as a single statement set
         var stmtSet = tableEnv.createStatementSet();
         stmtSet.addInsertSql(DagPipeline.getActorHeadsInsertSql());
-        stmtSet.addInsertSql(DagPipeline.getSnapshotInsertSql());
-        stmtSet.addInsertSql(DagPipeline.getDeltaInsertSql());
+        stmtSet.addInsertSql(DagPipeline.getEdgesInsertSql());
         stmtSet.addInsertSql(MetricsPipeline.getInsertSql());
 
         LOG.info("Pipelines registered. Submitting statement set...");
@@ -84,23 +80,14 @@ public class TelemetryJob {
             + ") WITH ('bucket.num' = '4', 'bucket.key' = 'session_id,actor_id')"
         );
 
-        // PK table: full DAG snapshot per session (JSON blob)
+        // PK table: deterministic DAG edges from chatroom causal metadata
         tableEnv.executeSql(
-            "CREATE TABLE IF NOT EXISTS fluss_catalog." + database + ".dag_summaries ("
-            + "    session_id STRING,"
-            + "    edges_json STRING,"
-            + "    edge_count BIGINT,"
-            + "    updated_at BIGINT,"
-            + "    PRIMARY KEY (session_id) NOT ENFORCED"
-            + ") WITH ('bucket.num' = '4', 'bucket.key' = 'session_id')"
-        );
-
-        // PK table: individual edge events for SSE streaming
-        tableEnv.executeSql(
-            "CREATE TABLE IF NOT EXISTS fluss_catalog." + database + ".dag_events ("
+            "CREATE TABLE IF NOT EXISTS fluss_catalog." + database + ".dag_edges ("
             + "    session_id STRING,"
             + "    parent_id STRING,"
             + "    child_id STRING,"
+            + "    child_label STRING,"
+            + "    edge_type STRING,"
             + "    status STRING,"
             + "    updated_at BIGINT,"
             + "    PRIMARY KEY (session_id, child_id) NOT ENFORCED"

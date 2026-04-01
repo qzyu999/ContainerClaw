@@ -75,6 +75,8 @@ class FlussPublisher:
         tool_name: str = "",
         tool_success: bool = False,
         parent_actor: str = "",
+        parent_event_id: str = "",
+        edge_type: str = "SEQUENTIAL",
     ) -> str:
         """Buffer a message for batched flush. Returns the event_id (UUID).
 
@@ -94,6 +96,8 @@ class FlussPublisher:
             "tool_name": tool_name,
             "tool_success": tool_success,
             "parent_actor": parent_actor,
+            "parent_event_id": parent_event_id,
+            "edge_type": edge_type,
         }
 
         # Fire callback immediately (memory update)
@@ -133,6 +137,8 @@ class FlussPublisher:
                     "tool_name": [r["tool_name"] for r in records],
                     "tool_success": [r["tool_success"] for r in records],
                     "parent_actor": [r["parent_actor"] for r in records],
+                    "parent_event_id": [r["parent_event_id"] for r in records],
+                    "edge_type": [r["edge_type"] for r in records],
                 },
                 schema=self._schema,
             )
