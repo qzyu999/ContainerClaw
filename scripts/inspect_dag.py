@@ -20,6 +20,40 @@ async def inspect():
         print(f"❌ Connection Error: {e}")
         return
 
+    # --- PRE-SCAN PHASE: Discover all dynamic keys ---
+    print(f"\n🔍 Pre-scanning chatroom to discover subagents and events...")
+    known_actors = {"Moderator", "Alice", "Bob", "Carol", "David", "Eve", "Human"}
+    known_child_ids = set()
+    
+    try:
+        chat_path = fluss.TablePath("containerclaw", "chatroom")
+        chat_table = await conn.get_table(chat_path)
+        chat_info = await admin.get_table_info(chat_path)
+        
+        scanner = await chat_table.new_scan().create_record_batch_log_scanner()
+        scanner.subscribe_buckets({b: fluss.EARLIEST_OFFSET for b in range(chat_info.num_buckets)})
+        
+        empty_polls = 0
+        while empty_polls < 3:
+            batches = await scanner._async_poll_batches(500)
+            if not batches:
+                empty_polls += 1
+                continue
+            empty_polls = 0
+            for b in batches:
+                d = b.batch.to_pydict()
+                for i in range(len(d.get("actor_id", []))):
+                    if d["session_id"][i] == sid:
+                        actor = d["actor_id"][i]
+                        event_id = d["event_id"][i]
+                        known_actors.add(actor)
+                        known_child_ids.add(f"{actor}|{event_id}")
+    except Exception as e:
+        print(f"⚠️ Pre-scan failed: {e}")
+
+    print(f"✅ Discovered {len(known_actors)} actors and {len(known_child_ids)} events.")
+
+    # --- INSPECTION PHASE ---
     for table_name in tables:
         print(f"\n" + "="*70)
         print(f" 📊 TABLE: containerclaw.{table_name}")
@@ -29,49 +63,94 @@ async def inspect():
             path = fluss.TablePath("containerclaw", table_name)
             table = await conn.get_table(path)
             info = await admin.get_table_info(path)
+            schema_cols = [c[0] for c in info.get_schema().get_columns()]
             
-            # 1. Primary Key Tables (Point Lookups Only)
+            # 1. Primary Key Tables (Point Lookups)
             if table.has_primary_key():
                 print("   Type: Primary Key Table (Python SDK can only lookup by specific key)")
-                try:
-                    lookuper = table.new_lookup().create_lookuper()
+                lookuper = table.new_lookup().create_lookuper()
+                
+                if "child_id" in schema_cols:
+                    print(f"   ℹ️  Looking up {len(known_child_ids)} known event IDs...")
+                    found = 0
+                    for cid in known_child_ids:
+                        res = await lookuper.lookup({"session_id": sid, "child_id": cid})
+                        if res:
+                            pprint.pprint(res, indent=5, width=120)
+                            found += 1
+                    print(f"   ✅ Found {found} matching rows.")
+                            
+                elif "actor_id" in schema_cols or "agent_id" in schema_cols:
+                    key_field = "actor_id" if "actor_id" in schema_cols else "agent_id"
+                    print(f"   ℹ️  Looking up {len(known_actors)} known actors...")
+                    found = 0
+                    for actor in known_actors:
+                        res = await lookuper.lookup({"session_id": sid, key_field: actor})
+                        if res:
+                            pprint.pprint(res, indent=5, width=120)
+                            found += 1
+                    print(f"   ✅ Found {found} matching rows.")
+
+                else:
                     res = await lookuper.lookup({"session_id": sid})
                     if res:
                         print(f"   ✅ Data for '{sid}':")
                         pprint.pprint(res, indent=5, width=120)
                     else:
                         print(f"   ⚠️ No data found for '{sid}'")
-                except Exception as e:
-                    print(f"   ℹ️  Requires full composite PK for lookup. Error: {e}")
             
             # 2. Log Tables (Full Historical Scan)
             else:
-                print("   Type: Log Table (Scanning all historical data...)")
                 scanner = await table.new_scan().create_record_batch_log_scanner()
-                
-                # CHANGED: Subscribe to EARLIEST_OFFSET to get everything from the start
                 scanner.subscribe_buckets({b: fluss.EARLIEST_OFFSET for b in range(info.num_buckets)})
                 
                 empty_polls = 0
                 total_batches = 0
                 
-                # Poll repeatedly until the stream runs dry
-                while empty_polls < 3: 
-                    batches = await scanner._async_poll_batches(500)
-                    if not batches:
-                        empty_polls += 1
-                        continue
+                # --- SPECIAL HANDLING FOR BULKY AGENT_STATUS ---
+                if table_name == "agent_status":
+                    print("   Type: Log Table (Scanning all, but only showing the top 5 most recent...)")
+                    all_records = []
+                    while empty_polls < 3: 
+                        batches = await scanner._async_poll_batches(500)
+                        if not batches:
+                            empty_polls += 1
+                            continue
+                        empty_polls = 0
+                        total_batches += len(batches)
+                        for b in batches:
+                            d = b.batch.to_pydict()
+                            keys = list(d.keys())
+                            if keys:
+                                # Convert column-arrays into individual row dictionaries
+                                for i in range(len(d[keys[0]])):
+                                    all_records.append({k: d[k][i] for k in keys})
                     
-                    empty_polls = 0
-                    total_batches += len(batches)
-                    for b in batches:
-                        # Print the full dictionary of arrays for the batch
-                        pprint.pprint(b.batch.to_pydict(), indent=5, width=120)
+                    if not all_records:
+                        print("   (Table is empty)")
+                    else:
+                        print(f"   ✅ Found {len(all_records)} total heartbeats across {total_batches} batches.")
+                        print("   showing latest 5:")
+                        for row in all_records[-5:]:
+                            pprint.pprint(row, indent=5, width=120)
                 
-                if total_batches == 0:
-                    print("   (Table is empty)")
+                # --- STANDARD LOG TABLES ---
                 else:
-                    print(f"   ✅ Finished scanning {total_batches} batches.")
+                    print("   Type: Log Table (Scanning and printing all historical data...)")
+                    while empty_polls < 3: 
+                        batches = await scanner._async_poll_batches(500)
+                        if not batches:
+                            empty_polls += 1
+                            continue
+                        empty_polls = 0
+                        total_batches += len(batches)
+                        for b in batches:
+                            pprint.pprint(b.batch.to_pydict(), indent=5, width=120)
+                    
+                    if total_batches == 0:
+                        print("   (Table is empty)")
+                    else:
+                        print(f"   ✅ Finished scanning {total_batches} batches.")
 
         except Exception as e:
             print(f"   ❌ Table Error: {e}")
