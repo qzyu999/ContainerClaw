@@ -76,7 +76,7 @@ class SubagentManager:
         agent_persona: str = "General-purpose software engineer",
         tool_names: list[str] | None = None,
         available_tools: list[Tool] | None = None,
-        timeout_s: int = 120,
+        timeout_s: int | None = None,
         parent_event_id: str = "",
     ) -> str:
         """Spawn a new subagent. Returns a task_id for tracking.
@@ -97,6 +97,9 @@ class SubagentManager:
         Raises:
             RuntimeError if max concurrent limit is reached.
         """
+        if timeout_s is None:
+            timeout_s = config.CONFIG.subagent_ttl_seconds
+
         if len(self._active) >= self.MAX_CONCURRENT:
             raise RuntimeError(
                 f"Max concurrent subagents ({self.MAX_CONCURRENT}) reached. "

@@ -61,6 +61,7 @@ agents:
     max_tool_rounds: 30
     autonomous_steps: -1
     conchshell_enabled: true
+    subagent_ttl_seconds: 120
 
 # --- Gateway Settings ---
 gateway:

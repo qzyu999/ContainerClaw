@@ -51,6 +51,7 @@ class ClawConfig(BaseModel):
     max_tool_rounds: int = 30
     autonomous_steps: int = -1
     conchshell_enabled: bool = True
+    subagent_ttl_seconds: int = 120
     # Gateway settings
     gateway_port: int = 8000
     gateway_url: str = "http://llm-gateway:8000"
@@ -156,6 +157,7 @@ def load_config(config_path: str | None = None) -> ClawConfig:
         max_tool_rounds=agent_settings.get("max_tool_rounds", 30),
         autonomous_steps=agent_settings.get("autonomous_steps", -1),
         conchshell_enabled=agent_settings.get("conchshell_enabled", True),
+        subagent_ttl_seconds=agent_settings.get("subagent_ttl_seconds", 120),
         gateway_port=gateway_cfg.get("port", 8000),
         gateway_url=os.getenv("LLM_GATEWAY_URL", "http://llm-gateway:8000"),
         rate_limit_rpm=gateway_cfg.get("rate_limit_rpm", 60),
@@ -222,6 +224,7 @@ def _from_env() -> ClawConfig:
         max_tool_rounds=int(os.getenv("MAX_TOOL_ROUNDS", "30")),
         autonomous_steps=int(os.getenv("AUTONOMOUS_STEPS", "-1")),
         conchshell_enabled=os.getenv("CONCHSHELL_ENABLED", "true").lower() == "true",
+        subagent_ttl_seconds=int(os.getenv("SUBAGENT_TTL_SECONDS", "120")),
         gateway_port=int(os.getenv("LLM_GATEWAY_PORT", "8000")),
         gateway_url=gateway_url,
         rate_limit_rpm=int(os.getenv("RATE_LIMIT_RPM", "60")),

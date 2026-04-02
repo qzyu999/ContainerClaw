@@ -26,6 +26,7 @@ MAX_HISTORY_CHARS = _cfg.max_history_chars
 MAX_TOOL_ROUNDS = _cfg.max_tool_rounds
 CONCHSHELL_ENABLED = _cfg.conchshell_enabled
 AUTONOMOUS_STEPS = _cfg.autonomous_steps
+SUBAGENT_TTL_SECONDS = _cfg.subagent_ttl_seconds
 FLUSS_BOOTSTRAP_SERVERS = _cfg.fluss_bootstrap_servers
 SESSION_ID = _cfg.session_id
 
