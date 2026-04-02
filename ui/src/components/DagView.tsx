@@ -109,13 +109,12 @@ export default function DagView({ sessionId }: DagViewProps) {
       if (e.content) nodeContent.set(e.child, e.content);
       if (e.actor) nodeActor.set(e.child, e.actor);
 
-      // Inherit/capture timestamps — assume child timestamp is reliable
-      if (!nodeTimestamps.has(e.child)) nodeTimestamps.set(e.child, Number(e.ts));
+      nodeTimestamps.set(e.child, Number(e.ts));
 
+      // Only guess for parents we haven't seen yet
       if (!nodeTimestamps.has(e.parent)) {
-        nodeTimestamps.set(e.parent, Number(e.ts) - 500); // Hack for root
+        nodeTimestamps.set(e.parent, Number(e.ts) - 500);
       } else if (e.parent === 'ROOT') {
-        // Prevent late-arriving /stop commands from dragging ROOT down the timeline!
         nodeTimestamps.set('ROOT', Math.min(nodeTimestamps.get('ROOT') as number, Number(e.ts) - 500));
       }
 
@@ -135,25 +134,25 @@ export default function DagView({ sessionId }: DagViewProps) {
       }
     });
 
-    // 2. Assign Basic Tiers using Content Markers (The Simple Way!)
+    // 2. Assign Basic Tiers (Strict Orchestration vs Tools)
     const nodeTiers = new Map<string, number>();
 
     nodeSet.forEach(id => {
       const content = (nodeContent.get(id) || '').toLowerCase();
-      
-      // Use our rich metadata tags to spot sub-agent / tool work!
-      const isToolActivity = 
-        content.startsWith('$') || 
-        content.startsWith('🔱') || 
-        content.startsWith('✅') || 
-        content.startsWith('❌') || 
-        content.includes('[tool result') ||
-        content.startsWith('🏁');
+      const actor = (nodeActor.get(id) || '').toLowerCase();
 
-      if (isToolActivity) {
-        nodeTiers.set(id, 1); // Tool execution and subagents go to the Green Lane
+      // ONLY push actual system executions to Tier 1. 
+      // Alice stays on Tier 0 as the lead agent!
+      const isToolExecution =
+        (content.includes('🔱 spawned subagent') ||
+          content.includes('🏁 subagent completed') ||
+          content.includes('[tool result'))
+        && actor === 'moderator';
+
+      if (isToolExecution) {
+        nodeTiers.set(id, 1);
       } else {
-        nodeTiers.set(id, 0); // Human, Moderator, and Main Agent Output stay on the Central Timeline
+        nodeTiers.set(id, 0);
       }
     });
 
@@ -166,7 +165,7 @@ export default function DagView({ sessionId }: DagViewProps) {
     });
 
     const isElectionDetail = (id: string) => {
-      const parentEdge = edges.find(e => e.child === id);
+      const parentEdge = edges.find((e: DagEdge) => e.child === id);
       if (!parentEdge) return false;
 
       const parentLabel = (nodeLabels.get(parentEdge.parent) || '').toLowerCase();
@@ -178,35 +177,38 @@ export default function DagView({ sessionId }: DagViewProps) {
     };
 
     const chronoRankMap = new Map<string, number>();
-    const bandOffsetMap = new Map<string, number>(); 
-    const electionBands = new Map<number, { y: number, count: number }>(); // <--- NEW: Tracks the UX bounding boxes
+    const bandOffsetMap = new Map<string, number>();
+    const electionBands = new Map<number, { y: number, count: number }>();
 
     let currentYRank = 0;
-    let lastElectionParent: string | null = null;
-    let electionDetailCount = 0;
 
     sortedNodes.forEach(id => {
       if (isElectionDetail(id)) {
-        const parentEdge = edges.find(e => e.child === id);
+        const parentEdge = edges.find((e: DagEdge) => e.child === id);
         const parent = parentEdge?.parent;
 
         if (parent) {
+          // 1. Give all siblings the same Y rank
           const parentRank = chronoRankMap.get(parent) || currentYRank;
-          chronoRankMap.set(id, parentRank + 1);
-
-          if (lastElectionParent !== parent) {
-            lastElectionParent = parent;
-            electionDetailCount = 1;
-          } else {
-            electionDetailCount++;
-          }
-          bandOffsetMap.set(id, electionDetailCount);
-
-          // Track the boundaries for our UX band
           const yRank = parentRank + 1;
-          electionBands.set(yRank, { 
-            y: START_Y + yRank * DEPTH_Y_SPACING, 
-            count: Math.max(electionBands.get(yRank)?.count || 0, electionDetailCount) 
+          chronoRankMap.set(id, yRank);
+
+          // Find ALL siblings of this election round, regardless of chronological interleaving
+          const siblings = edges
+            .filter((e: DagEdge) => e.parent === parent && isElectionDetail(e.child))
+            .map((e: DagEdge) => e.child);
+
+          // Sort siblings by time so they draw left-to-right reliably
+          siblings.sort((a: string, b: string) => (nodeTimestamps.get(a) || 0) - (nodeTimestamps.get(b) || 0));
+
+          // 3. Assign a strict X offset based on sibling array index
+          const offset = siblings.indexOf(id) + 1;
+          bandOffsetMap.set(id, offset);
+
+          // 4. Update the visual bounding box
+          electionBands.set(yRank, {
+            y: START_Y + yRank * DEPTH_Y_SPACING,
+            count: siblings.length
           });
 
         } else {
@@ -223,7 +225,7 @@ export default function DagView({ sessionId }: DagViewProps) {
     const nodeLayouts: NodeLayout[] = sortedNodes.map(id => {
       let currentStatus = (nodeStatus.get(id) || (roots.includes(id) ? 'ROOT' : 'ACTIVE')) as NodeLayout['status'];
       const hasChildren = (childrenOf.get(id) || []).length > 0;
-      
+
       if (currentStatus !== 'ROOT') {
         if (hasChildren || isHalted) {
           currentStatus = 'DONE';
@@ -232,7 +234,7 @@ export default function DagView({ sessionId }: DagViewProps) {
 
       const tier = nodeTiers.get(id) || 0;
       const bandOffset = bandOffsetMap.get(id) || 0;
-      
+
       const x = START_X + (tier * TIERS_X_SPACING) + (bandOffset * 80);
 
       return {
@@ -387,7 +389,7 @@ export default function DagView({ sessionId }: DagViewProps) {
 
               {/* Election Phase Bands */}
               {electionBands.map((band: { y: number; count: number }, i: number) => {
-                const boxWidth = 80 + (band.count * 80); 
+                const boxWidth = 80 + (band.count * 80);
                 return (
                   <g key={`election-band-${i}`}>
                     <rect
