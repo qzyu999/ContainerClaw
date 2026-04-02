@@ -52,7 +52,7 @@ function extractLabel(compoundId: string): string {
 export default function DagView({ sessionId }: DagViewProps) {
   const [edges, setEdges] = useState<DagEdge[]>([]);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
-  
+
   // Navigation state (Pan & Zoom)
   const [viewState, setViewState] = useState({ x: 0, y: 0, scale: 1.0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -89,9 +89,18 @@ export default function DagView({ sessionId }: DagViewProps) {
       nodeSet.add(e.parent);
       nodeSet.add(e.child);
       nodeStatus.set(e.child, e.status);
-      nodeLabels.set(e.parent, e.parent_label || extractLabel(e.parent));
+
+      // Only set the parent label if the bridge explicitly sent one, 
+      // or if we have literally no other name saved for it yet. 
+      // This prevents overwriting a good name with a raw UUID fallback.
+      if (e.parent_label || !nodeLabels.has(e.parent)) {
+        nodeLabels.set(e.parent, e.parent_label || extractLabel(e.parent));
+      }
+
+      // The bridge ALWAYS sends the correct child label, so this safely overwrites 
+      // any UUIDs that might have been temporarily saved when this node was a parent.
       nodeLabels.set(e.child, e.child_label || extractLabel(e.child));
-      
+
       // Inherit/capture timestamps — assume child timestamp is reliable
       if (!nodeTimestamps.has(e.child)) nodeTimestamps.set(e.child, Number(e.ts));
       if (!nodeTimestamps.has(e.parent)) nodeTimestamps.set(e.parent, Number(e.ts) - 500); // Hack for root
@@ -103,36 +112,29 @@ export default function DagView({ sessionId }: DagViewProps) {
     const childSet = new Set(edges.map((e: DagEdge) => e.child));
     const roots = [...nodeSet].filter(n => !childSet.has(n));
 
-    // 1. Assign Tiers (Dimensional Depth) using BFS
+    // 1. Assign Tiers (Dimensional Depth) using Semantic Roles
     const nodeTiers = new Map<string, number>();
-    const visitQueue: { id: string; tier: number }[] = [];
-    roots.forEach(r => visitQueue.push({ id: r, tier: 0 }));
 
-    while (visitQueue.length > 0) {
-      const { id, tier } = visitQueue.shift()!;
-      if (nodeTiers.has(id)) continue;
-      nodeTiers.set(id, tier);
+    nodeSet.forEach(id => {
+      const label = nodeLabels.get(id) || extractLabel(id);
+      const l = label.toLowerCase();
+      const status = nodeStatus.get(id) || (roots.includes(id) ? 'ROOT' : 'ACTIVE');
 
-      const children = childrenOf.get(id) || [];
-      if (children.length === 1) {
-        visitQueue.push({ id: children[0], tier });
-      } else if (children.length > 1) {
-        const mainChild = children.find(c => 
-          (nodeLabels.get(c) || '').toLowerCase().includes('moderator')
-        ) || children[0];
-        visitQueue.push({ id: mainChild, tier });
-        children.filter(c => c !== mainChild).forEach(sub => {
-          visitQueue.push({ id: sub, tier: tier + 1 });
-        });
+      if (status === 'ROOT' || l === 'human' || l === 'checkpoint' || l === 'election' || l.includes('winner') || l === 'task complete') {
+        // Central Orchestration stays on the main timeline
+        nodeTiers.set(id, 0);
+      } else if (l === 'moderator') {
+        // Internal details (Voting rounds, tallies, summaries) go to Tier 1
+        nodeTiers.set(id, 1);
+      } else {
+        // Sub-Agents (Alice, Bob, etc.) or Tools branch all the way out to Tier 2
+        nodeTiers.set(id, 2);
       }
-    }
-
-    // fallback for orphans
-    nodeSet.forEach(n => { if (!nodeTiers.has(n)) nodeTiers.set(n, 0); });
+    });
 
     // 2. Assign Y-Coordinates via Global Chronological Sequence
     const uniqueNodes = Array.from(nodeSet);
-    const sortedNodes = uniqueNodes.sort((a,b) => {
+    const sortedNodes = uniqueNodes.sort((a, b) => {
       const tA = nodeTimestamps.get(a) || 0;
       const tB = nodeTimestamps.get(b) || 0;
       return tA - tB;
@@ -159,9 +161,9 @@ export default function DagView({ sessionId }: DagViewProps) {
       return null;
     }).filter(Boolean);
 
-    return { 
-      nodes: nodeLayouts, 
-      layoutEdges: lEdges as { from: NodeLayout; to: NodeLayout; status: string }[], 
+    return {
+      nodes: nodeLayouts,
+      layoutEdges: lEdges as { from: NodeLayout; to: NodeLayout; status: string }[],
       maxTier: Math.max(0, ...Array.from(nodeTiers.values())),
       maxDepth: sortedNodes.length,
     };
@@ -233,7 +235,7 @@ export default function DagView({ sessionId }: DagViewProps) {
           </div>
         </div>
       ) : (
-        <div 
+        <div
           className="dag-canvas-area"
           ref={containerRef}
           onMouseDown={handleMouseDown}
@@ -327,20 +329,36 @@ export default function DagView({ sessionId }: DagViewProps) {
                     {(node.status === 'ACTIVE' || node.status === 'THINKING') && (
                       <circle cx={node.x} cy={node.y} r={isHovered ? NODE_RADIUS * 1.5 : NODE_RADIUS * 1.3} fill={STATUS_GLOW[node.status]}>
                         {node.status === 'ACTIVE' && (
-                          <animate attributeName="r" values={`${NODE_RADIUS*1.1};${NODE_RADIUS*1.4};${NODE_RADIUS*1.1}`} dur="2s" repeatCount="indefinite" />
+                          <animate attributeName="r" values={`${NODE_RADIUS * 1.1};${NODE_RADIUS * 1.4};${NODE_RADIUS * 1.1}`} dur="2s" repeatCount="indefinite" />
                         )}
                       </circle>
                     )}
 
-                    <circle
-                      cx={node.x}
-                      cy={node.y}
-                      r={isHovered ? NODE_RADIUS * 1.2 : NODE_RADIUS}
-                      fill="#09090b"
-                      stroke={color}
-                      strokeWidth={3}
-                      style={{ transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)' }}
-                    />
+                    {(() => {
+                      const l = node.label.toLowerCase();
+                      const isHuman = l === 'human';
+                      const isModerator = l === 'moderator' || l === 'checkpoint' || l === 'election' || l === 'task complete' || l.includes('winner');
+
+                      const r = isHovered ? NODE_RADIUS * 1.2 : NODE_RADIUS;
+                      const strokeProps = {
+                        fill: "#09090b",
+                        stroke: color,
+                        strokeWidth: 3,
+                        style: { transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)' }
+                      };
+
+                      if (isHuman) {
+                        // Triangle
+                        const points = `${node.x},${node.y - r} ${node.x + r * 1.1},${node.y + r * 0.8} ${node.x - r * 1.1},${node.y + r * 0.8}`;
+                        return <polygon points={points} {...strokeProps} strokeLinejoin="round" />;
+                      } else if (isModerator) {
+                        // Square (with slightly rounded corners)
+                        return <rect x={node.x - r} y={node.y - r} width={r * 2} height={r * 2} rx={8} {...strokeProps} />;
+                      } else {
+                        // Circle (Agents)
+                        return <circle cx={node.x} cy={node.y} r={r} {...strokeProps} />;
+                      }
+                    })()}
 
                     <text
                       x={node.x}
@@ -371,7 +389,7 @@ export default function DagView({ sessionId }: DagViewProps) {
               })}
             </g>
           </svg>
-          
+
           <div className="dag-controls">
             <button onClick={zoomIn} className="dag-btn" title="Zoom In">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -390,7 +408,7 @@ export default function DagView({ sessionId }: DagViewProps) {
                 <path d="M3 3v5h5" />
               </svg>
             </button>
-          <div className="dag-zoom-info">{(viewState.scale * 100).toFixed(0)}%</div>
+            <div className="dag-zoom-info">{(viewState.scale * 100).toFixed(0)}%</div>
           </div>
 
           <div className="dag-legend">
