@@ -116,26 +116,36 @@ class FlussClient:
         Returns:
             A record-batch log scanner ready to poll.
         """
-        scanner = await table.new_scan().create_record_batch_log_scanner()
-        table_path = table.get_table_path()
-        table_info = await self.admin.get_table_info(table_path)
-        num_buckets = table_info.num_buckets
+        try:
+            scanner = await table.new_scan().create_record_batch_log_scanner()
+            table_path = table.get_table_path()
+            table_info = await self.admin.get_table_info(table_path)
+            num_buckets = table_info.num_buckets
 
-        if start_ts and start_ts > 0:
-            # Seek to timestamp: get per-bucket offsets at or after start_ts
-            offsets = await self.admin.list_offsets(
-                table_path,
-                list(range(num_buckets)),
-                fluss.OffsetSpec.timestamp(start_ts),
-            )
-            scanner.subscribe_buckets(offsets)
-        else:
-            # Subscribe from the beginning
-            scanner.subscribe_buckets(
-                {b: fluss.EARLIEST_OFFSET for b in range(num_buckets)}
-            )
+            if start_ts and start_ts > 0:
+                offsets = await self.admin.list_offsets(
+                    table_path,
+                    list(range(num_buckets)),
+                    fluss.OffsetSpec.timestamp(start_ts),
+                )
+                scanner.subscribe_buckets(offsets)
+            else:
+                scanner.subscribe_buckets(
+                    {b: fluss.EARLIEST_OFFSET for b in range(num_buckets)}
+                )
 
-        return scanner
+            return scanner
+        except Exception as e:
+            # SELF-HEALING: If the connection was poisoned by a previous cancellation,
+            # trash the connection, reconnect, and try again seamlessly.
+            if "poisoned" in str(e).lower() or "unexpectedeof" in str(e).lower():
+                print("♻️ [FlussClient] Poisoned connection detected. Self-healing...")
+                await self.connect()
+                
+                # Fetch a fresh table reference from the new connection
+                fresh_table = await self.conn.get_table(table.get_table_path())
+                return await self.create_scanner(fresh_table, start_ts)
+            raise e
 
     @staticmethod
     async def poll_async(scanner, timeout_ms: int = 500):
@@ -150,11 +160,18 @@ class FlussClient:
         Returns:
             list[pa.RecordBatch]: May be empty (timeout, not end-of-stream).
         """
-        batches = await scanner._async_poll_batches(timeout_ms)
-        if not batches:
-            return []
-        # Unwrap Fluss RecordBatch → pyarrow RecordBatch
-        return [b.batch for b in batches]
+        try:
+            # SHIELD THE RUST FUTURE: Because _async_poll_batches is a Rust function, 
+            # it returns a Future, not a coroutine. We use ensure_future to safely wrap it.
+            future = asyncio.ensure_future(scanner._async_poll_batches(timeout_ms))
+            batches = await asyncio.shield(future)
+            
+            if not batches:
+                return []
+            return [b.batch for b in batches]
+        except asyncio.CancelledError:
+            # Python task aborts immediately, but Rust task finishes safely behind the scenes
+            raise
 
     # ── Session CRUD ────────────────────────────────────────────────
 
@@ -192,33 +209,40 @@ class FlussClient:
             list[dict] sorted by last_active_at descending. Each dict has
             session_id, title, created_at, last_active_at.
         """
-        scanner = await self.create_scanner(self.sessions_table)
-        sessions_dict = {}
-        empty_polls = 0
-        while empty_polls < 5:
-            batches = await self.poll_async(scanner, timeout_ms=500)
-            if not batches:
-                empty_polls += 1
-                continue
+        try:
+            scanner = await self.create_scanner(self.sessions_table)
+            sessions_dict = {}
             empty_polls = 0
-            for poll in batches:
-                id_arr = poll["session_id"]
-                title_arr = poll["title"]
-                created_arr = poll["created_at"]
-                active_arr = poll["last_active_at"]
-                for i in range(poll.num_rows):
-                    sid = id_arr[i].as_py()
-                    sessions_dict[sid] = {
-                        "session_id": sid,
-                        "title": title_arr[i].as_py(),
-                        "created_at": int(created_arr[i].as_py()),
-                        "last_active_at": int(active_arr[i].as_py()),
-                    }
-        return sorted(
-            sessions_dict.values(),
-            key=lambda s: s["last_active_at"],
-            reverse=True,
-        )
+            while empty_polls < 5:
+                batches = await self.poll_async(scanner, timeout_ms=500)
+                if not batches:
+                    empty_polls += 1
+                    continue
+                empty_polls = 0
+                for poll in batches:
+                    id_arr = poll["session_id"]
+                    title_arr = poll["title"]
+                    created_arr = poll["created_at"]
+                    active_arr = poll["last_active_at"]
+                    for i in range(poll.num_rows):
+                        sid = id_arr[i].as_py()
+                        sessions_dict[sid] = {
+                            "session_id": sid,
+                            "title": title_arr[i].as_py(),
+                            "created_at": int(created_arr[i].as_py()),
+                            "last_active_at": int(active_arr[i].as_py()),
+                        }
+            return sorted(
+                sessions_dict.values(),
+                key=lambda s: s["last_active_at"],
+                reverse=True,
+            )
+        except Exception as e:
+            if "poisoned" in str(e).lower() or "unexpectedeof" in str(e).lower():
+                print("♻️ [FlussClient] Poisoned connection in list_sessions. Self-healing...")
+                await self.connect()
+                return await self.list_sessions()
+            raise e
 
     async def fetch_history(self, session_id: str) -> list[dict]:
         """Fetch full chat history for a session from the chatroom log.
