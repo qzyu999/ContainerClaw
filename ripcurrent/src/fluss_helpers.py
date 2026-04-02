@@ -21,6 +21,8 @@ CHATROOM_SCHEMA = pa.schema([
     pa.field("tool_name", pa.string()),
     pa.field("tool_success", pa.bool_()),
     pa.field("parent_actor", pa.string()),
+    pa.field("parent_event_id", pa.string()),
+    pa.field("edge_type", pa.string()),
 ])
 
 

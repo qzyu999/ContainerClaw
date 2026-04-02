@@ -218,6 +218,8 @@ class DiscordConnector:
             pa.array([""], pa.string()),
             pa.array([False], pa.bool_()),
             pa.array([""], pa.string()),
+            pa.array([""], pa.string()),
+            pa.array(["ROOT"], pa.string()),
         ], schema=CHATROOM_SCHEMA)
         
         writer = self.chat_table.new_append().create_writer()
