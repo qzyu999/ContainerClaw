@@ -77,9 +77,9 @@ export default function DagView({ sessionId }: DagViewProps) {
   }, [loadDag]);
 
   // ── Chronological Vertical Layout Engine ───────────────────────
-  const { nodes, layoutEdges, maxTier, maxDepth } = useMemo(() => {
+  const { nodes, layoutEdges, electionBands, maxTier, maxDepth } = useMemo(() => {
     if (edges.length === 0) {
-      return { nodes: [], layoutEdges: [], maxTier: 0, maxDepth: 0 };
+      return { nodes: [], layoutEdges: [], electionBands: [], maxTier: 0, maxDepth: 0 };
     }
 
     const nodeSet = new Set<string>();
@@ -135,32 +135,25 @@ export default function DagView({ sessionId }: DagViewProps) {
       }
     });
 
-    // 2. Assign Basic Tiers using Semantic Roles
+    // 2. Assign Basic Tiers using Content Markers (The Simple Way!)
     const nodeTiers = new Map<string, number>();
 
     nodeSet.forEach(id => {
-      const label = nodeLabels.get(id) || extractLabel(id);
-      const l = label.toLowerCase();
       const content = (nodeContent.get(id) || '').toLowerCase();
-      const actor = (nodeActor.get(id) || '').toLowerCase();
-      const status = nodeStatus.get(id) || (roots.includes(id) ? 'ROOT' : 'ACTIVE');
+      
+      // Use our rich metadata tags to spot sub-agent / tool work!
+      const isToolActivity = 
+        content.startsWith('$') || 
+        content.startsWith('🔱') || 
+        content.startsWith('✅') || 
+        content.startsWith('❌') || 
+        content.includes('[tool result') ||
+        content.startsWith('🏁');
 
-      const isOrchestration =
-        status === 'ROOT' ||
-        l === 'human' || actor === 'human' ||
-        l === 'checkpoint' || l === 'election' ||
-        l.includes('winner') || l === 'task complete' ||
-        content.includes('multi-agent system online') ||
-        content.includes('automation halted') || content.includes('/stop');
-
-      if (isOrchestration) {
-        nodeTiers.set(id, 0);
-      } else if (l === 'moderator' || actor === 'moderator') {
-        nodeTiers.set(id, 0); // Keep election details anchored to Tier 0!
+      if (isToolActivity) {
+        nodeTiers.set(id, 1); // Tool execution and subagents go to the Green Lane
       } else {
-        // The winning agent is the main conversational event!
-        // We will reserve Tier 1 and 2 for future Tool Executions.
-        nodeTiers.set(id, 0);
+        nodeTiers.set(id, 0); // Human, Moderator, and Main Agent Output stay on the Central Timeline
       }
     });
 
@@ -185,7 +178,9 @@ export default function DagView({ sessionId }: DagViewProps) {
     };
 
     const chronoRankMap = new Map<string, number>();
-    const bandOffsetMap = new Map<string, number>(); // Tracks precise horizontal shifts
+    const bandOffsetMap = new Map<string, number>(); 
+    const electionBands = new Map<number, { y: number, count: number }>(); // <--- NEW: Tracks the UX bounding boxes
+
     let currentYRank = 0;
     let lastElectionParent: string | null = null;
     let electionDetailCount = 0;
@@ -205,8 +200,15 @@ export default function DagView({ sessionId }: DagViewProps) {
           } else {
             electionDetailCount++;
           }
-          // Mark how many items deep we are in the horizontal cluster
           bandOffsetMap.set(id, electionDetailCount);
+
+          // Track the boundaries for our UX band
+          const yRank = parentRank + 1;
+          electionBands.set(yRank, { 
+            y: START_Y + yRank * DEPTH_Y_SPACING, 
+            count: Math.max(electionBands.get(yRank)?.count || 0, electionDetailCount) 
+          });
+
         } else {
           currentYRank = Math.max(currentYRank, ...Array.from(chronoRankMap.values())) + 1;
           chronoRankMap.set(id, currentYRank);
@@ -221,10 +223,8 @@ export default function DagView({ sessionId }: DagViewProps) {
     const nodeLayouts: NodeLayout[] = sortedNodes.map(id => {
       let currentStatus = (nodeStatus.get(id) || (roots.includes(id) ? 'ROOT' : 'ACTIVE')) as NodeLayout['status'];
       const hasChildren = (childrenOf.get(id) || []).length > 0;
-
+      
       if (currentStatus !== 'ROOT') {
-        // If a node spawned children, it is mathematically in the past. 
-        // If halted, freeze everything.
         if (hasChildren || isHalted) {
           currentStatus = 'DONE';
         }
@@ -232,9 +232,7 @@ export default function DagView({ sessionId }: DagViewProps) {
 
       const tier = nodeTiers.get(id) || 0;
       const bandOffset = bandOffsetMap.get(id) || 0;
-
-      // Central Timeline is at 140px. Subagent Tier 1 is at 420px. 
-      // Election details get a tiny 80px nudge per item to cluster them neatly in the center!
+      
       const x = START_X + (tier * TIERS_X_SPACING) + (bandOffset * 80);
 
       return {
@@ -261,6 +259,7 @@ export default function DagView({ sessionId }: DagViewProps) {
     return {
       nodes: nodeLayouts,
       layoutEdges: lEdges as { from: NodeLayout; to: NodeLayout; status: string }[],
+      electionBands: Array.from(electionBands.values()), // <--- Export the bands to JSX
       maxTier: Math.max(0, ...Array.from(nodeTiers.values())),
       maxDepth: sortedNodes.length,
     };
@@ -381,6 +380,36 @@ export default function DagView({ sessionId }: DagViewProps) {
                       style={{ opacity: 0.8, letterSpacing: '0.1em' }}
                     >
                       {tier === 0 ? 'CENTRAL TIMELINE' : `TIER ${tier}`}
+                    </text>
+                  </g>
+                );
+              })}
+
+              {/* Election Phase Bands */}
+              {electionBands.map((band: { y: number; count: number }, i: number) => {
+                const boxWidth = 80 + (band.count * 80); 
+                return (
+                  <g key={`election-band-${i}`}>
+                    <rect
+                      x={START_X - NODE_RADIUS - 20}
+                      y={band.y - NODE_RADIUS - 30}
+                      width={boxWidth}
+                      height={NODE_RADIUS * 2 + 60}
+                      fill="rgba(255, 255, 255, 0.03)"
+                      stroke="#3f3f46"
+                      strokeWidth={1}
+                      strokeDasharray="4 4"
+                      rx={12}
+                    />
+                    <text
+                      x={START_X - NODE_RADIUS - 10}
+                      y={band.y - NODE_RADIUS - 15}
+                      fill="#a1a1aa"
+                      fontSize={10}
+                      fontWeight={700}
+                      letterSpacing="0.1em"
+                    >
+                      ELECTION PHASE
                     </text>
                   </g>
                 );
