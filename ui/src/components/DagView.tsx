@@ -111,7 +111,13 @@ export default function DagView({ sessionId }: DagViewProps) {
 
       // Inherit/capture timestamps — assume child timestamp is reliable
       if (!nodeTimestamps.has(e.child)) nodeTimestamps.set(e.child, Number(e.ts));
-      if (!nodeTimestamps.has(e.parent)) nodeTimestamps.set(e.parent, Number(e.ts) - 500); // Hack for root
+
+      if (!nodeTimestamps.has(e.parent)) {
+        nodeTimestamps.set(e.parent, Number(e.ts) - 500); // Hack for root
+      } else if (e.parent === 'ROOT') {
+        // Prevent late-arriving /stop commands from dragging ROOT down the timeline!
+        nodeTimestamps.set('ROOT', Math.min(nodeTimestamps.get('ROOT') as number, Number(e.ts) - 500));
+      }
 
       if (!childrenOf.has(e.parent)) childrenOf.set(e.parent, []);
       childrenOf.get(e.parent)!.push(e.child);
@@ -139,10 +145,10 @@ export default function DagView({ sessionId }: DagViewProps) {
       const actor = (nodeActor.get(id) || '').toLowerCase();
       const status = nodeStatus.get(id) || (roots.includes(id) ? 'ROOT' : 'ACTIVE');
 
-      const isOrchestration = 
+      const isOrchestration =
         status === 'ROOT' ||
         l === 'human' || actor === 'human' ||
-        l === 'checkpoint' || l === 'election' || 
+        l === 'checkpoint' || l === 'election' ||
         l.includes('winner') || l === 'task complete' ||
         content.includes('multi-agent system online') ||
         content.includes('automation halted') || content.includes('/stop');
@@ -213,7 +219,7 @@ export default function DagView({ sessionId }: DagViewProps) {
     const nodeLayouts: NodeLayout[] = sortedNodes.map(id => {
       let currentStatus = (nodeStatus.get(id) || (roots.includes(id) ? 'ROOT' : 'ACTIVE')) as NodeLayout['status'];
       const hasChildren = (childrenOf.get(id) || []).length > 0;
-      
+
       if (currentStatus !== 'ROOT') {
         // If a node spawned children, it is mathematically in the past. 
         // If halted, freeze everything.
@@ -224,7 +230,7 @@ export default function DagView({ sessionId }: DagViewProps) {
 
       const tier = nodeTiers.get(id) || 0;
       const bandOffset = bandOffsetMap.get(id) || 0;
-      
+
       // Central Timeline is at 140px. Subagent Tier 1 is at 420px. 
       // Election details get a tiny 80px nudge per item to cluster them neatly in the center!
       const x = START_X + (tier * TIERS_X_SPACING) + (bandOffset * 80);
@@ -435,7 +441,7 @@ export default function DagView({ sessionId }: DagViewProps) {
                     {(() => {
                       const l = node.label.toLowerCase();
                       const actor = (node.actor || '').toLowerCase();
-                      
+
                       const isHuman = l === 'human' || actor === 'human';
                       const isModerator = l === 'moderator' || actor === 'moderator' || l === 'checkpoint' || l === 'election' || l === 'task complete' || l.includes('winner');
 
