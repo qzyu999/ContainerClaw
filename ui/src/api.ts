@@ -201,3 +201,27 @@ export const fetchMetrics = async (sessionId: string): Promise<MetricsWindow[]> 
     return [];
   }
 };
+
+export interface PerspectiveMessage {
+  role: string;
+  content: string;
+}
+
+export const fetchSnorkelPerspective = async (
+  sessionId: string,
+  ts: string,
+  actorId: string
+): Promise<PerspectiveMessage[]> => {
+  try {
+    // Determine the query parameter structure for the backend
+    const params = new URLSearchParams({ ts, actor_id: actorId });
+    const resp = await fetch(`${BRIDGE_URL}/telemetry/snorkel/${sessionId}?${params.toString()}`);
+    const data = await resp.json();
+    if (data.status === 'ok') {
+      return data.perspective || [];
+    }
+    return [];
+  } catch {
+    return [];
+  }
+};

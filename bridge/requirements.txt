@@ -5,3 +5,4 @@ grpcio-tools
 protobuf
 requests
 pyarrow
+pyyaml

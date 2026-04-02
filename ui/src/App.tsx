@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Box, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare, ChevronLeft, ChevronRight, User, Plus, GitBranch, BarChart3, Loader2 } from 'lucide-react';
+import { Box, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare, ChevronLeft, ChevronRight, User, Plus, GitBranch, BarChart3, Loader2, Waves } from 'lucide-react';
 
 import { streamEvents, fetchWorkspace, fetchHistory, fetchSessions, createSession } from './api';
 import type { ActivityEvent, Session } from './api';
@@ -9,10 +9,11 @@ import ConchShellPanel from './components/ConchShellPanel';
 import ProjectBoard from './components/ProjectBoard';
 import DagView from './components/DagView';
 import MetricsView from './components/MetricsView';
+import SnorkelView from './components/SnorkelView';
 
 // No fallback session — all sessions must be dynamic
 
-type TabId = 'chatroom' | 'explorer' | 'dag' | 'metrics';
+type TabId = 'chatroom' | 'explorer' | 'dag' | 'metrics' | 'snorkel';
 
 export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -262,6 +263,13 @@ export default function App() {
               <BarChart3 size={14} />
               <span>Metrics</span>
             </button>
+            <button 
+              className={`tab-item ${activeTab === 'snorkel' ? 'active' : ''}`}
+              onClick={() => setActiveTab('snorkel')}
+            >
+              <Waves size={14} />
+              <span>Snorkel</span>
+            </button>
           </div>
 
           {/* Tab Content */}
@@ -296,6 +304,9 @@ export default function App() {
                 )}
                 {activeTab === 'metrics' && (
                   <MetricsView sessionId={activeSessionId} />
+                )}
+                {activeTab === 'snorkel' && (
+                  <SnorkelView events={events} sessionId={activeSessionId} />
                 )}
               </>
             )}

@@ -4,6 +4,8 @@ import time
 import json
 import queue
 import threading
+import yaml
+from datetime import datetime
 from flask import Flask, Response, request
 from flask_cors import CORS
 import grpc
@@ -548,6 +550,122 @@ def telemetry_metrics(session_id):
     except Exception as e:
         print(f"Bridge: Telemetry Metrics Error: {e}")
         return {"status": "ok", "metrics": []}
+
+async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
+    """Stateless reconstruction of the context window using same logic as agent._format_history"""
+    table = await _get_table("chatroom")
+    if table is None:
+        return []
+
+    # Parse target_ts_str (ISO) to milliseconds
+    try:
+        # Handle decimal precision (some browsers/systems send more/less than 3 digits)
+        ts_clean = target_ts_str.replace('Z', '+00:00')
+        target_ts_ms = int(datetime.fromisoformat(ts_clean).timestamp() * 1000)
+    except Exception as e:
+        print(f"Bridge Snorkel: Timestamp parse error '{target_ts_str}': {e}")
+        return []
+
+    events = []
+    try:
+        import fluss
+        conn = await _ensure_fluss_conn()
+        admin = await conn.get_admin()
+        table_path = fluss.TablePath("containerclaw", "chatroom")
+        table_info = await admin.get_table_info(table_path)
+        num_buckets = table_info.num_buckets
+
+        scanner = await table.new_scan().create_record_batch_log_scanner()
+        scanner.subscribe_buckets({b: fluss.EARLIEST_OFFSET for b in range(num_buckets)})
+
+        for _ in range(20):
+            batches = await scanner._async_poll_batches(500)
+            if not batches:
+                break
+            for record_batch in batches:
+                batch = record_batch.batch
+                sid_arr = batch.column("session_id")
+                ts_arr = batch.column("ts")
+                actor_arr = batch.column("actor_id")
+                type_arr = batch.column("type")
+
+                has_content = "content" in batch.schema.names
+                content_arr = batch.column("content") if has_content else None
+
+                for i in range(batch.num_rows):
+                    if sid_arr[i].as_py() != session_id:
+                        continue
+                    
+                    ts = ts_arr[i].as_py()
+                    # Integer comparison for ms timestamps
+                    if ts > target_ts_ms:
+                        continue
+
+                    raw_content = content_arr[i].as_py() if content_arr else ""
+                    content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else str(raw_content)
+
+                    events.append({
+                        "ts": ts,
+                        "actor_id": actor_arr[i].as_py(),
+                        "type": type_arr[i].as_py(),
+                        "content": content
+                    })
+    except Exception as e:
+        print(f"Bridge: Snorkel scan error: {e}")
+        return []
+
+    config_path = os.path.join(os.path.dirname(__file__), "../..", "config.yaml")
+    max_history = 100
+    persona = "You are a helpful assistant."
+    try:
+        with open(config_path, "r") as f:
+            config_data = yaml.safe_load(f)
+            max_history = config_data.get("agents", {}).get("settings", {}).get("max_history_messages", 100)
+            roster = config_data.get("agents", {}).get("roster", [])
+            for r in roster:
+                if r.get("name") == actor_id:
+                    persona = r.get("persona")
+                    break
+    except Exception as e:
+        print(f"Bridge Snorkel: Config read error: {e}")
+
+    events = sorted(events, key=lambda x: str(x["ts"]))
+    events = events[-max_history:]
+
+    perspective = [{"role": "system", "content": f"You are {actor_id}, participating in a multi-agent chat. Persona: {persona}."}]
+    
+    for msg in events:
+        actor = msg['actor_id']
+        content = msg['content']
+        msg_type = msg['type']
+        
+        role = "assistant" if actor == actor_id else "user"
+        
+        if actor == "Moderator":
+            text = f"[Moderator Note]: {content}"
+        elif role == "user":
+            text = f"{actor}: {content}"
+        else:
+            text = content
+            
+        perspective.append({"role": role, "content": text})
+
+    return perspective
+
+
+@app.route("/telemetry/snorkel/<session_id>")
+def telemetry_snorkel(session_id):
+    ts = request.args.get("ts")
+    actor_id = request.args.get("actor_id")
+    bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
+    if not bootstrap:
+        return {"status": "ok", "perspective": []}
+    try:
+        perspective = _run_async(_lookup_snorkel_perspective(session_id, ts, actor_id))
+        return {"status": "ok", "perspective": perspective}
+    except Exception as e:
+        print(f"Bridge: Telemetry Snorkel Error: {e}")
+        return {"status": "error", "message": str(e)}, 500
 
 
 if __name__ == "__main__":
