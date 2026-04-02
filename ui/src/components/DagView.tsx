@@ -125,12 +125,16 @@ export default function DagView({ sessionId }: DagViewProps) {
     const childSet = new Set(edges.map((e: DagEdge) => e.child));
     const roots = [...nodeSet].filter(n => !childSet.has(n));
 
-    // 1. Check for Halted State
+    // 1. Check for Halted or Completed State
     let isHalted = false;
+    let isCompleted = false;
     nodeContent.forEach((c) => {
       const text = c.toLowerCase();
       if (text.includes('automation halted') || text.includes('/stop')) {
         isHalted = true;
+      }
+      if (text.includes('consensus: task complete')) {
+        isCompleted = true; // Catch natural session finishes!
       }
     });
 
@@ -227,9 +231,19 @@ export default function DagView({ sessionId }: DagViewProps) {
     const nodeLayouts: NodeLayout[] = sortedNodes.map(id => {
       let currentStatus = (nodeStatus.get(id) || (roots.includes(id) ? 'ROOT' : 'ACTIVE')) as NodeLayout['status'];
       const hasChildren = (childrenOf.get(id) || []).length > 0;
+      const content = (nodeContent.get(id) || '').toLowerCase();
 
       if (currentStatus !== 'ROOT') {
-        if (hasChildren || isHalted) {
+        // These are informational dead-ends. They should never glow, even if they are leaves!
+        const isSystemLog =
+          content.includes('[tool result') ||
+          content.includes('🏁 subagent completed') ||
+          content.includes('election summary:') ||
+          content.includes('tally:') ||
+          content.startsWith('✅');
+
+        // If it has children, is halted, is completed naturally, or is a system log -> gray it out.
+        if (hasChildren || isHalted || isCompleted || isSystemLog) {
           currentStatus = 'DONE';
         }
       }
