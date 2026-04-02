@@ -39,12 +39,13 @@ const TIER_COLORS = [
   'rgba(192, 132, 252, 0.05)',  // Tier 3+ — purple
 ];
 
-// Spacing constants for Vertical Spacetime
-const TIERS_X_SPACING = 280;   // Distance between vertical lanes
-const DEPTH_Y_SPACING = 160;   // Vertical movement forward in time
+// Spacing constants for Horizontal Spacetime
+const DEPTH_X_SPACING = 240;   // Horizontal movement forward in time
+const TIERS_Y_SPACING = 400;   // Vertical movement down into sub-tiers
 const START_X = 140;
-const START_Y = 120;
+const START_Y = 160;
 const NODE_RADIUS = 32;
+const ELECTION_Y_STAGGER = 110; // Vertical gap between election nodes
 
 function extractLabel(compoundId: string): string {
   const pipeIdx = compoundId.indexOf('|');
@@ -76,7 +77,7 @@ export default function DagView({ sessionId }: DagViewProps) {
     return () => clearInterval(interval);
   }, [loadDag]);
 
-  // ── Chronological Vertical Layout Engine ───────────────────────
+  // ── Horizontal Layout Engine ─────────────────────────────────────
   const { nodes, layoutEdges, electionBands, maxTier, maxDepth } = useMemo(() => {
     if (edges.length === 0) {
       return { nodes: [], layoutEdges: [], electionBands: [], maxTier: 0, maxDepth: 0 };
@@ -95,15 +96,9 @@ export default function DagView({ sessionId }: DagViewProps) {
       nodeSet.add(e.child);
       nodeStatus.set(e.child, e.status);
 
-      // Only set the parent label if the bridge explicitly sent one, 
-      // or if we have literally no other name saved for it yet. 
-      // This prevents overwriting a good name with a raw UUID fallback.
       if (e.parent_label || !nodeLabels.has(e.parent)) {
         nodeLabels.set(e.parent, e.parent_label || extractLabel(e.parent));
       }
-
-      // The bridge ALWAYS sends the correct child label, so this safely overwrites 
-      // any UUIDs that might have been temporarily saved when this node was a parent.
       nodeLabels.set(e.child, e.child_label || extractLabel(e.child));
 
       if (e.content) nodeContent.set(e.child, e.content);
@@ -111,7 +106,6 @@ export default function DagView({ sessionId }: DagViewProps) {
 
       nodeTimestamps.set(e.child, Number(e.ts));
 
-      // Only guess for parents we haven't seen yet
       if (!nodeTimestamps.has(e.parent)) {
         nodeTimestamps.set(e.parent, Number(e.ts) - 500);
       } else if (e.parent === 'ROOT') {
@@ -134,35 +128,33 @@ export default function DagView({ sessionId }: DagViewProps) {
         isHalted = true;
       }
       if (text.includes('consensus: task complete')) {
-        isCompleted = true; // Catch natural session finishes!
+        isCompleted = true;
       }
     });
 
-    // 2. Assign Basic Tiers (Strict Orchestration vs Tools)
+    // 2. Assign Basic Tiers
     const nodeTiers = new Map<string, number>();
 
     nodeSet.forEach(id => {
       const content = (nodeContent.get(id) || '').toLowerCase();
       const actor = (nodeActor.get(id) || '').toLowerCase();
 
-      // Push system tool logs to Tier 1
       const isToolExecution =
         (content.includes('🔱 spawned subagent') ||
           content.includes('🏁 subagent completed') ||
           content.includes('[tool result'))
         && actor === 'moderator';
 
-      // Push actual subagent thoughts/actions to Tier 1
       const isSubagent = actor.startsWith('sub/');
 
       if (isToolExecution || isSubagent) {
-        nodeTiers.set(id, 1); // System logs and subagents go to the Green Lane
+        nodeTiers.set(id, 1);
       } else {
-        nodeTiers.set(id, 0); // Human, Alice, and Moderator stay on Central Timeline
+        nodeTiers.set(id, 0);
       }
     });
 
-    // 3. Assign Y-Coordinates and Horizontal Banding
+    // 3. Assign X-Coordinates (Time) and Vertical Stacking (Y-Offset)
     const uniqueNodes = Array.from(nodeSet);
     const sortedNodes = uniqueNodes.sort((a, b) => {
       const tA = nodeTimestamps.get(a) || 0;
@@ -184,9 +176,9 @@ export default function DagView({ sessionId }: DagViewProps) {
 
     const chronoRankMap = new Map<string, number>();
     const bandOffsetMap = new Map<string, number>();
-    const electionBands = new Map<number, { y: number, count: number }>();
+    const electionBands = new Map<number, { x: number, count: number }>();
 
-    let currentYRank = 0;
+    let currentXRank = 0;
 
     sortedNodes.forEach(id => {
       if (isElectionDetail(id)) {
@@ -194,37 +186,32 @@ export default function DagView({ sessionId }: DagViewProps) {
         const parent = parentEdge?.parent;
 
         if (parent) {
-          // 1. Give all siblings the same Y rank
-          const parentRank = chronoRankMap.get(parent) || currentYRank;
-          const yRank = parentRank + 1;
-          chronoRankMap.set(id, yRank);
+          const parentRank = chronoRankMap.get(parent) || currentXRank;
+          const xRank = parentRank + 1; // Push to next time column
+          chronoRankMap.set(id, xRank);
 
-          // Find ALL siblings of this election round, regardless of chronological interleaving
           const siblings = edges
             .filter((e: DagEdge) => e.parent === parent && isElectionDetail(e.child))
             .map((e: DagEdge) => e.child);
 
-          // Sort siblings by time so they draw left-to-right reliably
           siblings.sort((a: string, b: string) => (nodeTimestamps.get(a) || 0) - (nodeTimestamps.get(b) || 0));
 
-          // 3. Assign a strict X offset based on sibling array index
-          const offset = siblings.indexOf(id) + 1;
+          const offset = siblings.indexOf(id); // 0-based index for vertical drop
           bandOffsetMap.set(id, offset);
 
-          // 4. Update the visual bounding box
-          electionBands.set(yRank, {
-            y: START_Y + yRank * DEPTH_Y_SPACING,
+          electionBands.set(xRank, {
+            x: START_X + xRank * DEPTH_X_SPACING,
             count: siblings.length
           });
 
         } else {
-          currentYRank = Math.max(currentYRank, ...Array.from(chronoRankMap.values())) + 1;
-          chronoRankMap.set(id, currentYRank);
+          currentXRank = Math.max(currentXRank, ...Array.from(chronoRankMap.values())) + 1;
+          chronoRankMap.set(id, currentXRank);
         }
       } else {
         const maxRankSoFar = chronoRankMap.size > 0 ? Math.max(...Array.from(chronoRankMap.values())) : -1;
-        currentYRank = maxRankSoFar + 1;
-        chronoRankMap.set(id, currentYRank);
+        currentXRank = maxRankSoFar + 1;
+        chronoRankMap.set(id, currentXRank);
       }
     });
 
@@ -234,7 +221,6 @@ export default function DagView({ sessionId }: DagViewProps) {
       const content = (nodeContent.get(id) || '').toLowerCase();
 
       if (currentStatus !== 'ROOT') {
-        // These are informational dead-ends. They should never glow, even if they are leaves!
         const isSystemLog =
           content.includes('[tool result') ||
           content.includes('🏁 subagent completed') ||
@@ -242,7 +228,6 @@ export default function DagView({ sessionId }: DagViewProps) {
           content.includes('tally:') ||
           content.startsWith('✅');
 
-        // If it has children, is halted, is completed naturally, or is a system log -> gray it out.
         if (hasChildren || isHalted || isCompleted || isSystemLog) {
           currentStatus = 'DONE';
         }
@@ -251,14 +236,16 @@ export default function DagView({ sessionId }: DagViewProps) {
       const tier = nodeTiers.get(id) || 0;
       const bandOffset = bandOffsetMap.get(id) || 0;
 
-      const x = START_X + (tier * TIERS_X_SPACING) + (bandOffset * 80);
+      // X handles Time, Y handles Tier + Stack Offset
+      const x = START_X + (chronoRankMap.get(id) || 0) * DEPTH_X_SPACING;
+      const y = START_Y + (tier * TIERS_Y_SPACING) + (bandOffset * ELECTION_Y_STAGGER);
 
       return {
         id,
         label: nodeLabels.get(id) || extractLabel(id),
         tier,
         x,
-        y: START_Y + (chronoRankMap.get(id) || 0) * DEPTH_Y_SPACING,
+        y,
         ts: nodeTimestamps.get(id) || 0,
         status: currentStatus,
         content: nodeContent.get(id),
@@ -277,7 +264,7 @@ export default function DagView({ sessionId }: DagViewProps) {
     return {
       nodes: nodeLayouts,
       layoutEdges: lEdges as { from: NodeLayout; to: NodeLayout; status: string }[],
-      electionBands: Array.from(electionBands.values()), // <--- Export the bands to JSX
+      electionBands: Array.from(electionBands.values()),
       maxTier: Math.max(0, ...Array.from(nodeTiers.values())),
       maxDepth: sortedNodes.length,
     };
@@ -345,7 +332,7 @@ export default function DagView({ sessionId }: DagViewProps) {
           </svg>
           <div className="dag-empty-title">Waiting for Stream...</div>
           <div className="dag-empty-sub">
-            The Spacetime DAG will populate top to down as activities occur.
+            The Spacetime DAG will populate as activities occur.
           </div>
         </div>
       ) : (
@@ -358,9 +345,9 @@ export default function DagView({ sessionId }: DagViewProps) {
           onMouseLeave={handleMouseUp}
           onWheel={handleWheel}
           onClick={() => setSelectedNodeId(null)}
-          style={{ cursor: isDragging ? 'grabbing' : 'grab', height: '800px' }}
+          style={{ cursor: isDragging ? 'grabbing' : 'grab', height: '100%', minHeight: '800px' }}
         >
-          <svg width="100%" height="100%" className="dag-svg-root">
+          <svg width="100%" height="100%" className="dag-svg-root" style={{ minHeight: '800px' }}>
             <defs>
               <marker id="arrowhead" markerWidth="10" markerHeight="8" refX="10" refY="4" orient="auto">
                 <polygon points="0 0, 10 4, 0 8" fill="#52525b" />
@@ -374,27 +361,27 @@ export default function DagView({ sessionId }: DagViewProps) {
             </defs>
 
             <g transform={`translate(${viewState.x}, ${viewState.y}) scale(${viewState.scale})`}>
-              {/* Vertical Tier Lanes */}
+              {/* Horizontal Tier Lanes */}
               {Array.from({ length: maxTier + 1 }, (_, tier) => {
-                const laneX = START_X + tier * TIERS_X_SPACING;
-                const laneHeight = Math.max(1400, (maxDepth + 5) * DEPTH_Y_SPACING);
+                const laneY = START_Y + tier * TIERS_Y_SPACING;
+                const laneWidth = Math.max(2000, (maxDepth + 5) * DEPTH_X_SPACING);
                 return (
                   <g key={`tier-lane-${tier}`}>
                     <rect
-                      x={laneX - 100}
-                      y={0}
-                      width={200}
-                      height={laneHeight}
+                      x={0}
+                      y={laneY - 80}
+                      width={laneWidth}
+                      height={160}
                       fill={TIER_COLORS[Math.min(tier, TIER_COLORS.length - 1)]}
                       rx={16}
                     />
                     <text
-                      x={laneX}
-                      y={60}
+                      x={40}
+                      y={laneY - 50}
                       fill="#71717a"
                       fontSize={14}
                       fontWeight={700}
-                      textAnchor="middle"
+                      textAnchor="start"
                       style={{ opacity: 0.8, letterSpacing: '0.1em' }}
                     >
                       {tier === 0 ? 'CENTRAL TIMELINE' : `TIER ${tier}`}
@@ -403,16 +390,16 @@ export default function DagView({ sessionId }: DagViewProps) {
                 );
               })}
 
-              {/* Election Phase Bands */}
-              {electionBands.map((band: { y: number; count: number }, i: number) => {
-                const boxWidth = 80 + (band.count * 80);
+              {/* Vertical Election Phase Bands */}
+              {electionBands.map((band: { x: number; count: number }, i: number) => {
+                const boxHeight = NODE_RADIUS * 2 + 60 + ((band.count - 1) * ELECTION_Y_STAGGER);
                 return (
                   <g key={`election-band-${i}`}>
                     <rect
-                      x={START_X - NODE_RADIUS - 20}
-                      y={band.y - NODE_RADIUS - 30}
-                      width={boxWidth}
-                      height={NODE_RADIUS * 2 + 60}
+                      x={band.x - NODE_RADIUS - 20}
+                      y={START_Y - NODE_RADIUS - 30}
+                      width={NODE_RADIUS * 2 + 40}
+                      height={boxHeight}
                       fill="rgba(255, 255, 255, 0.03)"
                       stroke="#3f3f46"
                       strokeWidth={1}
@@ -420,14 +407,15 @@ export default function DagView({ sessionId }: DagViewProps) {
                       rx={12}
                     />
                     <text
-                      x={START_X - NODE_RADIUS - 10}
-                      y={band.y - NODE_RADIUS - 15}
+                      x={band.x}
+                      y={START_Y - NODE_RADIUS - 40}
                       fill="#a1a1aa"
                       fontSize={10}
                       fontWeight={700}
                       letterSpacing="0.1em"
+                      textAnchor="middle"
                     >
-                      ELECTION PHASE
+                      ELECTION
                     </text>
                   </g>
                 );
@@ -437,17 +425,21 @@ export default function DagView({ sessionId }: DagViewProps) {
               {layoutEdges.map((edge, i) => {
                 const isSpawn = edge.from.tier !== edge.to.tier;
                 const isActive = edge.status === 'ACTIVE';
-                const dy = edge.to.y - edge.from.y;
+                const dx = edge.to.x - edge.from.x;
 
-                // Hide extremely long ROOT edges (e.g. human /stop command crossing the whole graph)
-                if (edge.from.id === 'ROOT' && dy > DEPTH_Y_SPACING * 2) return null;
+                // Hide extremely long ROOT edges
+                if (edge.from.id === 'ROOT' && dx > DEPTH_X_SPACING * 2) return null;
 
-                // Bezier for spawns and long causal links
-                const cp1y = edge.from.y + dy * 0.4;
-                const cp2y = edge.from.y + dy * 0.6;
-                const cp1x = edge.from.x;
-                const cp2x = edge.to.x;
-                const d = `M ${edge.from.x} ${edge.from.y + NODE_RADIUS} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${edge.to.x} ${edge.to.y - NODE_RADIUS}`;
+                // Bezier curves adjusted for Left-to-Right flow
+                const cp1x = edge.from.x + dx * 0.4;
+                const cp2x = edge.from.x + dx * 0.6;
+                const cp1y = edge.from.y;
+                const cp2y = edge.to.y;
+
+                const startX = edge.from.x + NODE_RADIUS;
+                const endX = edge.to.x - NODE_RADIUS;
+
+                const d = `M ${startX} ${edge.from.y} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${endX} ${edge.to.y}`;
 
                 return (
                   <path
@@ -503,23 +495,20 @@ export default function DagView({ sessionId }: DagViewProps) {
                       };
 
                       if (isHuman) {
-                        // Triangle
-                        const points = `${node.x},${node.y - r} ${node.x + r * 1.1},${node.y + r * 0.8} ${node.x - r * 1.1},${node.y + r * 0.8}`;
+                        // Triangle now pointing RIGHT to match time flow
+                        const points = `${node.x - r * 0.6},${node.y - r * 0.9} ${node.x + r},${node.y} ${node.x - r * 0.6},${node.y + r * 0.9}`;
                         return <polygon points={points} {...strokeProps} strokeLinejoin="round" />;
                       } else if (isModerator) {
-                        // Square (with slightly rounded corners)
                         return <rect x={node.x - r} y={node.y - r} width={r * 2} height={r * 2} rx={8} {...strokeProps} />;
                       } else {
-                        // Circle (Agents)
                         return <circle cx={node.x} cy={node.y} r={r} {...strokeProps} />;
                       }
                     })()}
 
                     <text
                       x={node.x}
-                      y={node.y}
+                      y={node.y + NODE_RADIUS + 20}
                       textAnchor="middle"
-                      dominantBaseline="central"
                       fill={color}
                       fontSize={isHovered ? 14 : 11}
                       fontWeight={700}
@@ -530,7 +519,7 @@ export default function DagView({ sessionId }: DagViewProps) {
 
                     <text
                       x={node.x}
-                      y={node.y + NODE_RADIUS + 25}
+                      y={node.y + NODE_RADIUS + 34}
                       textAnchor="middle"
                       fill="#a1a1aa"
                       fontSize={10}
