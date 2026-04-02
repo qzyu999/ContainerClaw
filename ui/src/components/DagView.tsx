@@ -483,7 +483,7 @@ export default function DagView({ sessionId }: DagViewProps) {
                       const l = node.label.toLowerCase();
                       const actor = (node.actor || '').toLowerCase();
 
-                      const isHuman = l === 'human' || actor === 'human';
+                      const isHuman = l === 'human' || actor === 'human' || actor.startsWith('discord/');
                       const isModerator = l === 'moderator' || actor === 'moderator' || l === 'checkpoint' || l === 'election' || l === 'task complete' || l.includes('winner');
 
                       const r = isHovered ? NODE_RADIUS * 1.2 : NODE_RADIUS;
