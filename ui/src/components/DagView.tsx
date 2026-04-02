@@ -112,7 +112,7 @@ export default function DagView({ sessionId }: DagViewProps) {
     const childSet = new Set(edges.map((e: DagEdge) => e.child));
     const roots = [...nodeSet].filter(n => !childSet.has(n));
 
-    // 1. Assign Tiers (Dimensional Depth) using Semantic Roles
+    // 1. Assign Basic Tiers using Semantic Roles
     const nodeTiers = new Map<string, number>();
 
     nodeSet.forEach(id => {
@@ -121,18 +121,15 @@ export default function DagView({ sessionId }: DagViewProps) {
       const status = nodeStatus.get(id) || (roots.includes(id) ? 'ROOT' : 'ACTIVE');
 
       if (status === 'ROOT' || l === 'human' || l === 'checkpoint' || l === 'election' || l.includes('winner') || l === 'task complete') {
-        // Central Orchestration stays on the main timeline
         nodeTiers.set(id, 0);
       } else if (l === 'moderator') {
-        // Internal details (Voting rounds, tallies, summaries) go to Tier 1
-        nodeTiers.set(id, 1);
+        nodeTiers.set(id, 1); // Will be overwritten for banded items
       } else {
-        // Sub-Agents (Alice, Bob, etc.) or Tools branch all the way out to Tier 2
         nodeTiers.set(id, 2);
       }
     });
 
-    // 2. Assign Y-Coordinates via Global Chronological Sequence
+    // 2. Assign Y-Coordinates and Horizontal Banding
     const uniqueNodes = Array.from(nodeSet);
     const sortedNodes = uniqueNodes.sort((a, b) => {
       const tA = nodeTimestamps.get(a) || 0;
@@ -140,8 +137,56 @@ export default function DagView({ sessionId }: DagViewProps) {
       return tA - tB;
     });
 
+    // Helper: Identify if a node is an internal voting detail
+    const isElectionDetail = (id: string) => {
+      const parentEdge = edges.find(e => e.child === id);
+      if (!parentEdge) return false;
+
+      const parentLabel = (nodeLabels.get(parentEdge.parent) || '').toLowerCase();
+      const childLabel = (nodeLabels.get(id) || '').toLowerCase();
+
+      // If my parent is 'Election', and I am NOT a 'Winner' or 'Task Complete'
+      return parentLabel === 'election'
+        && !childLabel.includes('winner')
+        && childLabel !== 'task complete';
+    };
+
     const chronoRankMap = new Map<string, number>();
-    sortedNodes.forEach((id, index) => chronoRankMap.set(id, index));
+    let currentYRank = 0;
+    let lastElectionParent: string | null = null;
+    let electionDetailCount = 0;
+
+    sortedNodes.forEach(id => {
+      if (isElectionDetail(id)) {
+        const parentEdge = edges.find(e => e.child === id);
+        const parent = parentEdge?.parent;
+
+        if (parent) {
+          const parentRank = chronoRankMap.get(parent) || currentYRank;
+
+          // Freeze the Y-coordinate to exactly 1 step below the Election Start
+          chronoRankMap.set(id, parentRank + 1);
+
+          if (lastElectionParent !== parent) {
+            lastElectionParent = parent;
+            electionDetailCount = 1;
+          } else {
+            electionDetailCount++;
+          }
+
+          // Fan out horizontally on the X-axis (Tier 1, Tier 2, Tier 3)
+          nodeTiers.set(id, electionDetailCount);
+        } else {
+          currentYRank = Math.max(currentYRank, ...Array.from(chronoRankMap.values())) + 1;
+          chronoRankMap.set(id, currentYRank);
+        }
+      } else {
+        // Main timeline node (or subagent). Drops below everything drawn so far.
+        const maxRankSoFar = chronoRankMap.size > 0 ? Math.max(...Array.from(chronoRankMap.values())) : -1;
+        currentYRank = maxRankSoFar + 1;
+        chronoRankMap.set(id, currentYRank);
+      }
+    });
 
     const nodeLayouts: NodeLayout[] = sortedNodes.map(id => ({
       id,
