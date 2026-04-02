@@ -592,6 +592,7 @@ export default function DagView({ sessionId }: DagViewProps) {
               </svg>
               <span>Moderator</span>
             </div>
+            {/* Agent shape */}
             <div className="dag-legend-item" style={{ opacity: 0.6 }}>
               <svg width="14" height="14" style={{ marginRight: '6px' }}>
                 <circle cx="7" cy="7" r="6" fill="none" stroke="#a1a1aa" strokeWidth="2" />
@@ -600,37 +601,34 @@ export default function DagView({ sessionId }: DagViewProps) {
             </div>
           </div>
         </div>
+      )}
+
+      {selectedNodeId && (
+        <div className="dag-metadata-panel" onClick={(e) => e.stopPropagation()}>
+          {(() => {
+            const n = nodes.find(n => n.id === selectedNodeId);
+            if (!n) return null;
+            return (
+              <>
+                <div className="dag-metadata-header">
+                  <h3>{n.label}</h3>
+                  <button onClick={() => setSelectedNodeId(null)}>✕</button>
+                </div>
+                <div className="dag-metadata-body">
+                  <div className="meta-row"><strong>Actor:</strong> {n.actor || 'System'}</div>
+                  <div className="meta-row"><strong>Status:</strong> {n.status}</div>
+                  <div className="meta-row"><strong>Time:</strong> {new Date(n.ts).toLocaleTimeString()}</div>
+                  <div className="meta-row"><strong>Event ID:</strong> <span className="mono">{n.id.split('-')[0]}...</span></div>
+                  <div className="meta-content">
+                    <strong>Content:</strong>
+                    <pre>{n.content || 'No content available.'}</pre>
+                  </div>
+                </div>
+              </>
+            );
+          })()}
         </div>
-  )
-}
-{
-  selectedNodeId && (
-    <div className="dag-metadata-panel" onClick={(e) => e.stopPropagation()}>
-      {(() => {
-        const n = nodes.find(n => n.id === selectedNodeId);
-        if (!n) return null;
-        return (
-          <>
-            <div className="dag-metadata-header">
-              <h3>{n.label}</h3>
-              <button onClick={() => setSelectedNodeId(null)}>✕</button>
-            </div>
-            <div className="dag-metadata-body">
-              <div className="meta-row"><strong>Actor:</strong> {n.actor || 'System'}</div>
-              <div className="meta-row"><strong>Status:</strong> {n.status}</div>
-              <div className="meta-row"><strong>Time:</strong> {new Date(n.ts).toLocaleTimeString()}</div>
-              <div className="meta-row"><strong>Event ID:</strong> <span className="mono">{n.id.split('-')[0]}...</span></div>
-              <div className="meta-content">
-                <strong>Content:</strong>
-                <pre>{n.content || 'No content available.'}</pre>
-              </div>
-            </div>
-          </>
-        );
-      })()}
+      )}
     </div>
-  )
-}
-    </div >
   );
 }
