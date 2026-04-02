@@ -126,11 +126,25 @@ export default function DagView({ sessionId }: DagViewProps) {
     nodeSet.forEach(id => {
       const label = nodeLabels.get(id) || extractLabel(id);
       const l = label.toLowerCase();
+      const content = (nodeContent.get(id) || '').toLowerCase();
+      const actor = (nodeActor.get(id) || '').toLowerCase();
       const status = nodeStatus.get(id) || (roots.includes(id) ? 'ROOT' : 'ACTIVE');
 
-      if (status === 'ROOT' || l === 'human' || l === 'checkpoint' || l === 'election' || l.includes('winner') || l === 'task complete') {
+      const isOrchestration = 
+        status === 'ROOT' ||
+        l === 'human' || 
+        actor === 'human' ||
+        l === 'checkpoint' || 
+        l === 'election' || 
+        l.includes('winner') || 
+        l === 'task complete' ||
+        content.includes('multi-agent system online') ||
+        content.includes('automation halted') ||
+        content.includes('/stop');
+
+      if (isOrchestration) {
         nodeTiers.set(id, 0);
-      } else if (l === 'moderator') {
+      } else if (l === 'moderator' || actor === 'moderator') {
         nodeTiers.set(id, 1); // Will be overwritten for banded items
       } else {
         nodeTiers.set(id, 2);
@@ -153,7 +167,6 @@ export default function DagView({ sessionId }: DagViewProps) {
       const parentLabel = (nodeLabels.get(parentEdge.parent) || '').toLowerCase();
       const childLabel = (nodeLabels.get(id) || '').toLowerCase();
 
-      // If my parent is 'Election', and I am NOT a 'Winner' or 'Task Complete'
       return parentLabel === 'election'
         && !childLabel.includes('winner')
         && childLabel !== 'task complete';
@@ -171,8 +184,6 @@ export default function DagView({ sessionId }: DagViewProps) {
 
         if (parent) {
           const parentRank = chronoRankMap.get(parent) || currentYRank;
-
-          // Freeze the Y-coordinate to exactly 1 step below the Election Start
           chronoRankMap.set(id, parentRank + 1);
 
           if (lastElectionParent !== parent) {
@@ -181,32 +192,45 @@ export default function DagView({ sessionId }: DagViewProps) {
           } else {
             electionDetailCount++;
           }
-
-          // Fan out horizontally on the X-axis (Tier 1, Tier 2, Tier 3)
           nodeTiers.set(id, electionDetailCount);
         } else {
           currentYRank = Math.max(currentYRank, ...Array.from(chronoRankMap.values())) + 1;
           chronoRankMap.set(id, currentYRank);
         }
       } else {
-        // Main timeline node (or subagent). Drops below everything drawn so far.
         const maxRankSoFar = chronoRankMap.size > 0 ? Math.max(...Array.from(chronoRankMap.values())) : -1;
         currentYRank = maxRankSoFar + 1;
         chronoRankMap.set(id, currentYRank);
       }
     });
 
-    const nodeLayouts: NodeLayout[] = sortedNodes.map(id => ({
-      id,
-      label: nodeLabels.get(id) || extractLabel(id),
-      tier: nodeTiers.get(id) || 0,
-      x: START_X + (nodeTiers.get(id) || 0) * TIERS_X_SPACING,
-      y: START_Y + (chronoRankMap.get(id) || 0) * DEPTH_Y_SPACING,
-      ts: nodeTimestamps.get(id) || 0,
-      status: (nodeStatus.get(id) || (roots.includes(id) ? 'ROOT' : 'ACTIVE')) as NodeLayout['status'],
-      content: nodeContent.get(id),
-      actor: nodeActor.get(id),
-    }));
+    const isHalted = Array.from(nodeContent.values()).some(c => 
+      c.toLowerCase().includes('automation halted') || c.toLowerCase().includes('/stop')
+    );
+
+    const nodeLayouts: NodeLayout[] = sortedNodes.map(id => {
+      let currentStatus = (nodeStatus.get(id) || (roots.includes(id) ? 'ROOT' : 'ACTIVE')) as NodeLayout['status'];
+      const hasChildren = (childrenOf.get(id) || []).length > 0;
+      
+      if (currentStatus !== 'ROOT') {
+        // If a node has children, it's in the past. If halted, everything stops.
+        if (hasChildren || isHalted) {
+          currentStatus = 'DONE';
+        }
+      }
+
+      return {
+        id,
+        label: nodeLabels.get(id) || extractLabel(id),
+        tier: nodeTiers.get(id) || 0,
+        x: START_X + (nodeTiers.get(id) || 0) * TIERS_X_SPACING,
+        y: START_Y + (chronoRankMap.get(id) || 0) * DEPTH_Y_SPACING,
+        ts: nodeTimestamps.get(id) || 0,
+        status: currentStatus,
+        content: nodeContent.get(id),
+        actor: nodeActor.get(id),
+      };
+    });
 
     const lMap = new Map(nodeLayouts.map(n => [n.id, n]));
     const lEdges = edges.map((e: DagEdge) => {
@@ -350,6 +374,9 @@ export default function DagView({ sessionId }: DagViewProps) {
                 const isActive = edge.status === 'ACTIVE';
                 const dy = edge.to.y - edge.from.y;
 
+                // Hide extremely long ROOT edges (e.g. human /stop command crossing the whole graph)
+                if (edge.from.id === 'ROOT' && dy > DEPTH_Y_SPACING * 2) return null;
+
                 // Bezier for spawns and long causal links
                 const cp1y = edge.from.y + dy * 0.4;
                 const cp2y = edge.from.y + dy * 0.6;
@@ -397,8 +424,10 @@ export default function DagView({ sessionId }: DagViewProps) {
 
                     {(() => {
                       const l = node.label.toLowerCase();
-                      const isHuman = l === 'human';
-                      const isModerator = l === 'moderator' || l === 'checkpoint' || l === 'election' || l === 'task complete' || l.includes('winner');
+                      const actor = (node.actor || '').toLowerCase();
+                      
+                      const isHuman = l === 'human' || actor === 'human';
+                      const isModerator = l === 'moderator' || actor === 'moderator' || l === 'checkpoint' || l === 'election' || l === 'task complete' || l.includes('winner');
 
                       const r = isHovered ? NODE_RADIUS * 1.2 : NODE_RADIUS;
                       const strokeProps = {
