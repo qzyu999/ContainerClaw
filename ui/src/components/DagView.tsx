@@ -120,7 +120,16 @@ export default function DagView({ sessionId }: DagViewProps) {
     const childSet = new Set(edges.map((e: DagEdge) => e.child));
     const roots = [...nodeSet].filter(n => !childSet.has(n));
 
-    // 1. Assign Basic Tiers using Semantic Roles
+    // 1. Check for Halted State
+    let isHalted = false;
+    nodeContent.forEach((c) => {
+      const text = c.toLowerCase();
+      if (text.includes('automation halted') || text.includes('/stop')) {
+        isHalted = true;
+      }
+    });
+
+    // 2. Assign Basic Tiers using Semantic Roles
     const nodeTiers = new Map<string, number>();
 
     nodeSet.forEach(id => {
@@ -132,26 +141,22 @@ export default function DagView({ sessionId }: DagViewProps) {
 
       const isOrchestration = 
         status === 'ROOT' ||
-        l === 'human' || 
-        actor === 'human' ||
-        l === 'checkpoint' || 
-        l === 'election' || 
-        l.includes('winner') || 
-        l === 'task complete' ||
+        l === 'human' || actor === 'human' ||
+        l === 'checkpoint' || l === 'election' || 
+        l.includes('winner') || l === 'task complete' ||
         content.includes('multi-agent system online') ||
-        content.includes('automation halted') ||
-        content.includes('/stop');
+        content.includes('automation halted') || content.includes('/stop');
 
       if (isOrchestration) {
         nodeTiers.set(id, 0);
       } else if (l === 'moderator' || actor === 'moderator') {
-        nodeTiers.set(id, 1); // Will be overwritten for banded items
+        nodeTiers.set(id, 0); // Keep election details anchored to Tier 0!
       } else {
-        nodeTiers.set(id, 2);
+        nodeTiers.set(id, 1); // Sub-agents (Alice) go to Tier 1, not Tier 2!
       }
     });
 
-    // 2. Assign Y-Coordinates and Horizontal Banding
+    // 3. Assign Y-Coordinates and Horizontal Banding
     const uniqueNodes = Array.from(nodeSet);
     const sortedNodes = uniqueNodes.sort((a, b) => {
       const tA = nodeTimestamps.get(a) || 0;
@@ -159,7 +164,6 @@ export default function DagView({ sessionId }: DagViewProps) {
       return tA - tB;
     });
 
-    // Helper: Identify if a node is an internal voting detail
     const isElectionDetail = (id: string) => {
       const parentEdge = edges.find(e => e.child === id);
       if (!parentEdge) return false;
@@ -173,6 +177,7 @@ export default function DagView({ sessionId }: DagViewProps) {
     };
 
     const chronoRankMap = new Map<string, number>();
+    const bandOffsetMap = new Map<string, number>(); // Tracks precise horizontal shifts
     let currentYRank = 0;
     let lastElectionParent: string | null = null;
     let electionDetailCount = 0;
@@ -192,7 +197,8 @@ export default function DagView({ sessionId }: DagViewProps) {
           } else {
             electionDetailCount++;
           }
-          nodeTiers.set(id, electionDetailCount);
+          // Mark how many items deep we are in the horizontal cluster
+          bandOffsetMap.set(id, electionDetailCount);
         } else {
           currentYRank = Math.max(currentYRank, ...Array.from(chronoRankMap.values())) + 1;
           chronoRankMap.set(id, currentYRank);
@@ -204,26 +210,30 @@ export default function DagView({ sessionId }: DagViewProps) {
       }
     });
 
-    const isHalted = Array.from(nodeContent.values()).some(c => 
-      c.toLowerCase().includes('automation halted') || c.toLowerCase().includes('/stop')
-    );
-
     const nodeLayouts: NodeLayout[] = sortedNodes.map(id => {
       let currentStatus = (nodeStatus.get(id) || (roots.includes(id) ? 'ROOT' : 'ACTIVE')) as NodeLayout['status'];
       const hasChildren = (childrenOf.get(id) || []).length > 0;
       
       if (currentStatus !== 'ROOT') {
-        // If a node has children, it's in the past. If halted, everything stops.
+        // If a node spawned children, it is mathematically in the past. 
+        // If halted, freeze everything.
         if (hasChildren || isHalted) {
           currentStatus = 'DONE';
         }
       }
 
+      const tier = nodeTiers.get(id) || 0;
+      const bandOffset = bandOffsetMap.get(id) || 0;
+      
+      // Central Timeline is at 140px. Subagent Tier 1 is at 420px. 
+      // Election details get a tiny 80px nudge per item to cluster them neatly in the center!
+      const x = START_X + (tier * TIERS_X_SPACING) + (bandOffset * 80);
+
       return {
         id,
         label: nodeLabels.get(id) || extractLabel(id),
-        tier: nodeTiers.get(id) || 0,
-        x: START_X + (nodeTiers.get(id) || 0) * TIERS_X_SPACING,
+        tier,
+        x,
         y: START_Y + (chronoRankMap.get(id) || 0) * DEPTH_Y_SPACING,
         ts: nodeTimestamps.get(id) || 0,
         status: currentStatus,
