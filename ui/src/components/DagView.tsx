@@ -40,12 +40,12 @@ const TIER_COLORS = [
 ];
 
 // Spacing constants for Horizontal Spacetime
-const DEPTH_X_SPACING = 240;   // Horizontal movement forward in time
-const TIERS_Y_SPACING = 280;   // Vertical movement down into sub-tiers
+const DEPTH_X_SPACING = 140;   // Horizontal movement forward in time
+const TIERS_Y_SPACING = 180;   // Vertical movement down into sub-tiers
 const START_X = 140;
 const START_Y = 160;
 const NODE_RADIUS = 32;
-const ELECTION_Y_STAGGER = 110; // Vertical gap between election nodes
+const ELECTION_Y_STAGGER = 80; // Vertical gap between election nodes
 
 function extractLabel(compoundId: string): string {
   const pipeIdx = compoundId.indexOf('|');
