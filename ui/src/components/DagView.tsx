@@ -158,7 +158,9 @@ export default function DagView({ sessionId }: DagViewProps) {
       } else if (l === 'moderator' || actor === 'moderator') {
         nodeTiers.set(id, 0); // Keep election details anchored to Tier 0!
       } else {
-        nodeTiers.set(id, 1); // Sub-agents (Alice) go to Tier 1, not Tier 2!
+        // The winning agent is the main conversational event!
+        // We will reserve Tier 1 and 2 for future Tool Executions.
+        nodeTiers.set(id, 0);
       }
     });
 
