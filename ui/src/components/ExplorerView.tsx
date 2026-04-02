@@ -67,11 +67,11 @@ function FileTreeItem({ node, depth, selectedPath, onSelect }: {
     return (
       <div>
         <div 
-          className={`file-entry file-entry-dir`}
+          className={`file-entry file-entry-dir ${selectedPath === node.path ? 'file-entry-selected' : ''}`}
           style={{ paddingLeft: `${12 + depth * 16}px` }}
           onClick={() => setExpanded(!expanded)}
         >
-          {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          {expanded ? <ChevronDown size={14} color="#a1a1aa" /> : <ChevronRight size={14} color="#a1a1aa" />}
           <FolderOpen size={14} color="#f59e0b" />
           <span>{node.name}</span>
         </div>
@@ -131,6 +131,7 @@ export default function ExplorerView({ sessionId, refreshKey }: ExplorerViewProp
   const handleSelect = async (path: string) => {
     setSelectedPath(path);
     setLoading(true);
+    setFileContent(null); // Clear previous content to avoid confusion
     try {
       const content = await fetchFileContent(sessionId, path);
       setFileContent(content);
@@ -139,6 +140,7 @@ export default function ExplorerView({ sessionId, refreshKey }: ExplorerViewProp
       setDiffData(diff);
     } catch (e) {
       console.error('Failed to load file', e);
+      // Set an error state if needed, or just keep fileContent as null
     } finally {
       setLoading(false);
     }

@@ -21,7 +21,7 @@ interface NodeLayout {
 const STATUS_COLORS: Record<string, string> = {
   ACTIVE: '#4ade80',
   THINKING: '#fbbf24',
-  DONE: '#6b7280',
+  DONE: '#a1a1aa',
   ROOT: '#60a5fa',
 };
 
@@ -41,7 +41,7 @@ const TIER_COLORS = [
 
 // Spacing constants for Horizontal Spacetime
 const DEPTH_X_SPACING = 240;   // Horizontal movement forward in time
-const TIERS_Y_SPACING = 400;   // Vertical movement down into sub-tiers
+const TIERS_Y_SPACING = 280;   // Vertical movement down into sub-tiers
 const START_X = 140;
 const START_Y = 160;
 const NODE_RADIUS = 32;
