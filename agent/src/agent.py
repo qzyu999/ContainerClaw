@@ -166,10 +166,11 @@ class LLMAgent:
     async def _vote(self, history, roster, previous_votes=None):
         instr = (
             f"You are {self.agent_id}. Persona: {self.persona}.\n"
-            f"You are in a voting phase. A new message has arrived in the chat.\n"
-            f"You must review the history and vote for the ONE agent who is best suited to respond.\n"
+            "You are in a voting phase. A new message has arrived in the chat.\n"
+            "You must review the history and vote for the ONE agent who is best suited to respond.\n"
             f"The team roster and roles are: {roster}.\n"
-            f"Please collaborate together in an agile format, leveraging each others unique abilities and tools.\n"
+            "CRITICAL: You must only vote for one of the primary agents listed in the roster or the vote is invalidated.\n"
+            "Please collaborate together in an agile format, leveraging each others unique abilities and tools.\n"
             "If someone specifically addressed an agent, vote for them. Otherwise, vote based on merit.\n"
             "You must also evaluate if the overall task is completely finished.\n"
             "Respond ONLY in valid JSON with the following keys:\n"
