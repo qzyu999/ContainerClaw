@@ -33,32 +33,32 @@
  📊 TABLE: containerclaw.agent_status
 ======================================================================
    Type: Log Table (Scanning all, but only showing the top 5 most recent...)
-   ✅ Found 108 total heartbeats across 108 batches.
+   ✅ Found 826 total heartbeats across 826 batches.
    showing latest 5:
 {    'agent_id': 'Moderator',
      'current_task': '',
-     'last_heartbeat': 1775086454911,
+     'last_heartbeat': 1775088233906,
      'session_id': 'user-session',
      'state': 'idle'}
 {    'agent_id': 'Moderator',
      'current_task': '',
-     'last_heartbeat': 1775086465011,
-     'session_id': 'user-session',
-     'state': 'idle'}
-{    'agent_id': 'Moderator',
-     'current_task': '',
-     'last_heartbeat': 1775086500629,
+     'last_heartbeat': 1775088274324,
      'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
      'state': 'idle'}
 {    'agent_id': 'Moderator',
      'current_task': '',
-     'last_heartbeat': 1775086551013,
+     'last_heartbeat': 1775088279380,
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'state': 'idle'}
+{    'agent_id': 'Moderator',
+     'current_task': '',
+     'last_heartbeat': 1775088334963,
      'session_id': 'user-session',
      'state': 'idle'}
 {    'agent_id': 'Moderator',
      'current_task': '',
-     'last_heartbeat': 1775086561113,
-     'session_id': 'user-session',
+     'last_heartbeat': 1775088380642,
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
      'state': 'idle'}
    (Table is empty)
 
@@ -67,10 +67,6 @@
 ======================================================================
    Type: Primary Key Table (Python SDK can only lookup by specific key)
    ℹ️  Looking up 7 known actors...
-{    'actor_id': 'Human',
-     'last_event_id': '2f9efe6e-0929-484d-99c6-0f51d75954c4',
-     'last_ts': 1775086325458,
-     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30'}
 {    'actor_id': 'Alice',
      'last_event_id': '4b8f2592-7174-4483-9e20-883240fa23e0',
      'last_ts': 1775086385536,
@@ -79,6 +75,10 @@
      'last_event_id': '5969b81e-b739-4727-9521-e39d4f37330c',
      'last_ts': 1775086432278,
      'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30'}
+{    'actor_id': 'Human',
+     'last_event_id': '2f9efe6e-0929-484d-99c6-0f51d75954c4',
+     'last_ts': 1775086325458,
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30'}
    ✅ Found 3 matching rows.
 
 ======================================================================
@@ -86,7 +86,112 @@
 ======================================================================
    Type: Primary Key Table (Python SDK can only lookup by specific key)
    ℹ️  Looking up 15 known event IDs...
-   ✅ Found 0 matching rows.
+{    'child_id': '3e918786-2518-4d73-b1bf-3f0b3443223c',
+     'child_label': 'Moderator',
+     'edge_type': 'SEQUENTIAL',
+     'parent_id': '4b8f2592-7174-4483-9e20-883240fa23e0',
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'status': 'DONE',
+     'updated_at': 1775086385870}
+{    'child_id': '95cb4ee1-7584-472a-bed7-f65e4bc1c975',
+     'child_label': 'Moderator',
+     'edge_type': 'SEQUENTIAL',
+     'parent_id': 'f73f0456-d307-42d1-a4e8-a784c3820cc6',
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'status': 'ACTIVE',
+     'updated_at': 1775086359751}
+{    'child_id': '4b8f2592-7174-4483-9e20-883240fa23e0',
+     'child_label': 'Alice',
+     'edge_type': 'SEQUENTIAL',
+     'parent_id': '8b71fb60-2932-427c-99e4-6b0e2e91054a',
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'status': 'ACTIVE',
+     'updated_at': 1775086385536}
+{    'child_id': 'f73f0456-d307-42d1-a4e8-a784c3820cc6',
+     'child_label': 'Moderator',
+     'edge_type': 'SEQUENTIAL',
+     'parent_id': '2f9efe6e-0929-484d-99c6-0f51d75954c4',
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'status': 'ACTIVE',
+     'updated_at': 1775086325831}
+{    'child_id': '8b71fb60-2932-427c-99e4-6b0e2e91054a',
+     'child_label': 'Moderator',
+     'edge_type': 'SEQUENTIAL',
+     'parent_id': 'f73f0456-d307-42d1-a4e8-a784c3820cc6',
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'status': 'ACTIVE',
+     'updated_at': 1775086359751}
+{    'child_id': '5969b81e-b739-4727-9521-e39d4f37330c',
+     'child_label': 'Moderator',
+     'edge_type': 'SEQUENTIAL',
+     'parent_id': '1c20cdea-5e83-40cf-b44e-2951fa4d1c9c',
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'status': 'DONE',
+     'updated_at': 1775086432278}
+{    'child_id': '9e1d11e7-9e9e-4242-8c4d-0ea56e2e4edc',
+     'child_label': 'Moderator',
+     'edge_type': 'SEQUENTIAL',
+     'parent_id': '3e918786-2518-4d73-b1bf-3f0b3443223c',
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'status': 'ACTIVE',
+     'updated_at': 1775086385975}
+{    'child_id': '51553f00-6589-4772-8510-196434db742c',
+     'child_label': 'Moderator',
+     'edge_type': 'SEQUENTIAL',
+     'parent_id': 'f73f0456-d307-42d1-a4e8-a784c3820cc6',
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'status': 'ACTIVE',
+     'updated_at': 1775086326831}
+{    'child_id': 'f389bdda-b62e-44c1-9900-6ffb79e0eef2',
+     'child_label': 'Moderator',
+     'edge_type': 'SEQUENTIAL',
+     'parent_id': '9e1d11e7-9e9e-4242-8c4d-0ea56e2e4edc',
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'status': 'ACTIVE',
+     'updated_at': 1775086431922}
+{    'child_id': '1adcd8ee-b2b4-414e-8631-bf5a8b6391be',
+     'child_label': 'Moderator',
+     'edge_type': 'SEQUENTIAL',
+     'parent_id': 'f73f0456-d307-42d1-a4e8-a784c3820cc6',
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'status': 'ACTIVE',
+     'updated_at': 1775086359751}
+{    'child_id': '4b08087a-f62c-4282-af9d-10aacd7e8f12',
+     'child_label': 'Moderator',
+     'edge_type': 'SEQUENTIAL',
+     'parent_id': '9e1d11e7-9e9e-4242-8c4d-0ea56e2e4edc',
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'status': 'ACTIVE',
+     'updated_at': 1775086386987}
+{    'child_id': '2f9efe6e-0929-484d-99c6-0f51d75954c4',
+     'child_label': 'Human',
+     'edge_type': 'SEQUENTIAL',
+     'parent_id': 'ROOT',
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'status': 'ACTIVE',
+     'updated_at': 1775086325458}
+{    'child_id': '1c20cdea-5e83-40cf-b44e-2951fa4d1c9c',
+     'child_label': 'Moderator',
+     'edge_type': 'SEQUENTIAL',
+     'parent_id': '3e918786-2518-4d73-b1bf-3f0b3443223c',
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'status': 'DONE',
+     'updated_at': 1775086431922}
+{    'child_id': '21e46cbd-3eaf-49f5-af90-119ba3ae26c0',
+     'child_label': 'Moderator',
+     'edge_type': 'SEQUENTIAL',
+     'parent_id': '9e1d11e7-9e9e-4242-8c4d-0ea56e2e4edc',
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'status': 'ACTIVE',
+     'updated_at': 1775086431922}
+{    'child_id': '79a9b974-501b-4b31-8fd7-9a6d10531c64',
+     'child_label': 'Moderator',
+     'edge_type': 'ROOT',
+     'parent_id': 'ROOT',
+     'session_id': '4091894a-6486-4ccf-99d9-7c8d19accc30',
+     'status': 'ACTIVE',
+     'updated_at': 1775086325830}
+   ✅ Found 15 matching rows.
 
 ======================================================================
  📊 TABLE: containerclaw.chatroom
