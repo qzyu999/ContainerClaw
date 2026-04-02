@@ -107,7 +107,7 @@ class AgentContext:
             )
         return ""
 
-    async def _on_message(self, actor_id: str, content: str, ts: int):
+    async def _on_message(self, actor_id: str, content: str, ts: int, event_id: str = None):
         """Callback for immediate memory update from publisher."""
         self.context.add_message(actor_id, content, ts)
 
