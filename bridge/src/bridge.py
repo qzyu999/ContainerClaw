@@ -331,7 +331,10 @@ async def _lookup_dag_edges(session_id):
                 type_arr = batch.column("type")
                 ts_arr = batch.column("ts")
 
-                # These columns may not exist on old tables
+                # Fetch content for smart labels
+                has_content = "content" in batch.schema.names
+                content_arr = batch.column("content") if has_content else None
+
                 has_parent_event_id = "parent_event_id" in batch.schema.names
                 has_edge_type = "edge_type" in batch.schema.names
                 parent_eid_arr = batch.column("parent_event_id") if has_parent_event_id else None
@@ -344,22 +347,41 @@ async def _lookup_dag_edges(session_id):
                     parent_eid = parent_eid_arr[i].as_py() if parent_eid_arr else ""
                     edge_type = edge_type_arr[i].as_py() if edge_type_arr else "SEQUENTIAL"
                     event_type = type_arr[i].as_py()
+                    actor = actor_arr[i].as_py()
+                    
+                    # Safely extract and decode content
+                    raw_content = content_arr[i].as_py() if content_arr else ""
+                    content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else str(raw_content)
 
-                    # Determine status from event type
                     if event_type in ("finish", "done", "checkpoint"):
                         status = "DONE"
-                    elif event_type == "action":
+                    elif event_type in ("action", "voting"):
                         status = "THINKING"
+                    elif event_type == "thought":
+                        status = "DONE"  # Thoughts are past events, not actively computing
                     else:
                         status = "ACTIVE"
+
+                    if event_type == "checkpoint":
+                        label = "Checkpoint"
+                    elif event_type == "finish":
+                        label = "Task Complete"
+                    elif "Starting Election" in content:
+                        label = "Election"
+                    elif "Winner:" in content:
+                        # e.g., "🏆 Winner: Alice" -> crop if it's too long
+                        label = content[:25]
+                    else:
+                        label = actor
 
                     edges.append({
                         "parent": parent_eid if parent_eid else "ROOT",
                         "child": eid_arr[i].as_py(),
-                        "child_label": actor_arr[i].as_py(),
+                        "child_label": label,
                         "edge_type": edge_type if edge_type else "SEQUENTIAL",
                         "status": status,
                         "updated_at": ts_arr[i].as_py(),
+                        "ts": ts_arr[i].as_py(),
                     })
     except Exception as e:
         print(f"Bridge: DAG edges scan error: {e}")
@@ -425,6 +447,10 @@ def telemetry_dag_stream(session_id):
                     type_arr = batch.column("type")
                     ts_arr = batch.column("ts")
 
+                    # Fetch content for smart labels
+                    has_content = "content" in batch.schema.names
+                    content_arr = batch.column("content") if has_content else None
+
                     has_parent_event_id = "parent_event_id" in batch.schema.names
                     has_edge_type = "edge_type" in batch.schema.names
                     parent_eid_arr = batch.column("parent_event_id") if has_parent_event_id else None
@@ -437,21 +463,42 @@ def telemetry_dag_stream(session_id):
                         parent_eid = parent_eid_arr[i].as_py() if parent_eid_arr else ""
                         edge_type = edge_type_arr[i].as_py() if edge_type_arr else "SEQUENTIAL"
                         event_type = type_arr[i].as_py()
+                        actor = actor_arr[i].as_py()
 
+                        # Safely extract and decode content
+                        raw_content = content_arr[i].as_py() if content_arr else ""
+                        content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else str(raw_content)
+
+                        # --- FIX P4: Better Status Mapping ---
                         if event_type in ("finish", "done", "checkpoint"):
                             status = "DONE"
-                        elif event_type == "action":
+                        elif event_type in ("action", "voting"):
                             status = "THINKING"
+                        elif event_type == "thought":
+                            status = "DONE"  # Thoughts are past events
                         else:
                             status = "ACTIVE"
+
+                        # --- FIX P3: Smart Content-Derived Labels ---
+                        if event_type == "checkpoint":
+                            label = "Checkpoint"
+                        elif event_type == "finish":
+                            label = "Task Complete"
+                        elif "Starting Election" in content:
+                            label = "Election"
+                        elif "Winner:" in content:
+                            label = content[:25]
+                        else:
+                            label = actor
 
                         edge = {
                             "parent": parent_eid if parent_eid else "ROOT",
                             "child": eid_arr[i].as_py(),
-                            "child_label": actor_arr[i].as_py(),
+                            "child_label": label,
                             "edge_type": edge_type if edge_type else "SEQUENTIAL",
                             "status": status,
                             "updated_at": ts_arr[i].as_py(),
+                            "ts": ts_arr[i].as_py(),
                         }
                         yield f"data: {json.dumps(edge)}\n\n"
         except GeneratorExit:
@@ -461,7 +508,6 @@ def telemetry_dag_stream(session_id):
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
     return Response(generate(), mimetype="text/event-stream")
-
 
 
 async def _lookup_metrics(session_id):

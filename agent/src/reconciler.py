@@ -247,6 +247,7 @@ class ReconciliationController:
                 parent_event_id=self.backbone_id,
                 edge_type="SEQUENTIAL",
             )
+            self.backbone_id = election_start_id
 
             await asyncio.sleep(1.0)
             context_window = self.mod.context.get_window()
@@ -290,6 +291,7 @@ class ReconciliationController:
                     parent_event_id=election_start_id,
                     edge_type="SEQUENTIAL",
                 )
+                self.backbone_id = winner_id
 
                 # Execution — pass winner_id so tool calls chain from it
                 if self.mod.executor:
