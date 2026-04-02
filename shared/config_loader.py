@@ -58,7 +58,7 @@ class ClawConfig(BaseModel):
     max_tokens_per_request: int = 8192
     # Infrastructure
     fluss_bootstrap_servers: str = "coordinator-server:9123"
-    session_id: str = "default-session"
+    session_id: str | None = None
     # Integrations
     discord_bot_token: str = ""
     discord_webhook_url: str = ""
@@ -227,7 +227,7 @@ def _from_env() -> ClawConfig:
         rate_limit_rpm=int(os.getenv("RATE_LIMIT_RPM", "60")),
         max_tokens_per_request=int(os.getenv("MAX_TOKENS_PER_REQUEST", "8192")),
         fluss_bootstrap_servers=os.getenv("FLUSS_BOOTSTRAP_SERVERS", "coordinator-server:9123"),
-        session_id=os.getenv("CLAW_SESSION_ID", "default-session"),
+        session_id=os.getenv("CLAW_SESSION_ID"),
         discord_bot_token=os.getenv("DISCORD_BOT_TOKEN", ""),
         discord_webhook_url=os.getenv("DISCORD_WEBHOOK_URL", ""),
         discord_channel_id=os.getenv("DISCORD_CHANNEL_ID", ""),

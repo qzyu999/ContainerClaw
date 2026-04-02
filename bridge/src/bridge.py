@@ -108,7 +108,9 @@ def stream_events(session_id):
 @app.route("/task", methods=["POST"])
 def proxy_task():
     data = request.json
-    session_id = data.get("session_id", "default-session")
+    session_id = data.get("session_id")
+    if not session_id:
+        return {"status": "error", "message": "Missing session_id"}, 400
     prompt = data.get("prompt", "")
     
     # Simple retry for task submission
@@ -382,6 +384,8 @@ async def _lookup_dag_edges(session_id):
                         "status": status,
                         "updated_at": ts_arr[i].as_py(),
                         "ts": ts_arr[i].as_py(),
+                        "content": content,
+                        "actor": actor,
                     })
     except Exception as e:
         print(f"Bridge: DAG edges scan error: {e}")
@@ -499,6 +503,8 @@ def telemetry_dag_stream(session_id):
                             "status": status,
                             "updated_at": ts_arr[i].as_py(),
                             "ts": ts_arr[i].as_py(),
+                            "content": content,
+                            "actor": actor,
                         }
                         yield f"data: {json.dumps(edge)}\n\n"
         except GeneratorExit:

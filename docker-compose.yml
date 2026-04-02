@@ -19,7 +19,6 @@ services:
       - gemini_api_key
     environment:
       - PYTHONUNBUFFERED=1
-      - CLAW_SESSION_ID=user-session
       - CLAW_CONFIG_PATH=/config/config.yaml
       - SHARED_MODULE_PATH=/app/shared
       - LLM_GATEWAY_URL=${LLM_GATEWAY_URL:-http://llm-gateway:8000}

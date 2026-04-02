@@ -14,6 +14,8 @@ interface NodeLayout {
   tier: number;        // Nesting depth (0 = main timeline)
   ts: number;          // Chronological timestamp
   status: 'ACTIVE' | 'THINKING' | 'DONE' | 'ROOT';
+  content?: string;
+  actor?: string;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -52,6 +54,7 @@ function extractLabel(compoundId: string): string {
 export default function DagView({ sessionId }: DagViewProps) {
   const [edges, setEdges] = useState<DagEdge[]>([]);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
   // Navigation state (Pan & Zoom)
   const [viewState, setViewState] = useState({ x: 0, y: 0, scale: 1.0 });
@@ -83,6 +86,8 @@ export default function DagView({ sessionId }: DagViewProps) {
     const nodeStatus = new Map<string, string>();
     const nodeLabels = new Map<string, string>();
     const nodeTimestamps = new Map<string, number>();
+    const nodeContent = new Map<string, string>();
+    const nodeActor = new Map<string, string>();
     const childrenOf = new Map<string, string[]>();
 
     edges.forEach((e: DagEdge) => {
@@ -100,6 +105,9 @@ export default function DagView({ sessionId }: DagViewProps) {
       // The bridge ALWAYS sends the correct child label, so this safely overwrites 
       // any UUIDs that might have been temporarily saved when this node was a parent.
       nodeLabels.set(e.child, e.child_label || extractLabel(e.child));
+
+      if (e.content) nodeContent.set(e.child, e.content);
+      if (e.actor) nodeActor.set(e.child, e.actor);
 
       // Inherit/capture timestamps — assume child timestamp is reliable
       if (!nodeTimestamps.has(e.child)) nodeTimestamps.set(e.child, Number(e.ts));
@@ -196,6 +204,8 @@ export default function DagView({ sessionId }: DagViewProps) {
       y: START_Y + (chronoRankMap.get(id) || 0) * DEPTH_Y_SPACING,
       ts: nodeTimestamps.get(id) || 0,
       status: (nodeStatus.get(id) || (roots.includes(id) ? 'ROOT' : 'ACTIVE')) as NodeLayout['status'],
+      content: nodeContent.get(id),
+      actor: nodeActor.get(id),
     }));
 
     const lMap = new Map(nodeLayouts.map(n => [n.id, n]));
@@ -288,6 +298,7 @@ export default function DagView({ sessionId }: DagViewProps) {
           onMouseUp={handleMouseUp}
           onMouseLeave={handleMouseUp}
           onWheel={handleWheel}
+          onClick={() => setSelectedNodeId(null)}
           style={{ cursor: isDragging ? 'grabbing' : 'grab', height: '800px' }}
         >
           <svg width="100%" height="100%" className="dag-svg-root">
@@ -369,6 +380,11 @@ export default function DagView({ sessionId }: DagViewProps) {
                     key={node.id}
                     onMouseEnter={() => setHoveredNode(node.id)}
                     onMouseLeave={() => setHoveredNode(null)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedNodeId(node.id);
+                    }}
+                    style={{ cursor: 'pointer' }}
                   >
                     {/* Node Glow */}
                     {(node.status === 'ACTIVE' || node.status === 'THINKING') && (
@@ -482,6 +498,32 @@ export default function DagView({ sessionId }: DagViewProps) {
               <span>Spawn</span>
             </div>
           </div>
+        </div>
+      )}
+      {selectedNodeId && (
+        <div className="dag-metadata-panel" onClick={(e) => e.stopPropagation()}>
+          {(() => {
+            const n = nodes.find(n => n.id === selectedNodeId);
+            if (!n) return null;
+            return (
+              <>
+                <div className="dag-metadata-header">
+                  <h3>{n.label}</h3>
+                  <button onClick={() => setSelectedNodeId(null)}>✕</button>
+                </div>
+                <div className="dag-metadata-body">
+                  <div className="meta-row"><strong>Actor:</strong> {n.actor || 'System'}</div>
+                  <div className="meta-row"><strong>Status:</strong> {n.status}</div>
+                  <div className="meta-row"><strong>Time:</strong> {new Date(n.ts).toLocaleTimeString()}</div>
+                  <div className="meta-row"><strong>Event ID:</strong> <span className="mono">{n.id.split('-')[0]}...</span></div>
+                  <div className="meta-content">
+                    <strong>Content:</strong>
+                    <pre>{n.content || 'No content available.'}</pre>
+                  </div>
+                </div>
+              </>
+            );
+          })()}
         </div>
       )}
     </div>

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Box, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare, ChevronLeft, ChevronRight, User, Plus, GitBranch, BarChart3 } from 'lucide-react';
+import { Box, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare, ChevronLeft, ChevronRight, User, Plus, GitBranch, BarChart3, Loader2 } from 'lucide-react';
 
 import { streamEvents, fetchWorkspace, fetchHistory, fetchSessions, createSession } from './api';
 import type { ActivityEvent, Session } from './api';
@@ -10,7 +10,7 @@ import ProjectBoard from './components/ProjectBoard';
 import DagView from './components/DagView';
 import MetricsView from './components/MetricsView';
 
-const DEFAULT_SESSION_ID = 'user-session';
+// No fallback session — all sessions must be dynamic
 
 type TabId = 'chatroom' | 'explorer' | 'dag' | 'metrics';
 
@@ -29,27 +29,31 @@ export default function App() {
   const [isInitializing, setIsInitializing] = useState(false);
 
   useEffect(() => {
+    let mounted = true;
     const loadSessions = async () => {
       if (isInitializing) return;
       setIsInitializing(true);
       try {
         const list = await fetchSessions();
+        if (!mounted) return;
         setSessions(list);
+        
         if (list.length > 0 && !activeSessionId) {
           setActiveSessionId(list[0].session_id);
         } else if (list.length === 0) {
           // Auto-create first session if none exist
           const newSess = await createSession("First Session");
-          if (newSess) {
+          if (newSess && mounted) {
             setSessions([newSess]);
             setActiveSessionId(newSess.session_id);
           }
         }
       } finally {
-        setIsInitializing(false);
+        if (mounted) setIsInitializing(false);
       }
     };
     loadSessions();
+    return () => { mounted = false; };
   }, []);
 
   useEffect(() => {
@@ -262,29 +266,38 @@ export default function App() {
 
           {/* Tab Content */}
           <div className="tab-content">
-            {activeTab === 'chatroom' && (
+            {(!activeSessionId || isInitializing) ? (
+              <div className="loading-overlay">
+                <Loader2 className="animate-spin" size={32} color="#4ade80" />
+                <span>Initializing Session...</span>
+              </div>
+            ) : (
               <>
-                <ChatroomView 
-                  events={events} 
-                  setEvents={setEvents}
-                  sessionId={activeSessionId || DEFAULT_SESSION_ID}
-                />
-                <ProjectBoard 
-                  sessionId={activeSessionId || DEFAULT_SESSION_ID} 
-                  refreshKey={refreshKey} 
-                  collapsed={projectBoardCollapsed}
-                  onToggle={() => setProjectBoardCollapsed(!projectBoardCollapsed)}
-                />
+                {activeTab === 'chatroom' && (
+                  <>
+                    <ChatroomView 
+                      events={events} 
+                      setEvents={setEvents}
+                      sessionId={activeSessionId}
+                    />
+                    <ProjectBoard 
+                      sessionId={activeSessionId} 
+                      refreshKey={refreshKey} 
+                      collapsed={projectBoardCollapsed}
+                      onToggle={() => setProjectBoardCollapsed(!projectBoardCollapsed)}
+                    />
+                  </>
+                )}
+                {activeTab === 'explorer' && (
+                  <ExplorerView sessionId={activeSessionId} refreshKey={refreshKey} />
+                )}
+                {activeTab === 'dag' && (
+                  <DagView sessionId={activeSessionId} />
+                )}
+                {activeTab === 'metrics' && (
+                  <MetricsView sessionId={activeSessionId} />
+                )}
               </>
-            )}
-            {activeTab === 'explorer' && (
-              <ExplorerView sessionId={activeSessionId || DEFAULT_SESSION_ID} refreshKey={refreshKey} />
-            )}
-            {activeTab === 'dag' && (
-              <DagView sessionId={activeSessionId || DEFAULT_SESSION_ID} />
-            )}
-            {activeTab === 'metrics' && (
-              <MetricsView sessionId={activeSessionId || DEFAULT_SESSION_ID} />
             )}
           </div>
         </main>

@@ -56,7 +56,7 @@ const BRIDGE_URL = 'http://localhost:5001';
 
 export const streamEvents = (sessionId: string, onEvent: (event: ActivityEvent) => void) => {
   const eventSource = new EventSource(`${BRIDGE_URL}/events/${sessionId}`);
-  
+
   eventSource.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
@@ -168,6 +168,8 @@ export interface DagEdge {
   status: 'ACTIVE' | 'THINKING' | 'DONE';
   updated_at: number;
   ts?: number;
+  content?: string;
+  actor?: string;
 }
 
 export interface MetricsWindow {
