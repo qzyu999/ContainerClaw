@@ -384,7 +384,7 @@ export default function DagView({ sessionId }: DagViewProps) {
                       textAnchor="start"
                       style={{ opacity: 0.8, letterSpacing: '0.1em' }}
                     >
-                      {tier === 0 ? 'CENTRAL TIMELINE' : `TIER ${tier}`}
+                      {tier === 0 ? 'MAIN STREAM' : `SUBAGENT STREAM ${tier}`}
                     </text>
                   </g>
                 );
@@ -495,8 +495,8 @@ export default function DagView({ sessionId }: DagViewProps) {
                       };
 
                       if (isHuman) {
-                        // Triangle now pointing RIGHT to match time flow
-                        const points = `${node.x - r * 0.6},${node.y - r * 0.9} ${node.x + r},${node.y} ${node.x - r * 0.6},${node.y + r * 0.9}`;
+                        // Triangle pointing UP
+                        const points = `${node.x},${node.y - r} ${node.x + r * 1.1},${node.y + r * 0.8} ${node.x - r * 1.1},${node.y + r * 0.8}`;
                         return <polygon points={points} {...strokeProps} strokeLinejoin="round" />;
                       } else if (isModerator) {
                         return <rect x={node.x - r} y={node.y - r} width={r * 2} height={r * 2} rx={8} {...strokeProps} />;
