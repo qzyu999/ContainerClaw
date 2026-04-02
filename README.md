@@ -32,6 +32,10 @@ ContainerClaw uses a centralized `config.yaml` to define your agent roster, cred
     mkdir -p secrets
     echo "your-api-key-here" > secrets/gemini_api_key.txt
     ```
+You can also update your local git to untrack those files after adding your API key:
+    ```bash
+    git update-index --skip-worktree secrets/gemini_api_key.txt
+    ```
 3.  **Customize Agents (Optional):** Define new agents in the `agents.roster` section of `config.yaml`. You can assign different models or providers securely on a per-agent basis.
 
 ### 3. Launching the Stack
