@@ -47,7 +47,7 @@ async def inspect():
                         actor = d["actor_id"][i]
                         event_id = d["event_id"][i]
                         known_actors.add(actor)
-                        known_child_ids.add(f"{actor}|{event_id}")
+                        known_child_ids.add(event_id)
     except Exception as e:
         print(f"⚠️ Pre-scan failed: {e}")
 
