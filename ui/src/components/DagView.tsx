@@ -141,18 +141,20 @@ export default function DagView({ sessionId }: DagViewProps) {
       const content = (nodeContent.get(id) || '').toLowerCase();
       const actor = (nodeActor.get(id) || '').toLowerCase();
 
-      // ONLY push actual system executions to Tier 1. 
-      // Alice stays on Tier 0 as the lead agent!
+      // Push system tool logs to Tier 1
       const isToolExecution =
         (content.includes('🔱 spawned subagent') ||
           content.includes('🏁 subagent completed') ||
           content.includes('[tool result'))
         && actor === 'moderator';
 
-      if (isToolExecution) {
-        nodeTiers.set(id, 1);
+      // Push actual subagent thoughts/actions to Tier 1
+      const isSubagent = actor.startsWith('sub/');
+
+      if (isToolExecution || isSubagent) {
+        nodeTiers.set(id, 1); // System logs and subagents go to the Green Lane
       } else {
-        nodeTiers.set(id, 0);
+        nodeTiers.set(id, 0); // Human, Alice, and Moderator stay on Central Timeline
       }
     });
 
