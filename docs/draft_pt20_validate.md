@@ -16,8 +16,9 @@
 6. [Dive Button Applicability — Agents vs. Non-Agents](#6-dive-button-applicability--agents-vs-non-agents)
 7. [Step-by-Step Process Preservation](#7-step-by-step-process-preservation)
 8. [File-Level Change Defense](#8-file-level-change-defense)
-9. [Open Issues & Recommendations](#9-open-issues--recommendations)
-10. [Verdict](#10-verdict)
+9. [Open Issues & Remediation Plan](#9-open-issues--remediation-plan)
+10. [Consolidated Remediation Checklist](#10-consolidated-remediation-checklist)
+11. [Verdict](#11-verdict)
 
 ---
 
@@ -254,16 +255,57 @@ A `grep` sweep for `"You are"`, `"Persona:"`, and `"You have access to tools"` i
 
 **Conclusion for Goal 1:** All 7 hard-coded system prompts have been completely and accurately migrated to `config.yaml` with no semantic differences. No residual hard-coded prompts remain.
 
-### 3.4 Additional Config Additions
+### 3.4 Additional Config Additions — Issues Identified
 
-The migration also added two new config blocks that were previously implicit/scattered:
+The migration added `default_persona` and `default_tools` to `config.yaml`. Upon review, both have accuracy problems that require remediation.
 
-| config.yaml Key | Old Source | Value | Rationale |
-|----------------|-----------|-------|-----------|
-| `agents.settings.default_persona` | Hard-coded fallback in env-var logic | `"General purpose software engineering assistant."` | Needed by Snorkel to reconstruct persona for unknown actors |
-| `agents.settings.default_tools` | Hard-coded list in `config_loader._from_env()` | 12-item list (board, test_runner, diff, etc.) | Needed by Snorkel to reconstruct `{tool_names}` placeholder |
+> [!CAUTION]
+> **ISSUE 3.4-A: Persona fallback produces inaccurate Snorkel output.** Using `default_persona` for unknown actors (e.g., subagents `Sub/a1b2c3d4`) means Snorkel renders a fabricated persona instead of the subagent's actual persona. The goal of Snorkel is truth, not approximation. Subagents receive their persona from `SubagentManager.spawn(agent_persona=...)`, and this must be recoverable.
 
-> **Note:** The current `default_tools` list includes `run_tests` (12 items), while the old `_from_env()` fallback had 11 items (missing `run_tests`). This is an **intentional addition** of a tool that exists in the codebase, not a migration error.
+> [!CAUTION]
+> **ISSUE 3.4-B: `default_tools` is a static lie.** Currently, the bridge reconstructs `{tool_names}` using `", ".join(claw_config.default_tools)`. But `main.py:139` shows `toolsets = {a.agent_id: all_tools for a in agents}` — all agents get the same toolset today, but this is an implementation detail, not a contract. When per-agent tool scoping is added, Snorkel will silently produce wrong tool lists.
+
+> [!CAUTION]
+> **ISSUE 3.4-C: `_from_env()` backward-compat code should be removed.** The `_from_env()` function in `config_loader.py` (L201-280) is dead weight — `config.yaml` is always mounted. Keeping it risks silent fallback to stale default values.
+
+#### Remediation Plan
+
+| ID | Issue | Fix | Files |
+|----|-------|-----|-------|
+| 3.4-A | Subagent persona not recoverable | Publish `persona` field on chatroom events; `ContextBuilder` reads it. For named roster agents, the config lookup suffices. | `publisher.py`, `schemas.py`, `context_builder.py` |
+| 3.4-B | Per-agent tool lists | Add `tools` field to each roster entry in `config.yaml`. Value is either `"default_tools"` (resolves to the full list) or a custom list of tool name strings. `main.py` reads this. Snorkel reads it. | `config.yaml`, `config_loader.py`, `main.py`, `bridge.py` |
+| 3.4-C | Remove `_from_env()` | Delete `_from_env()` and the `if not Path(path).exists()` fallback branch. Update `config.py` docstring. | `config_loader.py`, `config.py` |
+
+**Proposed `config.yaml` roster schema with per-agent tools:**
+```yaml
+agents:
+  roster:
+    - name: "Alice"
+      persona: "Software architect."
+      tools: "default_tools"         # Resolves to full default_tools list
+    - name: "Bob"
+      persona: "Project manager."
+      tools: "default_tools"
+    - name: "Carol"
+      persona: "Software engineer."
+      tools:                          # Custom subset
+        - "board"
+        - "diff"
+        - "surgical_edit"
+        - "advanced_read"
+        - "session_shell"
+    - name: "David"
+      persona: "Software QA tester."
+      tools: "default_tools"
+    - name: "Eve"
+      persona: "Business user."
+      tools:                          # Read-only observer
+        - "board"
+        - "advanced_read"
+        - "structured_search"
+```
+
+In YAML, a list of strings is simply a sequence of `- "item"` entries under the key, identical to Python's `["item1", "item2"]`. The `"default_tools"` string sentinel avoids duplication.
 
 ---
 
@@ -401,40 +443,38 @@ for msg in reversed(recent_messages):
 
 ## 6. Dive Button Applicability — Agents vs. Non-Agents
 
-### 6.1 Current State
+### 6.1 Current State (Needs Fix)
 
-The Snorkel UI (`SnorkelView.tsx`) shows a **"Dive" button on every row**, including rows where `actor_id` is `"Moderator"` or `"Human"`. The `handleDive()` function sends the actor_id directly to the bridge:
+The Snorkel UI (`SnorkelView.tsx`) shows a **"Dive" button on every row**, including rows where `actor_id` is `"Moderator"` or `"Human"`. This is incorrect.
 
-```tsx
-const actorId = event.actor_id || 'system';
-const msgs = await fetchSnorkelPerspective(sessionId, event.timestamp, actorId);
-```
-
-### 6.2 Why This Is Semantically Correct (But Could Be Improved)
-
-The "Dive" button on a Moderator or Human row answers a **different but still valid question**: *"What would an agent have seen at this point in time?"* The bridge reconstructs using `think_with_tools` as the default system prompt template (L666-673), regardless of the actor. Since Moderators and Humans **do not perform LLM inference**, the reconstruction is a hypothetical — "what would Alice have seen if she were thinking right now?"
-
-**This is architecturally sound** because:
-1. The reconstruction engine is **stateless and actor-parameterized** — it accepts any `actor_id`.
-2. For Moderator/Human rows, the persona lookup falls through to `default_persona` (L660-664), which is correct behavior.
-3. The system prompt used (`think_with_tools`) is the **most complete** template (includes tool names), giving the most informative reconstruction.
-
-### 6.3 Recommendation for Future Improvement
-
-While not a bug, displaying "Dive" for non-agent actors may confuse operators. A future enhancement could:
+### 6.2 Required Behavior by Actor Type
 
 ```mermaid
 flowchart TD
-    ROW["User clicks Dive on row"]
-    CHECK{"Is actor_id in<br/>agents.roster?"}
+    ROW["Event Row in Snorkel Table"]
+    CHECK{"actor_id type?"}
     
-    CHECK -->|Yes: Alice, Bob...| AGENT_DIVE["Full reconstruction with<br/>actor's actual persona +<br/>think_with_tools prompt"]
-    CHECK -->|No: Moderator, Human| INFO_DIVE["Show contextual info:<br/>'This actor does not perform<br/>LLM inference. Showing<br/>hypothetical view from this<br/>timestamp.'"]
+    CHECK -->|Roster Agent: Alice, Bob...| AGENT_DIVE["Dive Button: Full LLM context<br/>reconstruction via ContextBuilder"]
+    CHECK -->|Subagent: Sub/xxxx| SUB_DIVE["Dive Button: Subagent context<br/>reconstruction with spawned persona"]
+    CHECK -->|Human or Discord/*| HUMAN_VIEW["View Button: Plain chronological<br/>history — exactly what a human<br/>saw in the chatroom at that ts"]
+    CHECK -->|Moderator| NO_BUTTON["No button. Moderator is<br/>orchestration logic, not an observer."]
     
-    style CHECK fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style AGENT_DIVE fill:#064e3b,stroke:#10b981,color:#a7f3d0
+    style SUB_DIVE fill:#064e3b,stroke:#10b981,color:#a7f3d0
+    style HUMAN_VIEW fill:#1e3a5f,stroke:#3b82f6,color:#93c5fd
+    style NO_BUTTON fill:#7f1d1d,stroke:#ef4444,color:#fca5a5
 ```
 
-> **Current impact:** None. The Dive function works correctly for non-agents — it just produces a "hypothetical" reconstruction rather than an "actual" one. The operator should understand this from the HUD label "Snorkeling as: **Moderator**".
+#### Remediation Plan
+
+| Actor Type | Button | Backend Behavior |
+|-----------|--------|------------------|
+| **Roster agents** (Alice, Bob, etc.) | **Dive** | Full `ContextBuilder.build_payload()` with agent's persona + tools from config |
+| **Subagents** (`Sub/xxxx`) | **Dive** | Same pipeline, persona resolved from spawn event metadata |
+| **Human / Discord/\*** | **View** (renamed) | Return raw chronological history `[{actor_id, content, ts}]` — no system prompt, no role mapping, no Token Guard. This is what the human literally saw in the chatroom. |
+| **Moderator** | **None** | Remove button entirely. Moderator is control-plane logic, not an information observer. |
+
+**Files to modify:** `SnorkelView.tsx` (conditional button rendering), `bridge.py` (add `/telemetry/snorkel/<sid>/raw` endpoint for human view), `api.ts` (new `fetchRawHistory` function).
 
 ---
 
@@ -554,55 +594,136 @@ pie title Change Breakdown by Category
 
 ---
 
-## 9. Open Issues & Recommendations
+## 9. Open Issues & Remediation Plan
 
-### 9.1 Known Limitation: `_api_turns` Blindspot (Documented in `draft_pt20_actual_context.md` §2.3)
+### 9.1 `_api_turns` Blindspot
 
-The agent's `_api_turns` array (intermediate `role: "tool"` responses during multi-turn function calling) is **not published to the Fluss chatroom log**. This means Snorkel cannot reconstruct the `extra_turns` portion of the context window. The `ContextBuilder.build_payload()` correctly accepts `extra_turns` as a parameter, but the bridge always calls it with `extra_turns=None` (implicitly, by omitting the parameter at L675-680).
+The agent's `_api_turns` array (intermediate `role: "tool"` responses during multi-turn function calling) is **not published to the Fluss chatroom log**. The `ContextBuilder.build_payload()` accepts `extra_turns` but the bridge always calls it with `extra_turns=None`.
 
-**Impact:** For Dive operations on events that occurred mid-tool-loop, the reconstructed context will be missing the intermediate tool call/response messages. The system prompt and history are correct; only the ephemeral tool state is absent.
+**Impact:** Mid-tool-loop Dive operations miss intermediate tool call/response messages.
 
-**Mitigation path (documented, not yet implemented):** Publish `_api_turns` to a separate `tool_executions` Fluss topic and have the Snorkel engine multiplex them during reconstruction.
+**Mitigation:** Publish `_api_turns` to a dedicated `tool_executions` Fluss topic. The Snorkel engine multiplexes them during reconstruction by timestamp.
 
-### 9.2 Dive Button UX for Non-Agent Actors
+### 9.2 Dive Button UX — Resolved in §6
 
-As discussed in §6, the Dive button is shown for all actors including Moderator and Human. Consider:
-- Visually differentiating the button (e.g., dimmed/outlined style for non-agents)
-- Adding a tooltip: "Hypothetical reconstruction — this actor does not perform inference"
+See §6.2 for the corrected behavior: remove Dive for Moderator, show plain history for Human.
 
-### 9.3 Default System Prompt Selection in Snorkel
+### 9.3 System Prompt Selection — Deep Dive
 
-The bridge always uses `think_with_tools` as the system prompt template for reconstruction (L666-673). This is the **correct default** for the most common inference mode, but it means:
-- Voting prompts are not reconstructed with the vote-specific template
-- Reflect prompts are not reconstructed with the reflect-specific template
+> [!IMPORTANT]
+> The bridge currently always uses `think_with_tools` as the system prompt for reconstruction. This is **fundamentally ambiguous** and cannot be fully resolved by inspecting the event `type` field alone.
 
-To fix this, the event `type` field could be used to select the appropriate prompt template:
+#### Why Event Type → Prompt Mapping Is Ambiguous
+
+The chatroom event `type` records what was **produced**, not which prompt **caused** it:
+
+| Event `type` | Could have been produced by | Prompt used |
+|-------------|---------------------------|-------------|
+| `"output"` | `_think()`, `_think_with_tools()`, `_reflect()`, `_send_function_responses()` | **4 possible prompts** |
+| `"voting"` | Moderator recording election results | Not an agent prompt at all |
+| `"action"` | Tool executor publishing tool output | `_send_function_responses` or `_think_with_tools` |
+| `"thought"` | Moderator system notes | Not an agent prompt |
+
+The mapping `type → prompt` is **one-to-many**, making it impossible to deterministically select the correct prompt from event type alone.
+
+#### The Correct Fix: Record `prompt_type` Metadata
+
+The only way to achieve 100% fidelity is to record which prompt template was used at the time the event was generated. This requires:
+
+1. **Schema change:** Add a `prompt_type` field to the chatroom schema (values: `vote`, `think`, `think_with_tools`, `send_function_responses`, `reflect`, `subagent_spawn`, or empty for non-agent events).
+2. **Agent-side:** Each `_call_gateway()` invocation passes a `prompt_type` string to the publisher.
+3. **Snorkel-side:** The bridge reads `prompt_type` from the target event and selects `config.prompts[prompt_type]`.
+
+#### Does `_api_turns` Solve This?
+
+**No.** The `_api_turns` feature (§9.1) only provides the intermediate tool call/response data. It tells you *what tools were called*, but it does NOT tell you which prompt template generated the LLM call. Even with full `_api_turns` data, Snorkel still cannot distinguish whether an `"output"` event was produced by `_think()` vs `_reflect()` — these use different system prompts but produce the same event type.
+
+The `prompt_type` metadata and the `_api_turns` persistence are **orthogonal features** that independently improve Snorkel fidelity:
+
+```mermaid
+quadrantChart
+    title Snorkel Fidelity Coverage
+    x-axis "No _api_turns" --> "With _api_turns"
+    y-axis "No prompt_type" --> "With prompt_type"
+    quadrant-1 "Full Fidelity"
+    quadrant-2 "Correct prompt, missing tool state"
+    quadrant-3 "Current state: approximation"
+    quadrant-4 "Full tool state, wrong prompt possible"
+    "Current Implementation": [0.2, 0.2]
+    "After _api_turns only": [0.8, 0.2]
+    "After prompt_type only": [0.2, 0.8]
+    "Both features": [0.9, 0.9]
 ```
-type == "voting" → prompts.vote
-type == "thought" → prompts.think or prompts.think_with_tools
-type == "output"  → prompts.send_function_responses or prompts.reflect
-```
 
-This is a future enhancement; the current implementation provides a **useful approximation** that correctly shows history, role mapping, and Token Guard behavior.
+#### Interim Acceptability
+
+Using `think_with_tools` as the default is the **least-wrong** approximation because:
+- It is the most commonly used prompt (tool-augmented agents dominate the workload)
+- It includes `{tool_names}`, which is informative even if slightly wrong for vote/reflect contexts
+- The Token Guard, role mapping, and history are all correct regardless of prompt selection
+
+### 9.4 Reserved Agent Name Validation
+
+> [!WARNING]
+> The system uses magic strings `"Human"`, `"Moderator"`, and the prefix `"Discord/"` as control-plane actor identifiers (see `moderator.py:133`). If a user defines an agent named `"Human"` in the roster, the Moderator will misclassify agent output as human input, triggering infinite election loops.
+
+The following names must be **rejected** during config validation:
+
+| Reserved Pattern | Reason |
+|-----------------|--------|
+| `"Human"` | Used by `ExecuteTask` RPC to identify UI-submitted messages |
+| `"Moderator"` | Used by the orchestration layer for system notes, elections, checkpoints |
+| `"Discord/*"` (any string starting with `"Discord/"`) | Used for Discord bot integration messages |
+| `"Sub/*"` (any string starting with `"Sub/"`) | Used by `SubagentManager` for spawned subagent IDs (`f"Sub/{task_id}"`) |
+| `"System"` or `"system"` | Used as a fallback actor in `ContextBuilder` and UI |
+
+**Implementation:** Add a `@field_validator("agents")` check in `ClawConfig` (in `config_loader.py`):
+
+```python
+RESERVED_NAMES = {"Human", "Moderator", "System", "system"}
+RESERVED_PREFIXES = ("Discord/", "Sub/", "discord/", "sub/")
+
+@field_validator("agents")
+@classmethod
+def validate_agent_names(cls, agents, info):
+    for agent in agents:
+        if agent.name in RESERVED_NAMES:
+            raise ValueError(f"Agent name '{agent.name}' is reserved.")
+        if agent.name.startswith(RESERVED_PREFIXES):
+            raise ValueError(f"Agent name '{agent.name}' uses a reserved prefix.")
+    return agents
+```
 
 ---
 
-## 10. Verdict
+## 10. Consolidated Remediation Checklist
+
+| # | Issue | Priority | Status |
+|---|-------|----------|--------|
+| R1 | Add per-agent `tools` field to roster config (§3.4-B) | **High** | 🔴 TODO |
+| R2 | Remove `_from_env()` backward-compat code (§3.4-C) | **Medium** | 🔴 TODO |
+| R3 | Remove Dive button for Moderator rows (§6.2) | **High** | 🔴 TODO |
+| R4 | Change Human Dive to plain history view (§6.2) | **High** | 🔴 TODO |
+| R5 | Add reserved agent name validation (§9.4) | **Medium** | 🔴 TODO |
+| R6 | Add `prompt_type` metadata to chatroom schema (§9.3) | **Low** | 🔴 FUTURE |
+| R7 | Publish `_api_turns` to Fluss topic (§9.1) | **Low** | 🔴 FUTURE |
+| R8 | Subagent persona recovery in Snorkel (§3.4-A) | **Medium** | 🔴 TODO |
+
+---
+
+## 11. Verdict
 
 ### Goal 1: Prompt Migration ✅ PASS
 
-All 7 hard-coded prompt templates from baseline commit `6a32387` have been completely migrated to `config.yaml` under `agents.prompts.*`. Character-level comparison confirms **zero semantic differences** between old inline prompts and new YAML templates. No residual hard-coded system prompts remain in the agent or bridge source code.
+All 7 hard-coded prompt templates from baseline commit `6a32387` have been completely migrated to `config.yaml`. Zero semantic differences confirmed. No residual hard-coded system prompts remain.
 
-### Goal 2: Snorkel Dive Fidelity ✅ PASS (with documented limitations)
+### Goal 2: Snorkel Dive Fidelity ⚠️ CONDITIONAL PASS
 
-The Snorkel Dive function correctly reconstructs the agent's context window by:
-1. Querying the Fluss log for events ≤ target timestamp
-2. Loading the unified configuration (same `config.yaml`, same `ClawConfig`)
-3. Calling the **same** `ContextBuilder.build_payload()` function used by the agent
-4. Applying the **same** Token Guard, role mapping, and Moderator note formatting
-
-The step-by-step agent process is **structurally unchanged** — only the source of prompt strings has moved from inline code to declarative config. The `_api_turns` blindspot is a **known, documented limitation** with a clear mitigation path.
+The Snorkel Dive function correctly reconstructs agent context windows via the shared `ContextBuilder`. However, the following must be addressed before the feature is production-accurate:
+- **R1:** Per-agent tool lists must be sourced from config, not a static `default_tools`
+- **R3/R4:** Dive button behavior must differentiate Moderator (remove), Human (plain history), and agents (full reconstruction)
+- **R8:** Subagent personas must be recoverable, not defaulted
 
 ### Process Integrity ✅ PASS
 
-No control flow, method signatures, or architectural patterns were altered. The migration is a textbook **Extract Method → Parameterize** refactoring that preserves behavioral equivalence while eliminating duplication.
+No control flow, method signatures, or architectural patterns were altered. The migration is a clean Extract Method → Parameterize refactoring.
