@@ -49,3 +49,6 @@ Qwen2.5*
 Qwen3*
 MLX-*
 gemma-*
+
+# Workspace
+workspace/*

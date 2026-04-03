@@ -38,8 +38,10 @@ llm:
         - "gpt-4o-mini"
 
   # Default provider + model (used when agent config doesn't specify)
-  default_provider: "mlx-local"
-  default_model: "MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-8bit"
+  default_provider: "gemini-cloud"
+  default_model: "gemini-3-flash-preview"
+  # default_provider: "mlx-local"
+  # default_model: "MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-8bit"
 
 # --- Agent Roster ---
 agents:
@@ -117,6 +119,19 @@ agents:
     autonomous_steps: -1
     conchshell_enabled: true
     subagent_ttl_seconds: 120
+    tools:
+      workspace_root: "/workspace"
+      output_limit_chars: 8192
+      timeouts:
+        shell: 60
+        test_runner: 120
+        search: 30
+        linter: 10
+        diff: 5
+      search_limits:
+        max_total_matches: 500
+        results_per_page: 50
+      repo_map_limit: 500
 
 # --- Gateway Settings ---
 gateway:
@@ -148,6 +163,8 @@ infrastructure:
     bootstrap_servers: "coordinator-server:9123"
   session:
     default_id: "default-session"
+  agent:
+    url: "localhost:50051"
 
 # --- Integrations ---
 integrations:

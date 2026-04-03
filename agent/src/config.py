@@ -30,5 +30,11 @@ SUBAGENT_TTL_SECONDS = _cfg.subagent_ttl_seconds
 FLUSS_BOOTSTRAP_SERVERS = _cfg.fluss_bootstrap_servers
 SESSION_ID = _cfg.session_id
 
+# ── Tool Settings ───────────────────────────────────────────────
+TOOLS = _cfg.tool_settings
+WORKSPACE_ROOT = TOOLS.workspace_root
+TOOL_TIMEOUTS = TOOLS.timeouts
+SEARCH_LIMITS = TOOLS.search_limits
+
 # Expose the full config object for new code
 CONFIG = _cfg

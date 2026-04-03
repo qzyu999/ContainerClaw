@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 # Add shared module path for config_loader
 sys.path.insert(0, os.getenv("SHARED_MODULE_PATH", "/app/shared"))
 
+from shared.config_loader import load_config  # noqa: E402
 from src.providers.openai_strategy import OpenAIStrategy
 from src.providers.gemini_strategy import GeminiStrategy
 
@@ -31,62 +32,24 @@ STRATEGY_MAP = {
 
 
 def _load_strategies(client: httpx.AsyncClient) -> tuple[dict, str]:
-    """Load provider strategies from config.yaml or env vars."""
-    config_path = os.getenv("CLAW_CONFIG_PATH", "/config/config.yaml")
-    strategies = {}
-    default_provider = "gemini-cloud"
-
+    """Load provider strategies from config.yaml via shared loader."""
     try:
-        # Try loading from config.yaml
-        import yaml
-        from pathlib import Path
+        cfg = load_config()
+        strategies = {}
+        for name, prov in cfg.providers.items():
+            cls = STRATEGY_MAP.get(prov.type)
+            if cls:
+                # Strategies expect a dict for configuration
+                strategies[name] = cls(prov.model_dump(), client)
+                print(f"✅ [Gateway] Loaded provider: {name} ({prov.type})")
 
-        if Path(config_path).exists():
-            with open(config_path) as f:
-                raw = yaml.safe_load(f)
-
-            llm = raw.get("llm", {})
-            default_provider = llm.get("default_provider", "gemini-cloud")
-
-            for name, prov in llm.get("providers", {}).items():
-                prov_type = prov.get("type", "openai")
-                cls = STRATEGY_MAP.get(prov_type)
-                if cls:
-                    # Resolve API key from Docker secret if needed
-                    api_key = prov.get("api_key", "")
-                    if not api_key and prov.get("api_key_secret"):
-                        try:
-                            api_key = Path(f"/run/secrets/{prov['api_key_secret']}").read_text().strip()
-                        except Exception:
-                            api_key = ""
-                    prov["api_key"] = api_key
-                    prov["name"] = name
-                    strategies[name] = cls(prov, client)
-                    print(f"✅ [Gateway] Loaded provider: {name} ({prov_type})")
-
-            print(f"🎯 [Gateway] Default provider: {default_provider}")
-            return strategies, default_provider
+        print(f"🎯 [Gateway] Default provider: {cfg.default_provider}")
+        return strategies, cfg.default_provider
 
     except Exception as e:
-        print(f"⚠️ [Gateway] Failed to load config.yaml: {e}. Falling back to env vars.")
-
-    # Fallback: build Gemini-only strategy from env/secrets (backward compat)
-    def get_secret(name):
-        try:
-            with open(f"/run/secrets/{name}", "r") as f:
-                return f.read().strip()
-        except Exception:
-            return None
-
-    api_key = get_secret("gemini_api_key") or os.getenv("GEMINI_API_KEY", "")
-    strategies["gemini-cloud"] = GeminiStrategy({
-        "name": "gemini-cloud",
-        "base_url": "https://generativelanguage.googleapis.com/v1beta",
-        "api_key": api_key,
-        "settings": {"thinking_level": "HIGH", "max_output_tokens": 8192},
-    }, client)
-    print("⚠️ [Gateway] Using fallback Gemini-only configuration.")
-    return strategies, "gemini-cloud"
+        print(f"❌ [Gateway] Failed to load unified config: {e}")
+        # Fail fast to prevent silent startup with broken routing
+        sys.exit(1)
 
 
 @asynccontextmanager

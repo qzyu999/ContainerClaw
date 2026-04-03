@@ -10,6 +10,7 @@ import json
 import subprocess
 import time
 import pyarrow as pa
+import config
 from schemas import BOARD_EVENTS_SCHEMA, DEFAULT_BUCKET_COUNT
 import ast
 import os
@@ -55,7 +56,7 @@ class Tool:
 
 class DiffTool(Tool):
     name = "diff"
-    description = "Show the git diff for a file in /workspace (vs HEAD)."
+    description = f"Show the git diff for a file in {config.WORKSPACE_ROOT} (vs HEAD)."
 
     def __init__(self, session_shell=None):
         super().__init__()
@@ -67,7 +68,7 @@ class DiffTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path relative to /workspace to diff."
+                    "description": f"File path relative to {config.WORKSPACE_ROOT} to diff."
                 }
             },
             "required": ["path"]
@@ -85,12 +86,12 @@ class DiffTool(Tool):
             result = await asyncio.to_thread(
                 subprocess.run,
                 ["git", "diff", "HEAD", "--", rel_path],
-                capture_output=True, text=True, cwd="/workspace", timeout=5,
+                capture_output=True, text=True, cwd=config.WORKSPACE_ROOT, timeout=config.TOOL_TIMEOUTS.diff,
             )
             diff_text = result.stdout if result.returncode == 0 else ""
             if not diff_text:
                 return ToolResult(success=True, output="No differences found.")
-            return ToolResult(success=True, output=diff_text[:8192])
+            return ToolResult(success=True, output=diff_text[:config.TOOLS.output_limit_chars])
         except Exception as e:
             return ToolResult(success=False, output="", error=str(e))
 
@@ -102,7 +103,7 @@ class DiffTool(Tool):
 class TestRunnerTool(Tool):
     name = "test_runner"
     description = (
-        "Run test suites in /workspace. Supports pytest (default) and "
+        f"Run test suites in {config.WORKSPACE_ROOT}. Supports pytest (default) and "
         "generic commands. Use runner='pytest' with args like 'tests/' "
         "or runner='generic' with the full command."
     )
@@ -115,7 +116,7 @@ class TestRunnerTool(Tool):
         "pytest": "python -m pytest {args} --tb=short -q",
         "generic": "{args}",
     }
-    TIMEOUT = 120
+    TIMEOUT = config.TOOL_TIMEOUTS.test_runner
 
     def get_schema(self) -> dict:
         return {
@@ -152,15 +153,15 @@ class TestRunnerTool(Tool):
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd="/workspace",
+                cwd=config.WORKSPACE_ROOT,
             )
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=self.TIMEOUT
             )
             return ToolResult(
                 success=proc.returncode == 0,
-                output=stdout.decode(errors="replace")[:8192],
-                error=stderr.decode(errors="replace")[:4096] if proc.returncode != 0 else None,
+                output=stdout.decode(errors="replace")[:config.TOOLS.output_limit_chars],
+                error=stderr.decode(errors="replace")[:config.TOOLS.output_limit_chars // 2] if proc.returncode != 0 else None,
             )
         except asyncio.TimeoutError:
             proc.kill()
@@ -189,7 +190,7 @@ class ProjectBoard:
     def __init__(self, session_id: str, board_table=None):
         self.session_id = session_id
         self.board_table = board_table
-        self.board_dir = Path("/workspace/.claw_state")
+        self.board_dir = Path(config.WORKSPACE_ROOT) / ".claw_state"
         self.board_path = self.board_dir / f"{session_id}_board.json"  # Fallback only
         self.items: list[dict] = []
         self._writer = None
@@ -471,7 +472,7 @@ class BoardTool(Tool):
 
 class CreateFileTool(Tool):
     name = "create_file"
-    description = "Create a new file in /workspace. Fails if the file already exists."
+    description = f"Create a new file in {config.WORKSPACE_ROOT}. Fails if the file already exists."
 
     def get_schema(self) -> dict:
         return {
@@ -479,7 +480,7 @@ class CreateFileTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path relative to /workspace."
+                    "description": f"File path relative to {config.WORKSPACE_ROOT}."
                 },
                 "content": {
                     "type": "string",
@@ -490,8 +491,8 @@ class CreateFileTool(Tool):
         }
 
     async def execute(self, agent_id: str, params: dict) -> ToolResult:
-        path = Path("/workspace") / params.get("path", "")
-        if not path.resolve().is_relative_to(Path("/workspace")):
+        path = Path(config.WORKSPACE_ROOT) / params.get("path", "")
+        if not path.resolve().is_relative_to(Path(config.WORKSPACE_ROOT)):
             return ToolResult(success=False, output="", error="Path traversal denied.")
         if path.exists():
             return ToolResult(success=False, output="", error=f"File already exists: {params.get('path')}. Use surgical_edit to modify it.")
@@ -520,7 +521,7 @@ class SurgicalEditTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path relative to /workspace."},
+                "path": {"type": "string", "description": f"File path relative to {config.WORKSPACE_ROOT}."},
                 "old_str": {"type": "string", "description": "The exact string block to replace."},
                 "new_str": {"type": "string", "description": "The new string block to insert."}
             },
@@ -528,8 +529,8 @@ class SurgicalEditTool(Tool):
         }
 
     async def execute(self, agent_id: str, params: dict) -> ToolResult:
-        path = Path("/workspace") / params.get("path", "")
-        if not path.resolve().is_relative_to(Path("/workspace")):
+        path = Path(config.WORKSPACE_ROOT) / params.get("path", "")
+        if not path.resolve().is_relative_to(Path(config.WORKSPACE_ROOT)):
             return ToolResult(success=False, output="", error="Path traversal denied.")
         if not path.exists():
             return ToolResult(success=False, output="", error=f"File not found: {path}")
@@ -577,7 +578,7 @@ class SurgicalEditTool(Tool):
             if newline == "\r\n":
                 new_content = new_content.replace("\n", "\r\n")
             path.write_text(new_content, encoding="utf-8", newline="")
-            return ToolResult(success=True, output=f"Successfully replaced 1 occurrence in {path.relative_to('/workspace')}", artifacts=[str(path)])
+            return ToolResult(success=True, output=f"Successfully replaced 1 occurrence in {path.relative_to(config.WORKSPACE_ROOT)}", artifacts=[str(path)])
         except Exception as e:
             return ToolResult(success=False, output="", error=str(e))
 
@@ -590,7 +591,7 @@ class AdvancedReadTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path relative to /workspace."},
+                "path": {"type": "string", "description": f"File path relative to {config.WORKSPACE_ROOT}."},
                 "start_line": {"type": "integer", "description": "1-indexed start line."},
                 "end_line": {"type": "integer", "description": "1-indexed end line (inclusive)."}
             },
@@ -598,8 +599,8 @@ class AdvancedReadTool(Tool):
         }
 
     async def execute(self, agent_id: str, params: dict) -> ToolResult:
-        path = Path("/workspace") / params.get("path", "")
-        if not path.resolve().is_relative_to(Path("/workspace")):
+        path = Path(config.WORKSPACE_ROOT) / params.get("path", "")
+        if not path.resolve().is_relative_to(Path(config.WORKSPACE_ROOT)):
             return ToolResult(success=False, output="", error="Path traversal denied.")
         if not path.exists():
             return ToolResult(success=False, output="", error=f"File not found: {path}")
@@ -641,10 +642,10 @@ class RepoMapTool(Tool):
 
     def _build_map(self) -> ToolResult:
         """Runs entirely in a worker thread — never touches the event loop."""
-        base_dir = Path("/workspace")
+        base_dir = Path(config.WORKSPACE_ROOT)
         output_lines = []
         parsed_files = 0
-        max_files = 500
+        max_files = config.TOOLS.repo_map_limit
         
         try:
             for root, dirs, files in os.walk(base_dir):
@@ -713,10 +714,10 @@ class StructuredSearchTool(Tool):
         
         include_glob = params.get("include_glob")
         page = params.get("page", 1)
-        limit = 50
+        limit = config.SEARCH_LIMITS.results_per_page
         
         # Capping the max initial search results to prevent inefficiency at scale
-        cmd = ["grep", "-rnI", "-m", "500"]
+        cmd = ["grep", "-rnI", "-m", str(config.SEARCH_LIMITS.max_total_matches)]
         if include_glob:
             cmd.extend(["--include", include_glob])
         cmd.append(query)
@@ -727,9 +728,9 @@ class StructuredSearchTool(Tool):
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd="/workspace"
+                cwd=config.WORKSPACE_ROOT
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=config.TOOL_TIMEOUTS.search)
             if proc.returncode not in (0, 1):
                 return ToolResult(success=False, output="", error=f"Grep failed with code {proc.returncode}")
             
@@ -761,15 +762,15 @@ class LinterTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "File path relative to /workspace to lint."}
+                "path": {"type": "string", "description": f"File path relative to {config.WORKSPACE_ROOT} to lint."}
             },
             "required": ["path"]
         }
 
     async def execute(self, agent_id: str, params: dict) -> ToolResult:
         rel_path = params.get("path", "")
-        path = Path("/workspace") / rel_path
-        if not path.resolve().is_relative_to(Path("/workspace")):
+        path = Path(config.WORKSPACE_ROOT) / rel_path
+        if not path.resolve().is_relative_to(Path(config.WORKSPACE_ROOT)):
             return ToolResult(success=False, output="", error="Path traversal denied.")
             
         try:
@@ -777,9 +778,9 @@ class LinterTool(Tool):
                 "python", "-m", "py_compile", str(path),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd="/workspace"
+                cwd=config.WORKSPACE_ROOT
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=config.TOOL_TIMEOUTS.linter)
             if proc.returncode == 0:
                 return ToolResult(success=True, output=f"Syntax OK: {rel_path}")
             else:
@@ -807,15 +808,15 @@ class SessionShellTool(Tool):
             except Exception:
                 pass
         self.sessions.clear()
-
-    DEFAULT_TIMEOUT = 60
+    
+    DEFAULT_TIMEOUT = config.TOOL_TIMEOUTS.shell
 
     def get_schema(self) -> dict:
         return {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "Shell command to execute."},
-                "timeout": {"type": "integer", "description": "Optional timeout in seconds (default 60)."}
+                "timeout": {"type": "integer", "description": f"Optional timeout in seconds (default {config.TOOL_TIMEOUTS.shell})."}
             },
             "required": ["command"]
         }
@@ -832,7 +833,7 @@ class SessionShellTool(Tool):
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                cwd="/workspace"
+                cwd=config.WORKSPACE_ROOT
             )
             self.sessions[agent_id] = proc
             

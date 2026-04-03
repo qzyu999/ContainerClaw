@@ -60,6 +60,30 @@ class PromptsConfig(BaseModel):
     subagent_spawn: str
 
 
+class ToolTimeouts(BaseModel):
+    """Execution timeouts for specific agent tools."""
+    shell: int = 60
+    test_runner: int = 120
+    search: int = 30
+    linter: int = 10
+    diff: int = 5
+
+
+class SearchLimits(BaseModel):
+    """Limits for searching tools to prevent 'grep bombs'."""
+    max_total_matches: int = 500
+    results_per_page: int = 50
+
+
+class ToolSettings(BaseModel):
+    """Global configuration for agent tools."""
+    workspace_root: str = "/workspace"
+    output_limit_chars: int = 8192
+    timeouts: ToolTimeouts = ToolTimeouts()
+    search_limits: SearchLimits = SearchLimits()
+    repo_map_limit: int = 500
+
+
 class ClawConfig(BaseModel):
     """Root configuration object for ContainerClaw."""
     providers: dict[str, ProviderConfig]
@@ -76,6 +100,7 @@ class ClawConfig(BaseModel):
     autonomous_steps: int = -1
     conchshell_enabled: bool = True
     subagent_ttl_seconds: int = 120
+    tool_settings: ToolSettings = ToolSettings()
     # Gateway settings
     gateway_port: int = 8000
     gateway_url: str = "http://llm-gateway:8000"
@@ -84,6 +109,7 @@ class ClawConfig(BaseModel):
     # Infrastructure
     fluss_bootstrap_servers: str = "coordinator-server:9123"
     session_id: str | None = None
+    agent_url: str = "localhost:50051"
     # Integrations
     discord_bot_token: str = ""
     discord_webhook_url: str = ""
@@ -211,6 +237,7 @@ def load_config(config_path: str | None = None) -> ClawConfig:
         autonomous_steps=agent_settings.get("autonomous_steps", -1),
         conchshell_enabled=agent_settings.get("conchshell_enabled", True),
         subagent_ttl_seconds=agent_settings.get("subagent_ttl_seconds", 120),
+        tool_settings=ToolSettings(**agent_settings.get("tools", {})),
         gateway_port=gateway_cfg.get("port", 8000),
         gateway_url=os.getenv("LLM_GATEWAY_URL", "http://llm-gateway:8000"),
         rate_limit_rpm=gateway_cfg.get("rate_limit_rpm", 60),
@@ -220,6 +247,9 @@ def load_config(config_path: str | None = None) -> ClawConfig:
         ),
         session_id=(
             infra.get("session", {}).get("default_id", "default-session")
+        ),
+        agent_url=(
+            infra.get("agent", {}).get("url", "localhost:50051")
         ),
         discord_bot_token=_resolve_secret(raw.get("integrations", {}).get("discord", {}).get("bot_token_secret", "")),
         discord_webhook_url=_resolve_secret(raw.get("integrations", {}).get("discord", {}).get("webhook_url_secret", "")),

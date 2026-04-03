@@ -10,6 +10,17 @@ from flask import Flask, Response, request
 from flask_cors import CORS
 import grpc
 
+# Add shared/ to path for context_builder and config_loader
+shared_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if shared_parent not in sys.path:
+    sys.path.append(shared_parent)
+
+from shared.config_loader import load_config
+from shared.context_builder import ContextBuilder
+
+# Load Unified Configuration
+CONFIG = load_config()
+
 # Add proto to path
 sys.path.append(os.path.join(os.path.dirname(__file__), "proto"))
 
@@ -19,14 +30,12 @@ import agent_pb2_grpc
 app = Flask(__name__)
 CORS(app) # Allow frontend to hit the bridge
 
-AGENT_URL = "localhost:50051"
-
 def get_grpc_stub():
     # 60 attempts * 2s = 2 minutes of patience
     # This is plenty of time for the Fluss Tablet Server to boot
     for i in range(60): 
         try:
-            channel = grpc.insecure_channel(AGENT_URL)
+            channel = grpc.insecure_channel(CONFIG.agent_url)
             # This is the "Python version" of the nc command
             # It blocks until port 50051 is actually open
             grpc.channel_ready_future(channel).result(timeout=2)
@@ -266,7 +275,7 @@ async def _ensure_fluss_conn():
     if _fluss_conn is not None:
         return _fluss_conn
 
-    bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
+    bootstrap = CONFIG.fluss_bootstrap_servers
     if not bootstrap:
         return None
 
@@ -408,7 +417,7 @@ async def _lookup_dag_edges(session_id):
 @app.route("/telemetry/dag/<session_id>")
 def telemetry_dag(session_id):
     """Return DAG edges by scanning the chatroom log table directly."""
-    bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
+    bootstrap = CONFIG.fluss_bootstrap_servers
     if not bootstrap:
         return {"status": "ok", "edges": []}
     try:
@@ -422,7 +431,7 @@ def telemetry_dag(session_id):
 @app.route("/telemetry/dag/<session_id>/stream")
 def telemetry_dag_stream(session_id):
     """SSE endpoint: tail the chatroom log for real-time DAG edge updates."""
-    bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
+    bootstrap = CONFIG.fluss_bootstrap_servers
     if not bootstrap:
         return Response("data: []\n\n", mimetype="text/event-stream")
 
@@ -540,7 +549,7 @@ async def _lookup_metrics(session_id):
 @app.route("/telemetry/metrics/<session_id>")
 def telemetry_metrics(session_id):
     """Return aggregated metrics for HUD sparklines."""
-    bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
+    bootstrap = CONFIG.fluss_bootstrap_servers
     if not bootstrap:
         return {"status": "ok", "metrics": []}
     try:
@@ -640,35 +649,18 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
     # Sort events chronologically by integer timestamp
     events.sort(key=lambda x: x["ts"])
 
-    # Load unified config and context builder
-    try:
-        shared_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # /app
-        if shared_parent not in sys.path:
-            sys.path.append(shared_parent)
-        from shared.config_loader import load_config
-        from shared.context_builder import ContextBuilder
-    except ImportError as e:
-        print(f"Bridge Snorkel: Import error: {e}")
-        return []
-
-    try:
-        claw_config = load_config() # Uses CLAW_CONFIG_PATH env var
-    except Exception as e:
-        print(f"Bridge Snorkel: Config read error: {e}")
-        return []
-
-    persona = claw_config.default_persona
-    agent_tools = claw_config.default_tools
-    for r in claw_config.agents:
+    persona = CONFIG.default_persona
+    agent_tools = CONFIG.default_tools
+    for r in CONFIG.agents:
         if r.name == actor_id:
             persona = r.persona
-            agent_tools = r.resolved_tools(claw_config.default_tools)
+            agent_tools = r.resolved_tools(CONFIG.default_tools)
             break
 
     # Reconstruct the exact same system prompt the agent uses (think_with_tools is the default mode)
     tool_names = ", ".join(agent_tools)
     
-    sys_prompt = claw_config.prompts.think_with_tools.format(
+    sys_prompt = CONFIG.prompts.think_with_tools.format(
         agent_id=actor_id,
         persona=persona,
         tool_names=tool_names
@@ -676,7 +668,7 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
 
     perspective = ContextBuilder.build_payload(
         raw_messages=events,
-        config=claw_config,
+        config=CONFIG,
         actor_id=actor_id,
         system_prompt=sys_prompt
     )
@@ -688,7 +680,7 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
 def telemetry_snorkel(session_id):
     ts = request.args.get("ts")
     actor_id = request.args.get("actor_id")
-    bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
+    bootstrap = CONFIG.fluss_bootstrap_servers
     if not bootstrap:
         return {"status": "ok", "perspective": []}
     try:
@@ -707,7 +699,7 @@ def telemetry_snorkel_raw(session_id):
     chatroom events up to the target timestamp.
     """
     ts = request.args.get("ts")
-    bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
+    bootstrap = CONFIG.fluss_bootstrap_servers
     if not bootstrap:
         return {"status": "ok", "history": []}
     try:
