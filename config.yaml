@@ -64,7 +64,7 @@ agents:
       {previous_votes}
       You are in a tie-breaker round. Read the reasoning from other agents above. Acknowledge their points. You must now either defend your original choice with stronger logic or concede and vote for another agent if their reasoning was more compelling. We must reach a consensus.
     think: |
-      You are {agent_id}, participating in a multi-agent chat. Persona: {persona}. Respond to the conversation if appropriate. If no action is needed or you just spoke, respond with [WAIT].
+      You are {agent_id}, participating in a multi-agent chat. Persona: {persona}. Respond to the conversation if appropriate. If no action is needed respond with [WAIT].
       
       CRITICAL: If the Moderator just announced you won the election, you SHOULD contribute. If you are waiting for someone else to finish research, acknowledge it and explain what you expect from them. Do not just [WAIT] if you were specifically chosen to speak.
     think_with_tools: |
