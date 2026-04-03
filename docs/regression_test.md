@@ -32,6 +32,9 @@ This document shows the full list of features that should remain stable as the c
     - [Planned] Telemetry/querying into the underlying Fluss tables, e.g., SELECT * FROM table WHERE user=Alice
     - [Planned] Indicator for each agent (and subagents) for status (e.g., waiting, thinking, using tools, etc.)
     - [Existing] Live Flink metrics on Fluss streams (Starrocks may be better)
+    - [Planned] Metrics for project management (e.g., burn rate, etc.)
+    - [Planned] Add number of vote rounds, understand the "window"
+    - [Planned] Add numbers relative to like SeaChariot (e.g., current context window length, # tokens, etc.) so the user knows how to manage better the prompt injection, etc.
 - [Planned] Tier into Iceberg tables (after compaction etc. is fixed)
 - [Planned] Final review agent that analyzes the votes/reasons and selects based on the collective output (based on GenSelect)
 - Integration
@@ -59,7 +62,21 @@ Milestones
 - [x] Refactor for an agnostic LLM API (Gemini, OpenAI, Anthropic, Ollama, MLX, etc.), where the number of primary voting agents, their API, and description can be customized (e.g. Agent('Alice', 'Software architect.', 'MLX'), Agent('Bob', 'Program Manager.', 'Gemini')) in a config.yaml. The entire repo's specific config files (include .env files and other global variables) can all be routed towards this single root-level config file. 
 - [x] Snorkel and DAG nodes should allow for a first-level telemetry into agent activity
 - [] Integrate a SELF.md and MEMORY.json (DeerFlow-inspired). It would also make sense for the config.yaml to allow for editing the prompts that go towards the voting process.
+- [] Turtle - allow configurable optimized context window via UI/files - SeaChariot analogy - e.g., agents may try to one-shot and ignore the roles of others
 - [] Experiment with running SWE-bench Verified
+- [] Prune the Moderator messages for the agents
+- [] Maybe always-on agents that comment regularly? Like the PM agent that work async and in parallel with their own heartbeat settings (analyze/wait/observe/feedback/suggestions)?
+
+To do's
+- [] Add "View" in Snorkel for type=[VOTING]
+- [] Test having markdown rendering for text windows
+- [] Widen the width of the app in the browser
+- [] Have the DAG "snake" around so less side scrolling
+- [] Fix the DAG lighting effects
+- [] Add Snorkel button to DAG to jump to Snorkel page at that message location
+- [] Reverse the chat history in Snorkel (add button to reverse it again if desired)
+- [] Allow manually changing the width of the Snorkel 
+- [] Custom icons for Snorkel, SeaChariot
 
 Bugs
 - [x] ⚠️ [StreamActivity] Poll error: - after long period of silence with agents
