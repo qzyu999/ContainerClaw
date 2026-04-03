@@ -38,7 +38,7 @@ This document shows the full list of features that should remain stable as the c
     - [Planned] Integration: Google Workspace
     - [Planned] Integration: Slack
     - [Planned] Integration: GitHub
-    - [Planned] Integration: agent webbrowsing - allow them to do deep research etc. within the sandbox
+    - [Planned] Integration: agent webbrowsing - allow them to do deep research etc. within the sandbox https://github.com/vercel-labs/agent-browser
     - [Planned] Add enable/disable for integrations like Discord etc.
 - [Planned] Read-only access to other system files (may need to just do docker cp or mount large folders at startup with read-only)
 - [Planned] Kaggle/autoresearch module: allow the agents to loop and improve on their own solutions through an API 
