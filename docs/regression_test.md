@@ -59,6 +59,7 @@ Milestones
 - [x] Refactor for an agnostic LLM API (Gemini, OpenAI, Anthropic, Ollama, MLX, etc.), where the number of primary voting agents, their API, and description can be customized (e.g. Agent('Alice', 'Software architect.', 'MLX'), Agent('Bob', 'Program Manager.', 'Gemini')) in a config.yaml. The entire repo's specific config files (include .env files and other global variables) can all be routed towards this single root-level config file. 
 - [x] Snorkel and DAG nodes should allow for a first-level telemetry into agent activity
 - [] Integrate a SELF.md and MEMORY.json (DeerFlow-inspired). It would also make sense for the config.yaml to allow for editing the prompts that go towards the voting process.
+- [] Experiment with running SWE-bench Verified
 
 Bugs
 - [x] ⚠️ [StreamActivity] Poll error: - after long period of silence with agents
