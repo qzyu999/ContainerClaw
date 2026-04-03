@@ -700,14 +700,14 @@ def validate_agent_names(cls, agents, info):
 
 | # | Issue | Priority | Status |
 |---|-------|----------|--------|
-| R1 | Add per-agent `tools` field to roster config (§3.4-B) | **High** | 🔴 TODO |
-| R2 | Remove `_from_env()` backward-compat code (§3.4-C) | **Medium** | 🔴 TODO |
-| R3 | Remove Dive button for Moderator rows (§6.2) | **High** | 🔴 TODO |
-| R4 | Change Human Dive to plain history view (§6.2) | **High** | 🔴 TODO |
-| R5 | Add reserved agent name validation (§9.4) | **Medium** | 🔴 TODO |
+| R1 | Add per-agent `tools` field to roster config (§3.4-B) | **High** | ✅ DONE |
+| R2 | Remove `_from_env()` backward-compat code (§3.4-C) | **Medium** | ✅ DONE |
+| R3 | Remove Dive button for Moderator rows (§6.2) | **High** | ✅ DONE |
+| R4 | Change Human Dive to plain history view (§6.2) | **High** | ✅ DONE |
+| R5 | Add reserved agent name validation (§9.4) | **Medium** | ✅ DONE |
 | R6 | Add `prompt_type` metadata to chatroom schema (§9.3) | **Low** | 🔴 FUTURE |
 | R7 | Publish `_api_turns` to Fluss topic (§9.1) | **Low** | 🔴 FUTURE |
-| R8 | Subagent persona recovery in Snorkel (§3.4-A) | **Medium** | 🔴 TODO |
+| R8 | Subagent persona recovery in Snorkel (§3.4-A) | **Medium** | 🔴 DEFERRED (requires schema change) |
 
 ---
 
@@ -717,12 +717,14 @@ def validate_agent_names(cls, agents, info):
 
 All 7 hard-coded prompt templates from baseline commit `6a32387` have been completely migrated to `config.yaml`. Zero semantic differences confirmed. No residual hard-coded system prompts remain.
 
-### Goal 2: Snorkel Dive Fidelity ⚠️ CONDITIONAL PASS
+### Goal 2: Snorkel Dive Fidelity ✅ PASS (with known future work)
 
-The Snorkel Dive function correctly reconstructs agent context windows via the shared `ContextBuilder`. However, the following must be addressed before the feature is production-accurate:
-- **R1:** Per-agent tool lists must be sourced from config, not a static `default_tools`
-- **R3/R4:** Dive button behavior must differentiate Moderator (remove), Human (plain history), and agents (full reconstruction)
-- **R8:** Subagent personas must be recoverable, not defaulted
+The Snorkel Dive function correctly reconstructs agent context windows via the shared `ContextBuilder`. Completed remediation:
+- **R1:** Per-agent tool lists are now sourced from the roster config's `tools` field
+- **R3/R4:** Dive button is removed for Moderator; Human/Discord actors get a "View" button showing plain chronological history
+- **R5:** Reserved agent names (`Human`, `Moderator`, `System`, `Discord/*`, `Sub/*`) are validated at config load
+
+Remaining future work (R6-R8) requires chatroom schema changes and is tracked separately.
 
 ### Process Integrity ✅ PASS
 

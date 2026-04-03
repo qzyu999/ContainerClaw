@@ -225,3 +225,26 @@ export const fetchSnorkelPerspective = async (
     return [];
   }
 };
+
+export interface RawHistoryEvent {
+  actor_id: string;
+  content: string;
+  ts: number;
+}
+
+export const fetchRawHistory = async (
+  sessionId: string,
+  ts: string
+): Promise<RawHistoryEvent[]> => {
+  try {
+    const params = new URLSearchParams({ ts });
+    const resp = await fetch(`${BRIDGE_URL}/telemetry/snorkel/${sessionId}/raw?${params.toString()}`);
+    const data = await resp.json();
+    if (data.status === 'ok') {
+      return data.history || [];
+    }
+    return [];
+  } catch {
+    return [];
+  }
+};

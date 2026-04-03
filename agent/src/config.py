@@ -1,9 +1,8 @@
 """
 ContainerClaw Agent Configuration — Thin wrapper over config_loader.
 
-This file exists for backward compatibility. All modules that
-`import config` get values sourced from config.yaml (via config_loader)
-or env vars (via _from_env fallback).
+All modules that `import config` get values sourced from config.yaml
+(via config_loader). config.yaml is the single source of truth.
 """
 
 import os

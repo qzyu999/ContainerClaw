@@ -658,13 +658,15 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
         return []
 
     persona = claw_config.default_persona
+    agent_tools = claw_config.default_tools
     for r in claw_config.agents:
         if r.name == actor_id:
             persona = r.persona
+            agent_tools = r.resolved_tools(claw_config.default_tools)
             break
 
     # Reconstruct the exact same system prompt the agent uses (think_with_tools is the default mode)
-    tool_names = ", ".join(claw_config.default_tools)
+    tool_names = ", ".join(agent_tools)
     
     sys_prompt = claw_config.prompts.think_with_tools.format(
         agent_id=actor_id,
@@ -697,7 +699,103 @@ def telemetry_snorkel(session_id):
         return {"status": "error", "message": str(e)}, 500
 
 
+@app.route("/telemetry/snorkel/<session_id>/raw")
+def telemetry_snorkel_raw(session_id):
+    """Raw chronological history — what a human saw at a given timestamp.
+
+    No system prompt, no role mapping, no Token Guard. Just the plain
+    chatroom events up to the target timestamp.
+    """
+    ts = request.args.get("ts")
+    bootstrap = os.getenv("FLUSS_BOOTSTRAP_SERVERS", "")
+    if not bootstrap:
+        return {"status": "ok", "history": []}
+    try:
+        history = _run_async(_lookup_raw_history(session_id, ts))
+        return {"status": "ok", "history": history}
+    except Exception as e:
+        print(f"Bridge: Raw History Error: {e}")
+        return {"status": "error", "message": str(e)}, 500
+
+
+async def _lookup_raw_history(session_id, target_ts_str):
+    """Return plain chronological events — no LLM formatting."""
+    table = await _get_table("chatroom")
+    if table is None:
+        return []
+
+    try:
+        ts_clean = target_ts_str.replace('Z', '+00:00')
+        target_ts_ms = int(datetime.fromisoformat(ts_clean).timestamp() * 1000)
+    except Exception as e:
+        print(f"Bridge Raw History: Timestamp parse error '{target_ts_str}': {e}")
+        return []
+
+    events = []
+    try:
+        import fluss
+        conn = await _ensure_fluss_conn()
+        admin = await conn.get_admin()
+        table_path = fluss.TablePath("containerclaw", "chatroom")
+        table_info = await admin.get_table_info(table_path)
+        num_buckets = table_info.num_buckets
+
+        scanner = await table.new_scan().create_record_batch_log_scanner()
+        scanner.subscribe_buckets({b: fluss.EARLIEST_OFFSET for b in range(num_buckets)})
+
+        processed_any = False
+        reached_target = False
+        for poll_attempt in range(25):
+            try:
+                batches = await scanner._async_poll_batches(200)
+                if not batches:
+                    if processed_any: break
+                    await asyncio.sleep(0.1)
+                    continue
+                
+                processed_any = True
+                for record_batch in batches:
+                    batch = record_batch.batch
+                    sid_arr = batch.column("session_id")
+                    ts_arr = batch.column("ts")
+                    actor_arr = batch.column("actor_id")
+
+                    has_content = "content" in batch.schema.names
+                    content_arr = batch.column("content") if has_content else None
+
+                    for i in range(batch.num_rows):
+                        if sid_arr[i].as_py() != session_id:
+                            continue
+                        
+                        ts = ts_arr[i].as_py()
+                        if ts > target_ts_ms:
+                            reached_target = True
+                            continue
+
+                        raw_content = content_arr[i].as_py() if content_arr else ""
+                        content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else str(raw_content)
+                        raw_actor = actor_arr[i].as_py()
+                        actor = raw_actor.decode("utf-8") if isinstance(raw_actor, bytes) else str(raw_actor)
+
+                        events.append({
+                            "actor_id": actor,
+                            "content": content,
+                            "ts": ts,
+                        })
+                
+                if reached_target:
+                    break
+            except Exception as e:
+                print(f"Bridge: Raw history batch error: {e}")
+                break
+    except Exception as e:
+        print(f"Bridge: Raw history scan error: {e}")
+        return []
+
+    events.sort(key=lambda x: x["ts"])
+    return events
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001, threaded=True)
-
 

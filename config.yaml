@@ -82,14 +82,19 @@ agents:
   roster:
     - name: "Alice"
       persona: "Software architect."
+      tools: "default_tools"
     - name: "Bob"
       persona: "Project manager."
+      tools: "default_tools"
     - name: "Carol"
       persona: "Software engineer."
+      tools: "default_tools"
     - name: "David"
       persona: "Software QA tester."
+      tools: "default_tools"
     - name: "Eve"
       persona: "Business user."
+      tools: "default_tools"
 
   settings:
     default_persona: "General purpose software engineering assistant."

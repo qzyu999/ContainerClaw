@@ -1,8 +1,8 @@
 """
 Unified configuration loader for ContainerClaw.
 
-Loads config.yaml from /config/config.yaml (Docker mount) or falls back
-to environment variables for backward compatibility.
+Loads config.yaml from /config/config.yaml (Docker mount).
+config.yaml is the single source of truth — no env var fallback.
 
 This module is volume-mounted into all containers at /app/shared/ — it is
 NOT copied. Any changes here apply to agent, gateway, and ripcurrent.
@@ -11,6 +11,7 @@ NOT copied. Any changes here apply to agent, gateway, and ripcurrent.
 import os
 import yaml
 from pathlib import Path
+from typing import ClassVar, Union
 from pydantic import BaseModel, field_validator
 
 
@@ -37,6 +38,15 @@ class AgentConfig(BaseModel):
     persona: str
     provider: str = ""           # Provider name (resolved to ProviderConfig)
     model: str = ""              # Model override
+    tools: Union[str, list[str]] = "default_tools"  # "default_tools" sentinel or explicit list
+
+    def resolved_tools(self, default_tools: list[str]) -> list[str]:
+        """Resolve the tools field: 'default_tools' sentinel → full list, else return as-is."""
+        if isinstance(self.tools, str) and self.tools == "default_tools":
+            return list(default_tools)
+        elif isinstance(self.tools, list):
+            return self.tools
+        return list(default_tools)
 
 
 class PromptsConfig(BaseModel):
@@ -79,13 +89,29 @@ class ClawConfig(BaseModel):
     discord_webhook_url: str = ""
     discord_channel_id: str = ""
 
+    # Reserved names that conflict with control-plane actor IDs
+    RESERVED_NAMES: ClassVar[set[str]] = {"Human", "Moderator", "System", "system"}
+    RESERVED_PREFIXES: ClassVar[tuple[str, ...]] = ("Discord/", "Sub/", "discord/", "sub/")
+
     @field_validator("agents")
     @classmethod
-    def validate_agent_providers(cls, agents, info):
-        """Fail-fast: every agent must reference a valid provider or be empty."""
+    def validate_agents(cls, agents, info):
+        """Fail-fast: validate agent names and provider references."""
         providers = info.data.get("providers", {})
         default = info.data.get("default_provider", "")
         for agent in agents:
+            # Reserved name check
+            if agent.name in cls.RESERVED_NAMES:
+                raise ValueError(
+                    f"Agent name '{agent.name}' is reserved for system use. "
+                    f"Reserved names: {cls.RESERVED_NAMES}"
+                )
+            if any(agent.name.startswith(p) for p in cls.RESERVED_PREFIXES):
+                raise ValueError(
+                    f"Agent name '{agent.name}' uses a reserved prefix. "
+                    f"Reserved prefixes: {cls.RESERVED_PREFIXES}"
+                )
+            # Provider reference check
             effective_provider = agent.provider or default
             if effective_provider and effective_provider not in providers:
                 raise ValueError(
@@ -123,8 +149,10 @@ def load_config(config_path: str | None = None) -> ClawConfig:
     """
     path = config_path or CONFIG_PATH
     if not Path(path).exists():
-        # Fallback: build config from env vars (backward compatibility)
-        return _from_env()
+        raise FileNotFoundError(
+            f"config.yaml not found at '{path}'. Set CLAW_CONFIG_PATH or "
+            f"mount config.yaml into the container at /config/config.yaml."
+        )
 
     with open(path) as f:
         raw = yaml.safe_load(f)
@@ -156,6 +184,7 @@ def load_config(config_path: str | None = None) -> ClawConfig:
             persona=entry["persona"],
             provider=entry.get("provider", default_prov),
             model=entry.get("model", default_model),
+            tools=entry.get("tools", "default_tools"),
         ))
         
     prompts_raw = raw.get("agents", {}).get("prompts", {})
@@ -197,84 +226,3 @@ def load_config(config_path: str | None = None) -> ClawConfig:
         discord_channel_id=_resolve_secret(raw.get("integrations", {}).get("discord", {}).get("channel_id_secret", "")),
     )
 
-
-def _from_env() -> ClawConfig:
-    """Backward-compatible: build ClawConfig from env vars.
-
-    This mirrors the old agent/src/config.py behavior so that containers
-    continue to work even if config.yaml is not yet mounted.
-    """
-    # Build a single provider from env vars
-    api_key = ""
-    try:
-        api_key = Path("/run/secrets/gemini_api_key").read_text().strip()
-    except Exception:
-        api_key = os.getenv("GEMINI_API_KEY", "")
-
-    default_model = os.getenv("DEFAULT_MODEL", "gemini-3-flash-preview")
-    gateway_url = os.getenv("LLM_GATEWAY_URL", "http://llm-gateway:8000")
-
-    providers = {
-        "gemini-cloud": ProviderConfig(
-            name="gemini-cloud",
-            type="gemini",
-            base_url="https://generativelanguage.googleapis.com/v1beta",
-            api_key=api_key,
-            api_key_secret="gemini_api_key",
-            models=[default_model],
-        )
-    }
-
-    agents = [
-        AgentConfig(name="Alice", persona="Software architect.",
-                    provider="gemini-cloud", model=default_model),
-        AgentConfig(name="Bob", persona="Project manager.",
-                    provider="gemini-cloud", model=default_model),
-        AgentConfig(name="Carol", persona="Software engineer.",
-                    provider="gemini-cloud", model=default_model),
-        AgentConfig(name="David", persona="Software QA tester.",
-                    provider="gemini-cloud", model=default_model),
-        AgentConfig(name="Eve", persona="Business user.",
-                    provider="gemini-cloud", model=default_model),
-    ]
-
-    try:
-        local_config = Path(__file__).parent.parent / "config.yaml"
-        with open(local_config) as f:
-            local_raw = yaml.safe_load(f)
-            fallback_prompts = PromptsConfig(**local_raw.get("agents", {}).get("prompts", {}))
-    except Exception:
-        # Fallback to empty strings if neither mount nor local file is available
-        fallback_prompts = PromptsConfig(
-            vote="", vote_debate="", think="", think_with_tools="", 
-            send_function_responses="", reflect="", subagent_spawn=""
-        )
-
-    return ClawConfig(
-        providers=providers,
-        agents=agents,
-        prompts=fallback_prompts,
-        default_provider="gemini-cloud",
-        default_model=default_model,
-        default_persona="General purpose software engineering assistant.",
-        default_tools=[
-            "board", "test_runner", "diff", "surgical_edit", "advanced_read", 
-            "repo_map", "structured_search", "linter", "session_shell", 
-            "create_file", "delegate"
-        ],
-        max_history_messages=int(os.getenv("MAX_HISTORY_MESSAGES", "100")),
-        max_history_chars=480000,
-        max_tool_rounds=int(os.getenv("MAX_TOOL_ROUNDS", "30")),
-        autonomous_steps=int(os.getenv("AUTONOMOUS_STEPS", "-1")),
-        conchshell_enabled=os.getenv("CONCHSHELL_ENABLED", "true").lower() == "true",
-        subagent_ttl_seconds=int(os.getenv("SUBAGENT_TTL_SECONDS", "120")),
-        gateway_port=int(os.getenv("LLM_GATEWAY_PORT", "8000")),
-        gateway_url=gateway_url,
-        rate_limit_rpm=int(os.getenv("RATE_LIMIT_RPM", "60")),
-        max_tokens_per_request=int(os.getenv("MAX_TOKENS_PER_REQUEST", "8192")),
-        fluss_bootstrap_servers=os.getenv("FLUSS_BOOTSTRAP_SERVERS", "coordinator-server:9123"),
-        session_id=os.getenv("CLAW_SESSION_ID"),
-        discord_bot_token=os.getenv("DISCORD_BOT_TOKEN", ""),
-        discord_webhook_url=os.getenv("DISCORD_WEBHOOK_URL", ""),
-        discord_channel_id=os.getenv("DISCORD_CHANNEL_ID", ""),
-    )

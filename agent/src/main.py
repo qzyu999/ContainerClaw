@@ -136,7 +136,14 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             delegate_tool = DelegateTool(available_tools=common_tools)
             all_tools = common_tools + [delegate_tool]
 
-            toolsets = {a.agent_id: all_tools for a in agents}
+            # Build per-agent toolsets from config
+            # Each agent gets tools based on their roster config's "tools" field
+            tool_registry = {t.name: t for t in all_tools}
+            toolsets = {}
+            for agent_cfg in cfg.agents:
+                agent_tool_names = agent_cfg.resolved_tools(cfg.default_tools)
+                agent_tools = [tool_registry[n] for n in agent_tool_names if n in tool_registry]
+                toolsets[agent_cfg.name] = agent_tools
             tool_dispatcher = ToolDispatcher(toolsets)
             print(f"🐚 [ConchShell] Tool dispatcher initialized for session {session_id}.")
         else:

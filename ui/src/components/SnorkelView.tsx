@@ -1,24 +1,36 @@
 import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import type { ActivityEvent } from '../api';
-import { fetchSnorkelPerspective } from '../api';
-import type { PerspectiveMessage } from '../api';
+import { fetchSnorkelPerspective, fetchRawHistory } from '../api';
+import type { PerspectiveMessage, RawHistoryEvent } from '../api';
 
 interface SnorkelViewProps {
   events: ActivityEvent[];
   sessionId: string;
 }
 
+/** Determine the actor category for button rendering. */
+function getActorType(actorId: string | undefined): 'agent' | 'human' | 'moderator' | 'subagent' {
+  if (!actorId) return 'moderator';
+  if (actorId === 'Moderator') return 'moderator';
+  if (actorId === 'Human' || actorId.startsWith('Discord/')) return 'human';
+  if (actorId.startsWith('Sub/')) return 'subagent';
+  return 'agent';
+}
+
 export default function SnorkelView({ events, sessionId }: SnorkelViewProps) {
   const [selectedEventIndex, setSelectedEventIndex] = useState<number | null>(null);
   const [perspective, setPerspective] = useState<PerspectiveMessage[]>([]);
+  const [rawHistory, setRawHistory] = useState<RawHistoryEvent[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [viewMode, setViewMode] = useState<'dive' | 'raw' | null>(null);
 
-  // We should clearly identify the Actor being snorkeled. If not present, default to "system" or similar.
   const handleDive = async (index: number, event: ActivityEvent) => {
     setSelectedEventIndex(index);
     setPerspective([]);
+    setRawHistory([]);
     setIsLoading(true);
+    setViewMode('dive');
 
     const actorId = event.actor_id || 'system';
     try {
@@ -26,6 +38,23 @@ export default function SnorkelView({ events, sessionId }: SnorkelViewProps) {
       setPerspective(msgs);
     } catch (err) {
       console.error('Failed to fetch perspective:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleViewRaw = async (index: number, event: ActivityEvent) => {
+    setSelectedEventIndex(index);
+    setPerspective([]);
+    setRawHistory([]);
+    setIsLoading(true);
+    setViewMode('raw');
+
+    try {
+      const history = await fetchRawHistory(sessionId, event.timestamp);
+      setRawHistory(history);
+    } catch (err) {
+      console.error('Failed to fetch raw history:', err);
     } finally {
       setIsLoading(false);
     }
@@ -48,6 +77,7 @@ export default function SnorkelView({ events, sessionId }: SnorkelViewProps) {
           <tbody>
             {events.map((e, index) => {
               const isActive = index === selectedEventIndex;
+              const actorType = getActorType(e.actor_id);
               return (
                 <tr key={index} className={`snorkel-row ${isActive ? 'active-row' : ''}`}>
                   <td className="snorkel-cell-time">{new Date(e.timestamp || Date.now()).toLocaleTimeString()}</td>
@@ -61,12 +91,21 @@ export default function SnorkelView({ events, sessionId }: SnorkelViewProps) {
                     {e.content.length > 80 ? e.content.substring(0, 80) + '...' : e.content}
                   </td>
                   <td className="snorkel-cell-action">
-                    <button 
-                      className={`btn-dive ${isActive ? 'active' : ''}`} 
-                      onClick={() => handleDive(index, e)}
-                    >
-                      Dive
-                    </button>
+                    {actorType === 'agent' || actorType === 'subagent' ? (
+                      <button 
+                        className={`btn-dive ${isActive && viewMode === 'dive' ? 'active' : ''}`} 
+                        onClick={() => handleDive(index, e)}
+                      >
+                        Dive
+                      </button>
+                    ) : actorType === 'human' ? (
+                      <button 
+                        className={`btn-view ${isActive && viewMode === 'raw' ? 'active' : ''}`}
+                        onClick={() => handleViewRaw(index, e)}
+                      >
+                        View
+                      </button>
+                    ) : null /* Moderator: no button */}
                   </td>
                 </tr>
               );
@@ -88,7 +127,11 @@ export default function SnorkelView({ events, sessionId }: SnorkelViewProps) {
           <h3>Perspective HUD</h3>
           {selectedEventIndex !== null && events[selectedEventIndex] && (
             <div className="hud-meta">
-              Snorkeling as: <strong>{events[selectedEventIndex].actor_id || 'system'}</strong>
+              {viewMode === 'dive' ? (
+                <>Snorkeling as: <strong>{events[selectedEventIndex].actor_id || 'system'}</strong></>
+              ) : viewMode === 'raw' ? (
+                <>Viewing as: <strong>{events[selectedEventIndex].actor_id || 'Human'}</strong> (plain history)</>
+              ) : null}
             </div>
           )}
         </div>
@@ -96,9 +139,9 @@ export default function SnorkelView({ events, sessionId }: SnorkelViewProps) {
           {isLoading ? (
             <div className="loading-overlay">
               <Loader2 className="animate-spin" size={32} color="#4ade80" />
-              <span>Reconstructing Context...</span>
+              <span>{viewMode === 'raw' ? 'Loading History...' : 'Reconstructing Context...'}</span>
             </div>
-          ) : perspective.length > 0 ? (
+          ) : viewMode === 'dive' && perspective.length > 0 ? (
              <div className="hud-messages">
                {perspective.map((msg, i) => (
                  <div key={i} className={`hud-message hud-message-${msg.role}`}>
@@ -107,13 +150,22 @@ export default function SnorkelView({ events, sessionId }: SnorkelViewProps) {
                  </div>
                ))}
              </div>
+          ) : viewMode === 'raw' && rawHistory.length > 0 ? (
+            <div className="hud-messages">
+              {rawHistory.map((evt, i) => (
+                <div key={i} className={`hud-message hud-message-raw`}>
+                  <div className="hud-message-role">{evt.actor_id}</div>
+                  <div className="hud-message-body">{evt.content}</div>
+                </div>
+              ))}
+            </div>
           ) : selectedEventIndex !== null ? (
             <div className="hud-empty">
               No context returned. The history may be empty or filtered out.
             </div>
           ) : (
             <div className="hud-empty">
-              Select "Dive" on any event to view the reconstructed context window.
+              Select "Dive" on an agent event or "View" on a human event to inspect the context.
             </div>
           )}
         </div>
