@@ -18,35 +18,50 @@ This document shows the full list of features that should remain stable as the c
 - [Planned] /normal=true/false to simplify the agent context window so they talk more normally and use less (or no) tooling
 - [Planned] /tool-mute and /tool-unmute to remove the tool outputs from the main chatroom
 - [Planned] Filter (via web UI)/mute tool-related actions in chatroom
-- * [Planned] Snorkel: A way to see the actual context window for each agent
-- [Planned] DeerFlow-style JSON memories for AI context HUD
+- [Planned] Able to edit the agent roster and prompts dynamically from UI/CLI
+- Snorkel
+    - [Existing] Snorkel: A way to see the actual context window for each agent
+    - [Planned] Add filters
+    - [Planned] Complete the R6, R7, and R8 goals from draft_pt20_validate.md
+- Turtle (AI sliding context window)
+    - [Existing] Move config files to the root folder / config.yaml similar to DeerFlow
+    - [Planned] DeerFlow-style JSON memories for AI context HUD
+    - [Planned] Turtle concept for problem density progressing over time
 - [Existing] Subagents that work independently and async with the main chatroom
-- [Planned] Telemetry/querying into the underlying Fluss tables, e.g., SELECT * FROM table WHERE user=Alice
-- [Planned] Indicator for each agent (and subagents) for status (e.g., waiting, thinking, using tools, etc.)
-- [Planned] Live Flink metrics on Fluss streams (Starrocks may be better)
+- Flink Metrics
+    - [Planned] Telemetry/querying into the underlying Fluss tables, e.g., SELECT * FROM table WHERE user=Alice
+    - [Planned] Indicator for each agent (and subagents) for status (e.g., waiting, thinking, using tools, etc.)
+    - [Existing] Live Flink metrics on Fluss streams (Starrocks may be better)
 - [Planned] Tier into Iceberg tables (after compaction etc. is fixed)
-- [Planned] Move config files to the root folder / config.yaml similar to DeerFlow
 - [Planned] Final review agent that analyzes the votes/reasons and selects based on the collective output (based on GenSelect)
-- [Planned] Integration: Google Workspace
-- [Planned] Integration: Slack
-- [Planned] Integration: GitHub
-- [Planned] Integration: agent webbrowsing - allow them to do deep research etc. within the sandbox
+- Integration
+    - [Planned] Integration: Google Workspace
+    - [Planned] Integration: Slack
+    - [Planned] Integration: GitHub
+    - [Planned] Integration: agent webbrowsing - allow them to do deep research etc. within the sandbox
+    - [Planned] Add enable/disable for integrations like Discord etc.
 - [Planned] Read-only access to other system files (may need to just do docker cp or mount large folders at startup with read-only)
 - [Planned] Kaggle/autoresearch module: allow the agents to loop and improve on their own solutions through an API 
 - [Planned] Kubernetes integrations
 - [Planned] Project board seems to require manual refresh quite often
 - [Planned] Visualization tab of the agentic DAG
 - [Planned] README.md for all the commands and how to use them
-- [Planned] Add enable/disable for integrations like Discord etc.
-- [Planned] Able to edit the agent roster and prompts dynamically from UI/CLI
-- [Planned] Turtle concept for problem density progressing over time
 - [Planned] Refactor - abstract all the different verticals into a simpler plane like a data mesh where everything can be accessed/changed easily
+- Features
+    - [Planned] auto agent - build self-optimized harnesses and then wrap them in container claw https://github.com/kevinrgu/autoagent - https://x.com/kevingu/status/2039843234760073341
+    - [Planned] agent-generated Wiki that can be viewed - https://gemini.google.com/app/4de1c42e0a237992 - https://x.com/karpathy/status/2039805659525644595
+    - [Planned] AI neuroscience - log the weight activations during processes - do analysis (clustering/PCA/etc. to provide interpretation of the specific model’s weights) -> AI neurosurgery -> manage prompting better to find the nature/language of the model to speak more directly to its understanding - or tweak the weights to control the agent behavior (https://nnsight.net/tutorials/mini-papers/) https://gemini.google.com/app/074407dfd5339597
+    - [Planned] Systematic tracking of "traces" - https://x.com/caspar_br/status/2039576939724521609 - https://gemini.google.com/app/c701fd1496efa0f2
+    - [Planned] Use pretext over the current React setup - https://news.ycombinator.com/item?id=47556290 - https://github.com/chenglou/pretext
 
 Milestones
 - [x] Add all the basic functionality - then refactor for cleanliness/modularity/efficient idempotent modular system around the stream -> document the stream-centric approach which should also be agent-centric. In particular, a concept for spawning subagents to organically allow for parallelization (swarm > static patterns) (Noted with *)
 - [x] Refactor for an agnostic LLM API (Gemini, OpenAI, Anthropic, Ollama, MLX, etc.), where the number of primary voting agents, their API, and description can be customized (e.g. Agent('Alice', 'Software architect.', 'MLX'), Agent('Bob', 'Program Manager.', 'Gemini')) in a config.yaml. The entire repo's specific config files (include .env files and other global variables) can all be routed towards this single root-level config file. 
+- [x] Snorkel and DAG nodes should allow for a first-level telemetry into agent activity
 - [] Integrate a SELF.md and MEMORY.json (DeerFlow-inspired). It would also make sense for the config.yaml to allow for editing the prompts that go towards the voting process.
-- [] Snorkel and DAG nodes should allow for a first-level telemetry into agent activity
 
 Bugs
 - [x] ⚠️ [StreamActivity] Poll error: - after long period of silence with agents
+- [] After /stop the chat no longer will resume
+- [] Subagent Snorkel view looks illogical
+- [] Snorkel's System types have "Dive" - can remove
