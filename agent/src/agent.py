@@ -63,29 +63,6 @@ class LLMAgent:
             text = '{"' + text[2:]
         return text
 
-    def _format_history(self, raw_messages):
-        """Tailors the history for this specific agent's perspective.
-
-        Converts internal message format → OpenAI Chat Completions messages.
-        """
-        formatted = []
-        for msg in raw_messages:
-            actor = msg['actor_id']
-            content = msg['content']
-
-            # If I sent it, role is "assistant". If anyone else sent it, "user".
-            role = "assistant" if actor == self.agent_id else "user"
-
-            # Formatting for the prompt
-            if actor == "Moderator":
-                text = f"[Moderator Note]: {content}"
-            elif role == "user":
-                text = f"{actor}: {content}"
-            else:
-                text = content  # Assistant role doesn't need prefix
-
-            formatted.append({"role": role, "content": text})
-        return formatted
 
     async def _call_gateway(self, sys_instr, history, is_json=False,
                              tools=None, tool_choice=None,
@@ -100,12 +77,15 @@ class LLMAgent:
             tool_choice: OpenAI tool_choice setting ("auto", "required", etc.)
             extra_turns: Additional messages for multi-turn tool calling.
         """
-        messages = [{"role": "system", "content": sys_instr}]
-        messages.extend(self._format_history(history))
+        from shared.context_builder import ContextBuilder
 
-        # Append structured tool calling turns if present
-        if extra_turns:
-            messages.extend(extra_turns)
+        messages = ContextBuilder.build_payload(
+            raw_messages=history,
+            config=config.CONFIG,
+            actor_id=self.agent_id,
+            system_prompt=sys_instr,
+            extra_turns=extra_turns
+        )
 
         payload = {
             "model": self.model,
@@ -164,29 +144,14 @@ class LLMAgent:
             return []
 
     async def _vote(self, history, roster, previous_votes=None):
-        instr = (
-            f"You are {self.agent_id}. Persona: {self.persona}.\n"
-            "You are in a voting phase. A new message has arrived in the chat.\n"
-            "You must review the history and vote for the ONE agent who is best suited to respond.\n"
-            f"The team roster and roles are: {roster}.\n"
-            "CRITICAL: You must only vote for one of the primary agents listed in the roster or the vote is invalidated.\n"
-            "Please collaborate together in an agile format, leveraging each others unique abilities and tools.\n"
-            "If someone specifically addressed an agent, vote for them. Otherwise, vote based on merit.\n"
-            "You must also evaluate if the overall task is completely finished.\n"
-            "Respond ONLY in valid JSON with the following keys:\n"
-            "- 'vote' (string: name of the agent)\n"
-            "- 'reason' (string: one sentence reason for the vote)\n"
-            "- 'is_done' (boolean: true if the job is complete, false otherwise)\n"
-            "- 'done_reason' (string: one sentence explaining why the job is or isn't done)."
+        instr = config.CONFIG.prompts.vote.format(
+            agent_id=self.agent_id,
+            persona=self.persona,
+            roster=roster
         )
         if previous_votes:
-            instr += (
-                "\n\n### DEBATE MODE ###\n"
-                f"Previous round results:\n{previous_votes}\n"
-                "You are in a tie-breaker round. Read the reasoning from other agents above. "
-                "Acknowledge their points. You must now either defend your original choice with stronger logic or "
-                "concede and vote for another agent if their reasoning was more compelling. "
-                "We must reach a consensus."
+            instr += "\n\n" + config.CONFIG.prompts.vote_debate.format(
+                previous_votes=previous_votes
             )
 
         try:
@@ -207,14 +172,9 @@ class LLMAgent:
 
     async def _think(self, history):
         """Pure-text thinking — no tool use. Backward-compatible fallback."""
-        instr = (
-            f"You are {self.agent_id}, participating in a multi-agent chat. "
-            f"Persona: {self.persona}. "
-            "Respond to the conversation if appropriate. "
-            "If no action is needed or you just spoke, respond with [WAIT].\n\n"
-            "CRITICAL: If the Moderator just announced you won the election, you SHOULD contribute. "
-            "If you are waiting for someone else to finish research, acknowledge it and explain what you expect from them. "
-            "Do not just [WAIT] if you were specifically chosen to speak."
+        instr = config.CONFIG.prompts.think.format(
+            agent_id=self.agent_id,
+            persona=self.persona
         )
         raw_response = await self._call_gateway(instr, history)
         return self._extract_text(raw_response)
@@ -227,15 +187,10 @@ class LLMAgent:
         function_calls are in normalized format.
         """
         tool_names = ", ".join(t.name for t in available_tools)
-        instr = (
-            f"You are {self.agent_id}, participating in a multi-agent software engineering team. "
-            f"Persona: {self.persona}. "
-            f"You have access to tools: [{tool_names}]. "
-            "Use them when you need to take action — read files, write code, run commands, "
-            "manage the project board, or run tests. "
-            "If no action is needed, respond with text explaining why.\n\n"
-            "CRITICAL: If the Moderator just announced you won the election, you SHOULD contribute. "
-            "Do not skip your turn if you were specifically chosen to speak."
+        instr = config.CONFIG.prompts.think_with_tools.format(
+            agent_id=self.agent_id,
+            persona=self.persona,
+            tool_names=tool_names
         )
 
         # Build OpenAI function tool definitions
@@ -317,11 +272,9 @@ class LLMAgent:
                 "content": result_content,
             })
 
-        instr = (
-            f"You are {self.agent_id}. Persona: {self.persona}. "
-            "You executed tools and the results are provided. "
-            "Based on these results, decide your next action: "
-            "call more tools if needed, or provide a text summary of what you accomplished."
+        instr = config.CONFIG.prompts.send_function_responses.format(
+            agent_id=self.agent_id,
+            persona=self.persona
         )
 
         tools = []
@@ -372,11 +325,9 @@ class LLMAgent:
 
     async def _reflect(self, history):
         """Post-tool reflection — let the agent process tool results."""
-        instr = (
-            f"You are {self.agent_id}. Persona: {self.persona}. "
-            "You just executed some tools. The results are in the conversation history above. "
-            "Summarize what happened and decide your next step: "
-            "respond with your findings, take more tool actions, or say [WAIT] if done."
+        instr = config.CONFIG.prompts.reflect.format(
+            agent_id=self.agent_id,
+            persona=self.persona
         )
 
         raw_response = await self._call_gateway(instr, history)

@@ -323,72 +323,80 @@ async def _lookup_dag_edges(session_id):
             {b: fluss.EARLIEST_OFFSET for b in range(num_buckets)}
         )
 
-        for _ in range(20):  # Poll up to 20 times
-            batches = await scanner._async_poll_batches(500)
-            if not batches:
-                break
-            for record_batch in batches:
-                batch = record_batch.batch
-                sid_arr = batch.column("session_id")
-                eid_arr = batch.column("event_id")
-                actor_arr = batch.column("actor_id")
-                type_arr = batch.column("type")
-                ts_arr = batch.column("ts")
+        # Fast poll loop: stop as soon as we've caught up
+        processed_any = False
+        for poll_attempt in range(25):
+            try:
+                batches = await scanner._async_poll_batches(200)
+                if not batches:
+                    if processed_any: break # Caught up to the current head
+                    await asyncio.sleep(0.1)
+                    continue
+                
+                processed_any = True
+                for record_batch in batches:
+                    batch = record_batch.batch
+                    sid_arr = batch.column("session_id")
+                    eid_arr = batch.column("event_id")
+                    actor_arr = batch.column("actor_id")
+                    type_arr = batch.column("type")
+                    ts_arr = batch.column("ts")
 
-                # Fetch content for smart labels
-                has_content = "content" in batch.schema.names
-                content_arr = batch.column("content") if has_content else None
+                    # Fetch content for smart labels
+                    has_content = "content" in batch.schema.names
+                    content_arr = batch.column("content") if has_content else None
 
-                has_parent_event_id = "parent_event_id" in batch.schema.names
-                has_edge_type = "edge_type" in batch.schema.names
-                parent_eid_arr = batch.column("parent_event_id") if has_parent_event_id else None
-                edge_type_arr = batch.column("edge_type") if has_edge_type else None
+                    has_parent_event_id = "parent_event_id" in batch.schema.names
+                    has_edge_type = "edge_type" in batch.schema.names
+                    parent_eid_arr = batch.column("parent_event_id") if has_parent_event_id else None
+                    edge_type_arr = batch.column("edge_type") if has_edge_type else None
 
-                for i in range(batch.num_rows):
-                    if sid_arr[i].as_py() != session_id:
-                        continue
+                    for i in range(batch.num_rows):
+                        if sid_arr[i].as_py() != session_id:
+                            continue
 
-                    parent_eid = parent_eid_arr[i].as_py() if parent_eid_arr else ""
-                    edge_type = edge_type_arr[i].as_py() if edge_type_arr else "SEQUENTIAL"
-                    event_type = type_arr[i].as_py()
-                    actor = actor_arr[i].as_py()
-                    
-                    # Safely extract and decode content
-                    raw_content = content_arr[i].as_py() if content_arr else ""
-                    content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else str(raw_content)
+                        parent_eid = parent_eid_arr[i].as_py() if parent_eid_arr else ""
+                        edge_type = edge_type_arr[i].as_py() if edge_type_arr else "SEQUENTIAL"
+                        event_type = type_arr[i].as_py()
+                        actor = actor_arr[i].as_py()
+                        
+                        # Safely extract and decode content
+                        raw_content = content_arr[i].as_py() if content_arr else ""
+                        content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else str(raw_content)
 
-                    if event_type in ("finish", "done", "checkpoint"):
-                        status = "DONE"
-                    elif event_type in ("action", "voting"):
-                        status = "THINKING"
-                    elif event_type == "thought":
-                        status = "DONE"  # Thoughts are past events, not actively computing
-                    else:
-                        status = "ACTIVE"
+                        if event_type in ("finish", "done", "checkpoint"):
+                            status = "DONE"
+                        elif event_type in ("action", "voting"):
+                            status = "THINKING"
+                        elif event_type == "thought":
+                            status = "DONE"  # Thoughts are past events, not actively computing
+                        else:
+                            status = "ACTIVE"
 
-                    if event_type == "checkpoint":
-                        label = "Checkpoint"
-                    elif event_type == "finish":
-                        label = "Task Complete"
-                    elif "Starting Election" in content:
-                        label = "Election"
-                    elif "Winner:" in content:
-                        # e.g., "🏆 Winner: Alice" -> crop if it's too long
-                        label = content[:25]
-                    else:
                         label = actor
+                        if event_type == "checkpoint":
+                            label = "Checkpoint"
+                        elif event_type == "finish":
+                            label = "Task Complete"
+                        elif "Starting Election" in content:
+                            label = "Election"
+                        elif "Winner:" in content:
+                            label = content[:25]
 
-                    edges.append({
-                        "parent": parent_eid if parent_eid else "ROOT",
-                        "child": eid_arr[i].as_py(),
-                        "child_label": label,
-                        "edge_type": edge_type if edge_type else "SEQUENTIAL",
-                        "status": status,
-                        "updated_at": ts_arr[i].as_py(),
-                        "ts": ts_arr[i].as_py(),
-                        "content": content,
-                        "actor": actor,
-                    })
+                        edges.append({
+                            "parent": parent_eid if parent_eid else "ROOT",
+                            "child": eid_arr[i].as_py(),
+                            "child_label": label,
+                            "edge_type": edge_type if edge_type else "SEQUENTIAL",
+                            "status": status,
+                            "updated_at": ts_arr[i].as_py(),
+                            "ts": ts_arr[i].as_py(),
+                            "content": content,
+                            "actor": actor,
+                        })
+            except Exception as e:
+                print(f"Bridge: DAG batch error: {e}")
+                break
     except Exception as e:
         print(f"Bridge: DAG edges scan error: {e}")
         import traceback
@@ -578,77 +586,98 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
         scanner = await table.new_scan().create_record_batch_log_scanner()
         scanner.subscribe_buckets({b: fluss.EARLIEST_OFFSET for b in range(num_buckets)})
 
-        for _ in range(20):
-            batches = await scanner._async_poll_batches(500)
-            if not batches:
+        # Fast poll loop: stop as soon as we've caught up or exceeded target_ts
+        processed_any = False
+        reached_target = False
+        for poll_attempt in range(25):
+            try:
+                batches = await scanner._async_poll_batches(200)
+                if not batches:
+                    if processed_any: break # Caught up to the current head
+                    await asyncio.sleep(0.1)
+                    continue
+                
+                processed_any = True
+                for record_batch in batches:
+                    batch = record_batch.batch
+                    sid_arr = batch.column("session_id")
+                    ts_arr = batch.column("ts")
+                    actor_arr = batch.column("actor_id")
+                    type_arr = batch.column("type")
+
+                    has_content = "content" in batch.schema.names
+                    content_arr = batch.column("content") if has_content else None
+
+                    for i in range(batch.num_rows):
+                        if sid_arr[i].as_py() != session_id:
+                            continue
+                        
+                        ts = ts_arr[i].as_py()
+                        # Integer comparison for ms timestamps
+                        if ts > target_ts_ms:
+                            reached_target = True
+                            continue # Skip events after target, but keep scanning for this batch
+
+                        raw_content = content_arr[i].as_py() if content_arr else ""
+                        content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else str(raw_content)
+
+                        events.append({
+                            "ts": ts,
+                            "actor_id": actor_arr[i].as_py(),
+                            "type": type_arr[i].as_py(),
+                            "content": content
+                        })
+                
+                if reached_target:
+                    break
+            except Exception as e:
+                print(f"Bridge: Snorkel batch error: {e}")
                 break
-            for record_batch in batches:
-                batch = record_batch.batch
-                sid_arr = batch.column("session_id")
-                ts_arr = batch.column("ts")
-                actor_arr = batch.column("actor_id")
-                type_arr = batch.column("type")
-
-                has_content = "content" in batch.schema.names
-                content_arr = batch.column("content") if has_content else None
-
-                for i in range(batch.num_rows):
-                    if sid_arr[i].as_py() != session_id:
-                        continue
-                    
-                    ts = ts_arr[i].as_py()
-                    # Integer comparison for ms timestamps
-                    if ts > target_ts_ms:
-                        continue
-
-                    raw_content = content_arr[i].as_py() if content_arr else ""
-                    content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else str(raw_content)
-
-                    events.append({
-                        "ts": ts,
-                        "actor_id": actor_arr[i].as_py(),
-                        "type": type_arr[i].as_py(),
-                        "content": content
-                    })
     except Exception as e:
         print(f"Bridge: Snorkel scan error: {e}")
         return []
 
-    config_path = os.path.join(os.path.dirname(__file__), "../..", "config.yaml")
-    max_history = 100
-    persona = "You are a helpful assistant."
+    # Sort events chronologically by integer timestamp
+    events.sort(key=lambda x: x["ts"])
+
+    # Load unified config and context builder
     try:
-        with open(config_path, "r") as f:
-            config_data = yaml.safe_load(f)
-            max_history = config_data.get("agents", {}).get("settings", {}).get("max_history_messages", 100)
-            roster = config_data.get("agents", {}).get("roster", [])
-            for r in roster:
-                if r.get("name") == actor_id:
-                    persona = r.get("persona")
-                    break
+        shared_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # /app
+        if shared_parent not in sys.path:
+            sys.path.append(shared_parent)
+        from shared.config_loader import load_config
+        from shared.context_builder import ContextBuilder
+    except ImportError as e:
+        print(f"Bridge Snorkel: Import error: {e}")
+        return []
+
+    try:
+        claw_config = load_config() # Uses CLAW_CONFIG_PATH env var
     except Exception as e:
         print(f"Bridge Snorkel: Config read error: {e}")
+        return []
 
-    events = sorted(events, key=lambda x: str(x["ts"]))
-    events = events[-max_history:]
+    persona = claw_config.default_persona
+    for r in claw_config.agents:
+        if r.name == actor_id:
+            persona = r.persona
+            break
 
-    perspective = [{"role": "system", "content": f"You are {actor_id}, participating in a multi-agent chat. Persona: {persona}."}]
+    # Reconstruct the exact same system prompt the agent uses (think_with_tools is the default mode)
+    tool_names = ", ".join(claw_config.default_tools)
     
-    for msg in events:
-        actor = msg['actor_id']
-        content = msg['content']
-        msg_type = msg['type']
-        
-        role = "assistant" if actor == actor_id else "user"
-        
-        if actor == "Moderator":
-            text = f"[Moderator Note]: {content}"
-        elif role == "user":
-            text = f"{actor}: {content}"
-        else:
-            text = content
-            
-        perspective.append({"role": role, "content": text})
+    sys_prompt = claw_config.prompts.think_with_tools.format(
+        agent_id=actor_id,
+        persona=persona,
+        tool_names=tool_names
+    )
+
+    perspective = ContextBuilder.build_payload(
+        raw_messages=events,
+        config=claw_config,
+        actor_id=actor_id,
+        system_prompt=sys_prompt
+    )
 
     return perspective
 

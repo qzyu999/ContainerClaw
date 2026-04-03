@@ -43,34 +43,19 @@ class ContextManager:
         return True
 
     def get_window(self, size: int | None = None) -> list[dict]:
-        """Return the most recent messages, constrained by both count and token budget.
+        """Return the most recent messages.
+        
+        Token guard and precise truncation is now delegated to the shared ContextBuilder
+        during payload assembly.
 
         Args:
             size: Max number of messages to return. Defaults to config.MAX_HISTORY_MESSAGES.
         
         Returns:
-            List of message dicts in chronological order, trimmed to fit
-            within config.MAX_HISTORY_CHARS.
+            List of message dicts in chronological order.
         """
         n = size or config.MAX_HISTORY_MESSAGES
-        messages = self.all_messages[-n:]
-
-        # Token Guard: character-based budget (proxy for token limit)
-        char_limit = config.MAX_HISTORY_CHARS
-        budget = char_limit
-        final_msgs = []
-
-        # Walk backwards until budget is exhausted
-        for msg in reversed(messages):
-            content = msg.get("content", "")
-            msg_len = len(content)
-            if budget - msg_len < 0:
-                print(f"⚠️ [Context] Token Guard triggered. Truncating history at {len(final_msgs)} msgs.")
-                break
-            final_msgs.insert(0, msg)
-            budget -= msg_len
-
-        return final_msgs
+        return self.all_messages[-n:]
 
     def sort(self):
         """Ensure messages are in strict chronological order."""

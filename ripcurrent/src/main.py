@@ -13,10 +13,11 @@ from fluss_helpers import CHATROOM_SCHEMA, poll_batches
 import sys
 from pathlib import Path
 
-# Add shared/ to the Python path for config_loader
-sys.path.insert(0, os.getenv("SHARED_MODULE_PATH", "/app/shared"))
+# Add parent of shared/ to the Python path so it can be imported as a package
+shared_path = os.getenv("SHARED_MODULE_PATH", "/app/shared")
+sys.path.insert(0, os.path.dirname(shared_path))
 
-from config_loader import load_config
+from shared.config_loader import load_config
 
 cfg = load_config()
 

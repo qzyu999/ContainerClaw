@@ -39,13 +39,27 @@ class AgentConfig(BaseModel):
     model: str = ""              # Model override
 
 
+class PromptsConfig(BaseModel):
+    """Configuration for agent system prompts. Derived purely from config.yaml."""
+    vote: str
+    vote_debate: str
+    think: str
+    think_with_tools: str
+    send_function_responses: str
+    reflect: str
+    subagent_spawn: str
+
+
 class ClawConfig(BaseModel):
     """Root configuration object for ContainerClaw."""
     providers: dict[str, ProviderConfig]
     agents: list[AgentConfig]
+    prompts: PromptsConfig
     default_provider: str
     default_model: str
     # Agent settings
+    default_persona: str = "General purpose software engineering assistant."
+    default_tools: list[str] = []
     max_history_messages: int = 100
     max_history_chars: int = 480000
     max_tool_rounds: int = 30
@@ -143,6 +157,9 @@ def load_config(config_path: str | None = None) -> ClawConfig:
             provider=entry.get("provider", default_prov),
             model=entry.get("model", default_model),
         ))
+        
+    prompts_raw = raw.get("agents", {}).get("prompts", {})
+    prompts = PromptsConfig(**prompts_raw)
 
     gateway_cfg = raw.get("gateway", {})
     infra = raw.get("infrastructure", {})
@@ -150,8 +167,15 @@ def load_config(config_path: str | None = None) -> ClawConfig:
     return ClawConfig(
         providers=providers,
         agents=agents,
+        prompts=prompts,
         default_provider=default_prov,
         default_model=default_model,
+        default_persona=agent_settings.get("default_persona", "General purpose software engineering assistant."),
+        default_tools=agent_settings.get("default_tools", [
+            "board", "test_runner", "diff", "surgical_edit", "advanced_read", 
+            "repo_map", "structured_search", "linter", "session_shell", 
+            "create_file", "delegate"
+        ]),
         max_history_messages=agent_settings.get("max_history_messages", 100),
         max_history_chars=agent_settings.get("max_history_chars", 480000),
         max_tool_rounds=agent_settings.get("max_tool_rounds", 30),
@@ -214,11 +238,30 @@ def _from_env() -> ClawConfig:
                     provider="gemini-cloud", model=default_model),
     ]
 
+    try:
+        local_config = Path(__file__).parent.parent / "config.yaml"
+        with open(local_config) as f:
+            local_raw = yaml.safe_load(f)
+            fallback_prompts = PromptsConfig(**local_raw.get("agents", {}).get("prompts", {}))
+    except Exception:
+        # Fallback to empty strings if neither mount nor local file is available
+        fallback_prompts = PromptsConfig(
+            vote="", vote_debate="", think="", think_with_tools="", 
+            send_function_responses="", reflect="", subagent_spawn=""
+        )
+
     return ClawConfig(
         providers=providers,
         agents=agents,
+        prompts=fallback_prompts,
         default_provider="gemini-cloud",
         default_model=default_model,
+        default_persona="General purpose software engineering assistant.",
+        default_tools=[
+            "board", "test_runner", "diff", "surgical_edit", "advanced_read", 
+            "repo_map", "structured_search", "linter", "session_shell", 
+            "create_file", "delegate"
+        ],
         max_history_messages=int(os.getenv("MAX_HISTORY_MESSAGES", "100")),
         max_history_chars=480000,
         max_tool_rounds=int(os.getenv("MAX_TOOL_ROUNDS", "30")),

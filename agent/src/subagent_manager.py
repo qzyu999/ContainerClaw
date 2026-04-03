@@ -167,12 +167,10 @@ class SubagentManager:
         try:
             async with asyncio.timeout(timeout_s):
                 # Seed the context with the task
+                sys_msg = config.CONFIG.prompts.subagent_spawn.format(task_desc=task_desc)
                 ctx.context.add_message(
                     "Moderator",
-                    f"TASK: {task_desc}\n\n"
-                    f"You are an autonomous subagent. Work independently using your tools. "
-                    f"When finished, include [DONE] in your final message. "
-                    f"If you get stuck, include [STUCK] and explain why.",
+                    sys_msg,
                     int(time.time() * 1000),
                 )
 
