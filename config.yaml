@@ -38,10 +38,8 @@ llm:
         - "gpt-4o-mini"
 
   # Default provider + model (used when agent config doesn't specify)
-  default_provider: "gemini-cloud"
-  default_model: "gemini-3-flash-preview"
-  # default_provider: "mlx-local"
-  # default_model: "MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-8bit"
+  default_provider: "mlx-local"
+  default_model: "MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-8bit"
 
 # --- Agent Roster ---
 agents:
