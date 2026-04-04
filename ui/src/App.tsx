@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Box, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare, ChevronLeft, ChevronRight, User, Plus, GitBranch, BarChart3, Loader2, Waves } from 'lucide-react';
+import { Box, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare, ChevronLeft, ChevronRight, User, Plus, GitBranch, BarChart3, Loader2, Waves, Anchor } from 'lucide-react';
 
 import { streamEvents, fetchWorkspace, fetchHistory, fetchSessions, createSession } from './api';
 import type { ActivityEvent, Session } from './api';
@@ -10,10 +10,11 @@ import ProjectBoard from './components/ProjectBoard';
 import DagView from './components/DagView';
 import MetricsView from './components/MetricsView';
 import SnorkelView from './components/SnorkelView';
+import AnchorView from './components/AnchorView';
 
 // No fallback session — all sessions must be dynamic
 
-type TabId = 'chatroom' | 'explorer' | 'dag' | 'metrics' | 'snorkel';
+type TabId = 'chatroom' | 'explorer' | 'dag' | 'metrics' | 'snorkel' | 'anchor';
 
 export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -270,6 +271,13 @@ export default function App() {
               <Waves size={14} />
               <span>Snorkel</span>
             </button>
+            <button 
+              className={`tab-item ${activeTab === 'anchor' ? 'active' : ''}`}
+              onClick={() => setActiveTab('anchor')}
+            >
+              <Anchor size={14} />
+              <span>Anchor</span>
+            </button>
           </div>
 
           {/* Tab Content */}
@@ -307,6 +315,9 @@ export default function App() {
                 )}
                 {activeTab === 'snorkel' && (
                   <SnorkelView events={events} sessionId={activeSessionId} />
+                )}
+                {activeTab === 'anchor' && (
+                  <AnchorView sessionId={activeSessionId} events={events} />
                 )}
               </>
             )}

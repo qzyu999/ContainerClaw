@@ -14,6 +14,7 @@ services:
       - ${PROJECT_DIR:-.}/workspace:/workspace:rw
       - ${PROJECT_DIR:-.}/.claw_state:/state:rw
       - ${PROJECT_DIR:-.}/config.yaml:/config/config.yaml:ro
+      - ${PROJECT_DIR:-.}/SELF.md:/config/SELF.md:ro
       - ${PROJECT_DIR:-.}/shared:/app/shared:ro
     secrets:
       - gemini_api_key
@@ -158,6 +159,7 @@ services:
     volumes:
       - ${PROJECT_DIR:-.}/.claw_state:/state:ro
       - ${PROJECT_DIR:-.}/config.yaml:/config/config.yaml:ro
+      - ${PROJECT_DIR:-.}/SELF.md:/config/SELF.md:ro
       - ${PROJECT_DIR:-.}/shared:/app/shared:ro
     environment:
       - AGENT_URL=localhost:50051

@@ -16,10 +16,31 @@ from pydantic import BaseModel, field_validator
 
 
 CONFIG_PATH = os.getenv("CLAW_CONFIG_PATH", "/config/config.yaml")
+CONFIG_DIR = Path(CONFIG_PATH).parent
 
 
 # ── Pydantic Models ─────────────────────────────────────────────
 
+
+class AnchorTemplateConfig(BaseModel):
+    """Configuration for an anchor template used for agent steering."""
+    label: str
+    text: str
+    default: bool = False
+
+class UIConfig(BaseModel):
+    """Configuration for the dashboard UI."""
+    port: int = 3000
+    anchor_templates: list[AnchorTemplateConfig] = []
+
+    @field_validator("anchor_templates")
+    @classmethod
+    def validate_templates(cls, v):
+        """Enforce only one default template."""
+        defaults = [t for t in v if t.default]
+        if len(defaults) > 1:
+            raise ValueError("Only one anchor template can be marked as default.")
+        return v
 
 class ProviderConfig(BaseModel):
     """Configuration for a single LLM provider."""
@@ -114,6 +135,17 @@ class ClawConfig(BaseModel):
     discord_bot_token: str = ""
     discord_webhook_url: str = ""
     discord_channel_id: str = ""
+    # UI
+    ui: UIConfig = UIConfig()
+
+    def get_default_anchor(self) -> str:
+        """Find the template with default=True, or fall back to the first one."""
+        if not self.ui.anchor_templates:
+            return ""
+        for t in self.ui.anchor_templates:
+            if t.default:
+                return t.text
+        return self.ui.anchor_templates[0].text
 
     # Reserved names that conflict with control-plane actor IDs
     RESERVED_NAMES: ClassVar[set[str]] = {"Human", "Moderator", "System", "system"}
@@ -254,5 +286,6 @@ def load_config(config_path: str | None = None) -> ClawConfig:
         discord_bot_token=_resolve_secret(raw.get("integrations", {}).get("discord", {}).get("bot_token_secret", "")),
         discord_webhook_url=_resolve_secret(raw.get("integrations", {}).get("discord", {}).get("webhook_url_secret", "")),
         discord_channel_id=_resolve_secret(raw.get("integrations", {}).get("discord", {}).get("channel_id_secret", "")),
+        ui=UIConfig(**raw.get("ui", {})),
     )
 

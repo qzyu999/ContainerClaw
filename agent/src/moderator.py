@@ -27,6 +27,11 @@ class StageModerator:
         self.fluss = fluss_client
         self.agent_names = [a.agent_id for a in agents]
         self.roster_str = ", ".join([f"{a.agent_id} ({a.persona})" for a in agents])
+        
+        # Propagate roster to agents for team awareness
+        for agent in self.agents:
+            agent.roster_str = self.roster_str
+
         self.last_replayed_offset = 0
 
         self.command_dispatcher = create_default_dispatcher()
@@ -251,6 +256,13 @@ class StageModerator:
                     self._last_human_event_id = ""  # Consume it
 
                 await asyncio.sleep(1.0)
+                
+                # ── Anchor Fetch ──────────────────────────────────
+                # Fetch latest human steering directive before each logic cycle
+                anchor_text = await self.fluss_client.fetch_latest_anchor(self.session_id)
+                for agent in self.agents:
+                    agent.anchor_text = anchor_text
+                
                 context_window = self.context.get_window()
 
                 # ── Election ──────────────────────────────────────

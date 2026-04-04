@@ -64,17 +64,24 @@ agents:
       {previous_votes}
       You are in a tie-breaker round. Read the reasoning from other agents above. Acknowledge their points. You must now either defend your original choice with stronger logic or concede and vote for another agent if their reasoning was more compelling. We must reach a consensus.
     think: |
-      You are {agent_id}, participating in a multi-agent chat. Persona: {persona}. Respond to the conversation if appropriate. If no action is needed respond with [WAIT].
+      You are {agent_id}, participating in a multi-agent chat. Persona: {persona}.
+      Team Roster: {roster}.
+      Respond to the conversation if appropriate. If no action is needed respond with [WAIT].
       
       CRITICAL: If the Moderator just announced you won the election, you SHOULD contribute. If you are waiting for someone else to finish research, acknowledge it and explain what you expect from them. Do not just [WAIT] if you were specifically chosen to speak.
     think_with_tools: |
-      You are {agent_id}, participating in a multi-agent software engineering team. Persona: {persona}. You have access to tools: [{tool_names}]. Use them when you need to take action — read files, write code, run commands, manage the project board, or run tests. If no action is needed, respond with text explaining why.
+      You are {agent_id}, participating in a multi-agent software engineering team. Persona: {persona}.
+      Team Roster: {roster}.
+      You have access to tools: [{tool_names}]. Use them when you need to take action — read files, write code, run commands, manage the project board, or run tests. If no action is needed, respond with text explaining why.
       
       CRITICAL: If the Moderator just announced you won the election, you SHOULD contribute. Do not skip your turn if you were specifically chosen to speak.
     send_function_responses: |
-      You are {agent_id}. Persona: {persona}. You executed tools and the results are provided. Based on these results, decide your next action: call more tools if needed, or provide a text summary of what you accomplished.
+      You are {agent_id}. Persona: {persona}. Team Roster: {roster}.
+      You have received the results of your previous tool calls.
+      Continue your analysis and decide on the next step.
     reflect: |
-      You are {agent_id}. Persona: {persona}. You just executed some tools. The results are in the conversation history above. Summarize what happened and decide your next step: respond with your findings, take more tool actions, or say [WAIT] if done.
+      You are {agent_id}. Persona: {persona}. Team Roster: {roster}.
+      Reflect on the actions you just took and provide a summary of your progress.
     subagent_spawn: |
       TASK: {task_desc}
 
@@ -174,3 +181,22 @@ integrations:
 # --- UI ---
 ui:
   port: 3000
+  anchor_templates:
+    - label: "Agile Development"
+      default: true
+      text: |
+        Focus on collaboration and role-based effort. Every agent should contribute according to 
+        their specialization (Architect, Engineer, QA, etc.). Avoid one agent doing everything. 
+        Synchronize frequently on the Project Board.
+    - label: "Focus on Bug"
+      default: false
+      text: "Priority: Bug investigation. Keep your focus on the current error logs and do not diverge into feature requests. Run tests frequently."
+    - label: "Strict Safety"
+      default: false
+      text: "CRITICAL: Safety first. Do not run any destructive commands (rm -rf, etc) without explaining the rationale first. Use 'ls' to verify context before editing."
+    - label: "Code Quality"
+      default: false
+      text: "Goal: Refactoring for readability. Follow SOLID principles. Ensure every function has a docstring and type hints. Do not sacrifice performance."
+    - label: "QA Mode"
+      default: false
+      text: "You are in QA mode. Your sole mission is to find edge cases and break the implementation. Write exhaustive unit tests including null/empty checks."

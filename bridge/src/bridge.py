@@ -9,6 +9,8 @@ from datetime import datetime
 from flask import Flask, Response, request
 from flask_cors import CORS
 import grpc
+import pyarrow as pa
+import pathlib
 
 # Add shared/ to path for context_builder and config_loader
 shared_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -261,6 +263,15 @@ _fluss_thread.start()
 
 _fluss_conn = None
 _fluss_tables = {}
+
+# ── Anchor Message Schema ──────────────────────────────────────────
+ANCHOR_MESSAGE_SCHEMA = pa.schema([
+    pa.field("session_id", pa.string()),
+    pa.field("ts", pa.int64()),
+    pa.field("content", pa.string()),
+    pa.field("author", pa.string()),
+])
+ANCHOR_MESSAGE_TABLE = "anchor_message"
 
 
 def _run_async(coro):
@@ -598,6 +609,11 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
         # Fast poll loop: stop as soon as we've caught up or exceeded target_ts
         processed_any = False
         reached_target = False
+        target_ts_ms = target_ts_ms # ensure availability
+        
+        # Determine anchor text at that specific historical moment
+        anchor_text = await _fetch_anchor_at_timestamp(session_id, target_ts_ms)
+        
         for poll_attempt in range(25):
             try:
                 batches = await scanner._async_poll_batches(200)
@@ -657,20 +673,29 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
             agent_tools = r.resolved_tools(CONFIG.default_tools)
             break
 
-    # Reconstruct the exact same system prompt the agent uses (think_with_tools is the default mode)
+    # ── SELF.md (Spine) Reconstruction (Sectional) ──
+    from shared.spine_loader import load_spine
+    spine_content = load_spine(actor_id)
+
+    # ── Team Roster & Tool Reconstruction ──
+    roster_str = ", ".join([f"{a.name} ({a.persona})" for a in CONFIG.agents])
     tool_names = ", ".join(agent_tools)
-    
+
     sys_prompt = CONFIG.prompts.think_with_tools.format(
         agent_id=actor_id,
         persona=persona,
-        tool_names=tool_names
+        tool_names=tool_names,
+        roster=roster_str
     )
+    if spine_content:
+        sys_prompt = spine_content + "\n\n" + sys_prompt
 
     perspective = ContextBuilder.build_payload(
         raw_messages=events,
         config=CONFIG,
         actor_id=actor_id,
-        system_prompt=sys_prompt
+        system_prompt=sys_prompt,
+        anchor_text=anchor_text
     )
 
     return perspective
@@ -786,6 +811,116 @@ async def _lookup_raw_history(session_id, target_ts_str):
 
     events.sort(key=lambda x: x["ts"])
     return events
+
+
+# ── Anchor Protocol Bridge Logic ───────────────────────────────────
+
+@app.route("/anchor/templates")
+def get_anchor_templates():
+    """Return the list of steering templates from config.yaml."""
+    templates = [t.model_dump() for t in CONFIG.ui.anchor_templates]
+    return {"status": "ok", "templates": templates}
+
+@app.route("/session/<session_id>/anchor", methods=["POST"])
+def set_anchor(session_id):
+    """Drop a new anchor (steering message) for the session."""
+    data = request.json or {}
+    content = data.get("content", "")
+    author = data.get("author", "operator")
+    try:
+        _run_async(_write_anchor(session_id, content, author))
+        return {"status": "ok"}
+    except Exception as e:
+        print(f"Bridge: Set Anchor Error: {e}")
+        return {"status": "error", "message": str(e)}, 500
+
+
+@app.route("/session/<session_id>/anchor")
+def get_anchor(session_id):
+    """Fetch the latest active anchor for the session."""
+    try:
+        content = _run_async(_fetch_latest_anchor_bridge(session_id))
+        return {"status": "ok", "content": content}
+    except Exception as e:
+        print(f"Bridge: Get Anchor Error: {e}")
+        return {"status": "error", "message": str(e)}, 500
+
+
+async def _write_anchor(session_id, content, author):
+    table = await _get_table(ANCHOR_MESSAGE_TABLE)
+    if table is None:
+        raise Exception("anchor_message table not available")
+    
+    batch = pa.RecordBatch.from_arrays([
+        pa.array([session_id], type=pa.string()),
+        pa.array([int(time.time() * 1000)], type=pa.int64()),
+        pa.array([content], type=pa.string()),
+        pa.array([author], type=pa.string()),
+    ], schema=ANCHOR_MESSAGE_SCHEMA)
+    
+    writer = table.new_append().create_writer()
+    writer.write_arrow_batch(batch)
+    if hasattr(writer, "flush"):
+        await writer.flush()
+
+
+async def _fetch_latest_anchor_bridge(session_id):
+    return await _fetch_anchor_at_timestamp(session_id, int(time.time() * 1000))
+
+
+async def _fetch_anchor_at_timestamp(session_id, target_ts_ms):
+    """Historical scan of the anchor_message log."""
+    table = await _get_table(ANCHOR_MESSAGE_TABLE)
+    if table is None:
+        return ""
+    
+    import fluss
+    conn = await _ensure_fluss_conn()
+    admin = await conn.get_admin()
+    table_path = fluss.TablePath("containerclaw", ANCHOR_MESSAGE_TABLE)
+    table_info = await admin.get_table_info(table_path)
+    num_buckets = table_info.num_buckets
+
+    scanner = await table.new_scan().create_record_batch_log_scanner()
+    scanner.subscribe_buckets({b: fluss.EARLIEST_OFFSET for b in range(num_buckets)})
+
+    latest_ts = -1
+    latest_content = ""
+    
+    # Scan full history up to target_ts_ms
+    processed_any = False
+    for poll_attempt in range(20):
+        try:
+            batches = await scanner._async_poll_batches(200)
+            if not batches:
+                if processed_any: break
+                await asyncio.sleep(0.1)
+                continue
+            
+            processed_any = True
+            for record_batch in batches:
+                batch = record_batch.batch
+                sid_arr = batch.column("session_id")
+                ts_arr = batch.column("ts")
+                content_arr = batch.column("content")
+
+                for i in range(batch.num_rows):
+                    if sid_arr[i].as_py() != session_id:
+                        continue
+                    
+                    ts = ts_arr[i].as_py()
+                    if ts > target_ts_ms:
+                        continue 
+                    
+                    if ts > latest_ts:
+                        latest_ts = ts
+                        raw_content = content_arr[i].as_py()
+                        latest_content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else str(raw_content)
+        except Exception as e:
+            print(f"Bridge: Anchor scan batch error: {e}")
+            break
+            
+    return latest_content
 
 
 if __name__ == "__main__":

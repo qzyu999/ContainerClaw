@@ -95,15 +95,21 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
         # Build agents from config.yaml roster
         cfg = config.CONFIG
+        from shared.spine_loader import load_spine
+        
         agents = []
         for agent_cfg in cfg.agents:
+            # ── Loading SELF.md (Spine) Sectional Parsing ──
+            spine_content = load_spine(agent_cfg.name)
+
             agents.append(LLMAgent(
                 agent_id=agent_cfg.name,
                 persona=agent_cfg.persona,
                 provider=agent_cfg.provider or cfg.default_provider,
                 model=agent_cfg.model or cfg.default_model,
+                spine=spine_content
             ))
-        print(f"🤖 [Agent] Roster: {[a.agent_id for a in agents]} (provider: {cfg.default_provider}, model: {cfg.default_model})")
+        print(f"🤖 [Agent] Roster: {[a.agent_id for a in agents]} (Spine Loaded: {bool(spine_content)})")
 
         # ── ConchShell: Per-agent tool authorization ──
         conchshell_enabled = config.CONCHSHELL_ENABLED
@@ -465,6 +471,13 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
         try:
             result = await self.fluss.create_session(session_id, title)
+            
+            # ── Auto-Drop Default Anchor ──
+            default_anchor = config.CONFIG.get_default_anchor()
+            if default_anchor:
+                print(f"⚓ [Agent] Auto-dropping default anchor for session: {session_id}")
+                await self.fluss.set_anchor(session_id, default_anchor)
+
             return agent_pb2.SessionEntry(
                 session_id=result["session_id"],
                 title=result["title"],

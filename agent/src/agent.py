@@ -21,11 +21,14 @@ import config
 
 
 class LLMAgent:
-    def __init__(self, agent_id, persona, provider="", model=""):
+    def __init__(self, agent_id, persona, provider="", model="", spine=""):
         self.agent_id = agent_id
         self.persona = persona
         self.provider = provider or config.CONFIG.default_provider
         self.model = model or config.DEFAULT_MODEL
+        self.spine = spine
+        self.anchor_text = ""
+        self.roster_str = ""
         self.gateway_url = f"{config.LLM_GATEWAY_URL}/v1/chat/completions"
         self._api_turns = []  # Structured turns for multi-turn tool calling
 
@@ -79,12 +82,16 @@ class LLMAgent:
         """
         from shared.context_builder import ContextBuilder
 
+        sys_instr_with_spine = (self.spine + "\n\n" + sys_instr) if hasattr(self, 'spine') and self.spine else sys_instr
+        anchor_text = getattr(self, 'anchor_text', "")
+
         messages = ContextBuilder.build_payload(
             raw_messages=history,
             config=config.CONFIG,
             actor_id=self.agent_id,
-            system_prompt=sys_instr,
-            extra_turns=extra_turns
+            system_prompt=sys_instr_with_spine,
+            extra_turns=extra_turns,
+            anchor_text=anchor_text
         )
 
         payload = {
@@ -174,7 +181,8 @@ class LLMAgent:
         """Pure-text thinking — no tool use. Backward-compatible fallback."""
         instr = config.CONFIG.prompts.think.format(
             agent_id=self.agent_id,
-            persona=self.persona
+            persona=self.persona,
+            roster=self.roster_str
         )
         raw_response = await self._call_gateway(instr, history)
         return self._extract_text(raw_response)
@@ -190,7 +198,8 @@ class LLMAgent:
         instr = config.CONFIG.prompts.think_with_tools.format(
             agent_id=self.agent_id,
             persona=self.persona,
-            tool_names=tool_names
+            tool_names=tool_names,
+            roster=self.roster_str
         )
 
         # Build OpenAI function tool definitions
@@ -274,7 +283,8 @@ class LLMAgent:
 
         instr = config.CONFIG.prompts.send_function_responses.format(
             agent_id=self.agent_id,
-            persona=self.persona
+            persona=self.persona,
+            roster=self.roster_str
         )
 
         tools = []
@@ -327,7 +337,8 @@ class LLMAgent:
         """Post-tool reflection — let the agent process tool results."""
         instr = config.CONFIG.prompts.reflect.format(
             agent_id=self.agent_id,
-            persona=self.persona
+            persona=self.persona,
+            roster=self.roster_str
         )
 
         raw_response = await self._call_gateway(instr, history)

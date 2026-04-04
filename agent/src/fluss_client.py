@@ -15,9 +15,9 @@ import pyarrow as pa
 
 from schemas import (
     CHATROOM_SCHEMA, SESSIONS_SCHEMA, BOARD_EVENTS_SCHEMA,
-    AGENT_STATUS_SCHEMA,
+    AGENT_STATUS_SCHEMA, ANCHOR_MESSAGE_SCHEMA,
     DATABASE, CHATROOM_TABLE, SESSIONS_TABLE, BOARD_EVENTS_TABLE,
-    AGENT_STATUS_TABLE,
+    AGENT_STATUS_TABLE, ANCHOR_MESSAGE_TABLE,
     DEFAULT_BUCKET_COUNT, BUCKET_KEY,
 )
 
@@ -40,6 +40,7 @@ class FlussClient:
         self.sessions_table = None
         self.board_table = None
         self.status_table = None
+        self.anchor_table = None
 
     async def connect(self, max_attempts: int = 30, retry_delay: float = 3.0):
         """Connect to Fluss and initialize all tables.
@@ -71,6 +72,9 @@ class FlussClient:
                 )
                 self.status_table = await self._ensure_table(
                     AGENT_STATUS_TABLE, AGENT_STATUS_SCHEMA
+                )
+                self.anchor_table = await self._ensure_table(
+                    ANCHOR_MESSAGE_TABLE, ANCHOR_MESSAGE_SCHEMA
                 )
 
                 print("🚀 All Fluss tables connected and ready.")
@@ -308,3 +312,54 @@ class FlussClient:
         events.sort(key=lambda x: x["ts"])
         return events
 
+    async def fetch_latest_anchor(self, session_id: str) -> str:
+        """Return the content of the most recent anchor_message for a session.
+        
+        Returns empty string if no anchor has been set.
+        """
+        scanner = await self.create_scanner(self.anchor_table)
+        latest_ts = -1
+        latest_content = ""
+        empty_polls = 0
+        while empty_polls < 5:
+            batches = await self.poll_async(scanner, timeout_ms=500)
+            if not batches:
+                empty_polls += 1
+                continue
+            empty_polls = 0
+            for batch in batches:
+                sid_arr = batch["session_id"]
+                ts_arr = batch["ts"]
+                content_arr = batch["content"]
+                for i in range(batch.num_rows):
+                    if sid_arr[i].as_py() != session_id:
+                        continue
+                    ts = ts_arr[i].as_py()
+                    if ts > latest_ts:
+                        latest_ts = ts
+                        content = content_arr[i].as_py()
+                        latest_content = content.decode("utf-8") if isinstance(content, bytes) else str(content)
+    async def set_anchor(self, session_id: str, content: str) -> bool:
+        """Write a new steering anchor message to the anchor_table.
+        
+        Returns:
+            True if successful.
+        """
+        now = int(time.time() * 1000)
+        batch = pa.RecordBatch.from_arrays([
+            pa.array([session_id], type=pa.string()),
+            pa.array([now], type=pa.int64()),
+            pa.array([content], type=pa.string()),
+            pa.array(["System"], type=pa.string()),
+        ], schema=ANCHOR_MESSAGE_SCHEMA)
+
+        try:
+            writer = self.anchor_table.new_append().create_writer()
+            writer.write_arrow_batch(batch)
+            if hasattr(writer, "flush"):
+                await writer.flush()
+            print(f"⚓ [FlussClient] Anchor set for session {session_id}.")
+            return True
+        except Exception as e:
+            print(f"❌ [FlussClient] Failed to set anchor: {e}")
+            return False

@@ -74,3 +74,15 @@ AGENT_STATUS_TABLE = "agent_status"
 # ── Bucket Configuration ────────────────────────────────────────────
 DEFAULT_BUCKET_COUNT = 16
 BUCKET_KEY = ["session_id"]
+
+# ── Anchor Message Table ────────────────────────────────────────────
+# Append-only log of human steering directives.
+# Latest record per session is the "active" anchor.
+# Bucket key: session_id
+ANCHOR_MESSAGE_SCHEMA = pa.schema([
+    pa.field("session_id", pa.string()),
+    pa.field("ts", pa.int64()),
+    pa.field("content", pa.string()),
+    pa.field("author", pa.string()),
+])
+ANCHOR_MESSAGE_TABLE = "anchor_message"

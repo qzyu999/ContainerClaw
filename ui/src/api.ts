@@ -248,3 +248,39 @@ export const fetchRawHistory = async (
     return [];
   }
 };
+
+export const fetchAnchor = async (sessionId: string): Promise<string> => {
+  try {
+    const resp = await fetch(`${BRIDGE_URL}/session/${sessionId}/anchor`);
+    const data = await resp.json();
+    if (data.status === 'ok') return data.content || '';
+    return '';
+  } catch {
+    return '';
+  }
+};
+
+export const setAnchor = async (sessionId: string, content: string): Promise<boolean> => {
+  try {
+    const resp = await fetch(`${BRIDGE_URL}/session/${sessionId}/anchor`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, author: 'operator' }),
+    });
+    const data = await resp.json();
+    return data.status === 'ok';
+  } catch {
+    return false;
+  }
+};
+
+export const fetchAnchorTemplates = async (): Promise<{ label: string, text: string, default: boolean }[]> => {
+  try {
+    const resp = await fetch(`${BRIDGE_URL}/anchor/templates`);
+    const data = await resp.json();
+    if (data.status === 'ok') return data.templates || [];
+    return [];
+  } catch {
+    return [];
+  }
+};

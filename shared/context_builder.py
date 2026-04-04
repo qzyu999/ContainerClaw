@@ -12,15 +12,16 @@ class ContextBuilder:
         actor_id: str,
         system_prompt: str,
         extra_turns: list[dict] | None = None,
+        anchor_text: str = "",
     ) -> list[dict]:
         """Build the complete messages payload enforcing limits and format.
 
         Applies the Token Guard (character limit) dynamically, prioritizing
-        the system prompt and any extra tool turns, and then fitting as
+        the system prompt, anchor text, and any extra tool turns, and then fitting as
         much of the history as possible.
         """
         messages_payload = [{"role": "system", "content": system_prompt}]
-        budget = config.max_history_chars - len(system_prompt)
+        budget = config.max_history_chars - len(system_prompt) - len(anchor_text)
         
         extra = extra_turns or []
         for turn in extra:
@@ -28,7 +29,7 @@ class ContextBuilder:
             budget -= len(content)
             
         if budget < 0:
-            print(f"⚠️ [ContextBuilder] Token Guard: extra turns alone exceed budget for {actor_id}!")
+            print(f"⚠️ [ContextBuilder] Token Guard: extra turns and anchor alone exceed budget for {actor_id}!")
              
         recent_messages = raw_messages[-config.max_history_messages:]
         final_history = []
@@ -56,4 +57,7 @@ class ContextBuilder:
         messages_payload.extend(final_history)
         messages_payload.extend(extra)
         
+        if anchor_text:
+            messages_payload.append({"role": "user", "content": f"[ANCHOR — Operator Directive]: {anchor_text}"})
+            
         return messages_payload
