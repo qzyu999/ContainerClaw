@@ -690,13 +690,31 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
     if spine_content:
         sys_prompt = spine_content + "\n\n" + sys_prompt
 
+    # ── Input/Output Separation ──
+    # The event at target_ts_ms is the 'result' of the inference, not the 'input'.
+    # We find it, remove it from history, and append it AFTER the anchor.
+    subject_response = None
+    input_history = []
+    found_subject = False
+
+    for e in events:
+        if not found_subject and e["ts"] == target_ts_ms and e["actor_id"] == actor_id:
+            subject_response = e["content"]
+            found_subject = True
+        else:
+            input_history.append(e)
+
     perspective = ContextBuilder.build_payload(
-        raw_messages=events,
+        raw_messages=input_history,
         config=CONFIG,
         actor_id=actor_id,
         system_prompt=sys_prompt,
         anchor_text=anchor_text
     )
+
+    # If we found the response, append it to show as the logical result of the context
+    if subject_response:
+        perspective.append({"role": "assistant", "content": subject_response})
 
     return perspective
 
