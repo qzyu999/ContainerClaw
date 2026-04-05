@@ -694,22 +694,28 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
     # The event at target_ts_ms is the 'result' of the inference, not the 'input'.
     # We find it, remove it from history, and append it AFTER the anchor.
     subject_response = None
+    subject_type = None
     input_history = []
     found_subject = False
 
     for e in events:
         if not found_subject and e["ts"] == target_ts_ms and e["actor_id"] == actor_id:
             subject_response = e["content"]
+            subject_type = e.get("type")
             found_subject = True
         else:
             input_history.append(e)
+
+    # Determine if this was a JSON-mode turn (e.g. Voting)
+    is_json = (subject_type == "voting")
 
     perspective = ContextBuilder.build_payload(
         raw_messages=input_history,
         config=CONFIG,
         actor_id=actor_id,
         system_prompt=sys_prompt,
-        anchor_text=anchor_text
+        anchor_text=anchor_text,
+        is_json=is_json
     )
 
     # If we found the response, append it to show as the logical result of the context

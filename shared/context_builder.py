@@ -13,6 +13,7 @@ class ContextBuilder:
         system_prompt: str,
         extra_turns: list[dict] | None = None,
         anchor_text: str = "",
+        is_json: bool = False,
     ) -> list[dict]:
         """Build the complete messages payload enforcing limits and format.
 
@@ -50,7 +51,7 @@ class ContextBuilder:
             if budget - msg_len < 0:
                 print(f"⚠️ [ContextBuilder] Token Guard triggered. Truncating history at {len(final_history)} msgs.")
                 break
-                
+            
             final_history.insert(0, {"role": role, "content": text})
             budget -= msg_len
             
@@ -59,5 +60,16 @@ class ContextBuilder:
         
         if anchor_text:
             messages_payload.append({"role": "user", "content": f"[ANCHOR — Operator Directive]: {anchor_text}"})
+
+        # --- FIX: Anchor Injection Formatting Rule ---
+        if is_json:
+            # Append a strict formatting directive as the very last word the model hears.
+            # Local models often revert to Markdown if not reminded at the end of context.
+            formatting_directive = (
+                "[CRITICAL FORMATTING]: You must output ONLY raw, valid JSON. "
+                "Do not use Markdown code blocks. Do not start your response with ```json. "
+                "Start your response immediately with the { character."
+            )
+            messages_payload.append({"role": "user", "content": formatting_directive})
             
         return messages_payload

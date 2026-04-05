@@ -45,10 +45,23 @@ class LLMAgent:
         """
         if not text:
             return text
-        # Strip markdown code fences
-        text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.MULTILINE)
-        text = re.sub(r'```\s*$', '', text, flags=re.MULTILINE)
+            
+        # --- FIX: Defensive Parsing Strategy ---
+        # 1. Broadly extract anything between markdown code fences if they exist
+        match_fence = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
+        if match_fence:
+            text = match_fence.group(1)
+        
+        # 2. Heuristic fallback: if it doesn't look like JSON yet, find the first '{' and last '}'
+        # This handles models that say "Here is the JSON: { ... }" without fences.
+        if not text.strip().startswith('{'):
+            match_object = re.search(r'(\{.*\})', text, re.DOTALL)
+            if match_object:
+                text = match_object.group(1)
+
         text = text.strip()
+        
+        # 3. Traditional cleanup for common LLM syntax errors
         # Remove single-line // comments
         text = re.sub(r'//[^\n]*', '', text)
         # Remove trailing commas before } or ]
@@ -58,9 +71,10 @@ class LLMAgent:
         text = re.sub(r'\bFalse\b', 'false', text)
         text = re.sub(r'\bNone\b', 'null', text)
         # Replace single quotes with double quotes (handles JSON keys/values)
-        # This is a simple heuristic: replace ' with " when it looks like JSON structure
+        # Only replace if it looks like a key or a string value
         text = re.sub(r"(?<=[:,\[{\s])\s*'", ' "', text)
         text = re.sub(r"'(?=\s*[:,\]}\s])", '"', text)
+        
         # Handle leading single quote at start of string
         if text.startswith("{'"):
             text = '{"' + text[2:]
@@ -91,7 +105,8 @@ class LLMAgent:
             actor_id=self.agent_id,
             system_prompt=sys_instr_with_spine,
             extra_turns=extra_turns,
-            anchor_text=anchor_text
+            anchor_text=anchor_text,
+            is_json=is_json
         )
 
         payload = {
