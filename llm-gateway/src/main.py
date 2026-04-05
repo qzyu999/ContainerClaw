@@ -54,9 +54,9 @@ def _load_strategies(client: httpx.AsyncClient) -> tuple[dict, str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Setup client with connection pools and timeouts for LLMs
+    cfg = load_config()
     limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
-    timeout = httpx.Timeout(10.0, read=90.0)
+    timeout = httpx.Timeout(10.0, read=cfg.llm_timeout_s)
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
         # Load strategies and attach them to the application state
         strategies, default_provider = _load_strategies(client)

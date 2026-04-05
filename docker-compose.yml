@@ -67,6 +67,7 @@ services:
     volumes:
       - ${PROJECT_DIR:-.}/config.yaml:/config/config.yaml:ro
       - ${PROJECT_DIR:-.}/shared:/app/shared:ro
+      - ${PROJECT_DIR:-.}/llm-gateway/gunicorn.conf.py:/app/gunicorn.conf.py:ro
     secrets:
       - gemini_api_key
       - anthropic_api_key
@@ -76,7 +77,7 @@ services:
       - SHARED_MODULE_PATH=/app/shared
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: [ "gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "--timeout", "120", "--bind", "0.0.0.0:8000", "src.main:app" ]
+    command: [ "gunicorn", "-c", "gunicorn.conf.py", "src.main:app" ]
 
   zookeeper:
     image: zookeeper:3.9.2

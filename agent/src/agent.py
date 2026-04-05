@@ -125,7 +125,7 @@ class LLMAgent:
         for attempt in range(3):
             try:
                 res = await asyncio.to_thread(
-                    requests.post, self.gateway_url, json=payload, timeout=120
+                    requests.post, self.gateway_url, json=payload, timeout=config.CONFIG.llm_timeout_s
                 )
                 if res.status_code == 200:
                     return res.json()

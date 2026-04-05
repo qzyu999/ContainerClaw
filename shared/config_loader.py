@@ -125,6 +125,7 @@ class ClawConfig(BaseModel):
     # Gateway settings
     gateway_port: int = 8000
     gateway_url: str = "http://llm-gateway:8000"
+    llm_timeout_s: int = 300
     rate_limit_rpm: int = 60
     max_tokens_per_request: int = 8192
     # Infrastructure
@@ -272,6 +273,7 @@ def load_config(config_path: str | None = None) -> ClawConfig:
         tool_settings=ToolSettings(**agent_settings.get("tools", {})),
         gateway_port=gateway_cfg.get("port", 8000),
         gateway_url=os.getenv("LLM_GATEWAY_URL", "http://llm-gateway:8000"),
+        llm_timeout_s=gateway_cfg.get("llm_timeout_s", 300),
         rate_limit_rpm=gateway_cfg.get("rate_limit_rpm", 60),
         max_tokens_per_request=gateway_cfg.get("max_tokens_per_request", 8192),
         fluss_bootstrap_servers=(
