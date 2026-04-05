@@ -142,7 +142,7 @@ agents:
 gateway:
   port: 8000
   rate_limit_rpm: 60
-  max_tokens_per_request: 8192
+  max_tokens_per_request: 32768
   retry:
     max_attempts: 3
     backoff_factor: 1
