@@ -241,6 +241,12 @@ class ReconciliationController:
                     f"steps remaining..."
                 )
 
+            # ── Anchor Fetch ──────────────────────────────────
+            # Fetch latest human steering directive before each logic cycle
+            anchor_text = await self.mod.fluss.fetch_latest_anchor(self.mod.session_id)
+            for agent in self.mod.agents:
+                agent.anchor_text = anchor_text
+
             # Election start — branches from backbone
             election_start_id = await self.mod.publish(
                 "Moderator", "🗳️ Starting Election...", "thought",

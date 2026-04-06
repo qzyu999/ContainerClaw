@@ -259,7 +259,7 @@ class StageModerator:
                 
                 # ── Anchor Fetch ──────────────────────────────────
                 # Fetch latest human steering directive before each logic cycle
-                anchor_text = await self.fluss_client.fetch_latest_anchor(self.session_id)
+                anchor_text = await self.fluss.fetch_latest_anchor(self.session_id)
                 for agent in self.agents:
                     agent.anchor_text = anchor_text
                 

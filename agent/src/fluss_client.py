@@ -339,6 +339,8 @@ class FlussClient:
                         latest_ts = ts
                         content = content_arr[i].as_py()
                         latest_content = content.decode("utf-8") if isinstance(content, bytes) else str(content)
+        return latest_content
+
     async def set_anchor(self, session_id: str, content: str) -> bool:
         """Write a new steering anchor message to the anchor_table.
         
