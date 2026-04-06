@@ -88,13 +88,10 @@ class ToolExecutor:
                     shared_context, function_responses, available_tools
                 )
 
-            # FIX 1: Accumulate text instead of overwriting
+            # FIX 1: Use latest text (avoid snowballing since thoughts are already published)
             if text and text.strip():
                 cleaned_text = text.strip()
-                if final_text:
-                    final_text += "\n\n" + cleaned_text
-                else:
-                    final_text = cleaned_text
+                final_text = cleaned_text
                 
                 # FIX 2: Publish intermediate thoughts immediately 
                 # so the UI updates while the agent is chaining tools
