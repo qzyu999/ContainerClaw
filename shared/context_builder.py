@@ -55,16 +55,14 @@ class ContextBuilder:
             final_history.insert(0, {"role": role, "content": text})
             budget -= msg_len
             
+        # 1. Add the main conversation history
         messages_payload.extend(final_history)
-        messages_payload.extend(extra)
         
+        # 2. Add directives BEFORE the active tool chain
         if anchor_text:
             messages_payload.append({"role": "user", "content": f"[ANCHOR — Operator Directive]: {anchor_text}"})
 
-        # --- FIX: Anchor Injection Formatting Rule ---
         if is_json:
-            # Append a strict formatting directive as the very last word the model hears.
-            # Local models often revert to Markdown if not reminded at the end of context.
             formatting_directive = (
                 "[CRITICAL FORMATTING]: You must output ONLY raw, valid JSON. "
                 "Do not use Markdown code blocks. Do not start your response with ```json. "
@@ -72,4 +70,7 @@ class ContextBuilder:
             )
             messages_payload.append({"role": "user", "content": formatting_directive})
             
+        # 3. Add the active tool chain LAST so the model remembers it is mid-action
+        messages_payload.extend(extra)
+        
         return messages_payload
