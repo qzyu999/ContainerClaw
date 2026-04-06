@@ -28,6 +28,7 @@ This document shows the full list of features that should remain stable as the c
     - [Existing] Move config files to the root folder / config.yaml similar to DeerFlow
     - [Planned] DeerFlow-style JSON memories for AI context HUD
     - [Planned] Turtle concept for problem density progressing over time
+    - [Planned] Document that the optimization step is to optimize P(SELF.md, system-message, window(chat-history), anchor-message|next-step-is-goal)
 - [Existing] Subagents that work independently and async with the main chatroom
 - Flink Metrics
     - [Planned] Telemetry/querying into the underlying Fluss tables, e.g., SELECT * FROM table WHERE user=Alice
@@ -44,6 +45,8 @@ This document shows the full list of features that should remain stable as the c
     - [Planned] Integration: GitHub
     - [Planned] Integration: agent webbrowsing - allow them to do deep research etc. within the sandbox https://github.com/vercel-labs/agent-browser
     - [Planned] Add enable/disable for integrations like Discord etc.
+- UI/UX
+    - [Planned] "Thinking" - type notification with TTL for per-agent-request to the API
 - [Planned] Read-only access to other system files (may need to just do docker cp or mount large folders at startup with read-only)
 - [Planned] Kaggle/autoresearch module: allow the agents to loop and improve on their own solutions through an API 
 - [Planned] Kubernetes integrations
@@ -57,6 +60,8 @@ This document shows the full list of features that should remain stable as the c
     - [Planned] AI neuroscience - log the weight activations during processes - do analysis (clustering/PCA/etc. to provide interpretation of the specific model’s weights) -> AI neurosurgery -> manage prompting better to find the nature/language of the model to speak more directly to its understanding - or tweak the weights to control the agent behavior (https://nnsight.net/tutorials/mini-papers/) https://gemini.google.com/app/074407dfd5339597
     - [Planned] Systematic tracking of "traces" - https://x.com/caspar_br/status/2039576939724521609 - https://gemini.google.com/app/c701fd1496efa0f2
     - [Planned] Use pretext over the current React setup - https://news.ycombinator.com/item?id=47556290 - https://github.com/chenglou/pretext
+- Performance
+    - [Planned] Chat window clears slowly after creating new chat session
 
 Milestones
 - [x] Add all the basic functionality - then refactor for cleanliness/modularity/efficient idempotent modular system around the stream -> document the stream-centric approach which should also be agent-centric. In particular, a concept for spawning subagents to organically allow for parallelization (swarm > static patterns) (Noted with *)
