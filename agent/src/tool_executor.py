@@ -202,7 +202,6 @@ class ToolExecutor:
             if interrupted and check_halt_fn():
                 print(f"🛑 [Moderator] {agent.agent_id} execution halted mid-turn by user command.")
                 return "🛑 Turn aborted by user command."
-            shared_context = self.get_context()
 
         else:
             # FIX 3: Triggered if the loop exhausted without breaking
