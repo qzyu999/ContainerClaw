@@ -88,8 +88,23 @@ class ToolExecutor:
                     shared_context, function_responses, available_tools
                 )
 
+            # FIX 1: Accumulate text instead of overwriting
             if text:
-                final_text = text
+                if final_text:
+                    final_text += "\n\n" + text
+                else:
+                    final_text = text
+                
+                # FIX 2: Publish intermediate thoughts immediately 
+                # so the UI updates while the agent is chaining tools
+                if fn_calls:
+                    current_parent = await self.publish(
+                        agent.agent_id,
+                        text,
+                        "thought",
+                        parent_event_id=current_parent,
+                        edge_type="SEQUENTIAL",
+                    )
 
             if not fn_calls:
                 # Model chose text response — done with tools
@@ -188,6 +203,16 @@ class ToolExecutor:
                 print(f"🛑 [Moderator] {agent.agent_id} execution halted mid-turn by user command.")
                 return "🛑 Turn aborted by user command."
             shared_context = self.get_context()
+
+        else:
+            # FIX 3: Triggered if the loop exhausted without breaking
+            warning_msg = f"\n\n🛑 Execution halted: Exceeded max tool rounds ({config.MAX_TOOL_ROUNDS})."
+            final_text = (final_text or "") + warning_msg
+            await self.publish(
+                "Moderator", warning_msg, "system",
+                parent_event_id=current_parent,
+                edge_type="SEQUENTIAL",
+            )
 
         # Clear the per-agent turn buffer — cycle complete
         agent._api_turns = []
