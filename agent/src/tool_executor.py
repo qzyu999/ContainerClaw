@@ -118,9 +118,10 @@ class ToolExecutor:
                 call_id = call["id"]
 
                 print(f"🔧 [{agent.agent_id}] Tool call: {tool_name}({json.dumps(tool_args)[:200]})")
+                # Log tool call (Change agent.agent_id to "Moderator")
                 tool_call_id = await self.publish(
-                    agent.agent_id,
-                    f"$ {tool_name} {json.dumps(tool_args)[:200]}",
+                    "Moderator",
+                    f"[{agent.agent_id} Action]: $ {tool_name} {json.dumps(tool_args)[:200]}",
                     "action",
                     parent_event_id=current_parent,
                     edge_type="SEQUENTIAL",
@@ -153,9 +154,10 @@ class ToolExecutor:
                 # Log tool result (child of tool call)
                 result_summary = result.output[:500] if result.success else f"ERROR: {result.error}"
                 print(f"  → {'✅' if result.success else '❌'} {result_summary[:200]}")
+                # Log tool result summary (Change agent.agent_id to "Moderator")
                 tool_result_id = await self.publish(
-                    agent.agent_id,
-                    f"{'✅' if result.success else '❌'} {result_summary[:500]}",
+                    "Moderator",
+                    f"[{agent.agent_id} Result]: {'✅' if result.success else '❌'} {result_summary[:500]}",
                     "action",
                     parent_event_id=tool_call_id,
                     edge_type="SEQUENTIAL",
