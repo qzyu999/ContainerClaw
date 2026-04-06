@@ -89,18 +89,19 @@ class ToolExecutor:
                 )
 
             # FIX 1: Accumulate text instead of overwriting
-            if text:
+            if text and text.strip():
+                cleaned_text = text.strip()
                 if final_text:
-                    final_text += "\n\n" + text
+                    final_text += "\n\n" + cleaned_text
                 else:
-                    final_text = text
+                    final_text = cleaned_text
                 
                 # FIX 2: Publish intermediate thoughts immediately 
                 # so the UI updates while the agent is chaining tools
                 if fn_calls:
                     current_parent = await self.publish(
                         agent.agent_id,
-                        text,
+                        cleaned_text,
                         "thought",
                         parent_event_id=current_parent,
                         edge_type="SEQUENTIAL",
