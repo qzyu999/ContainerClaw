@@ -40,6 +40,22 @@ fi
 # so docker compose can see and stop every container, even profiled ones.
 ALL_PROFILES="--profile telemetry"
 
+stop_mlx() {
+  if [ -f ".claw_state/mlx.pid" ]; then
+    MLX_PID=$(cat .claw_state/mlx.pid)
+    if [ -n "$MLX_PID" ]; then
+      # Verify PID belongs to mlx_lm
+      if ps -p $MLX_PID -o command= | grep -q "mlx_lm"; then
+        echo "Stopping MLX server (PID: $MLX_PID)..."
+        kill $MLX_PID
+      else
+        echo "⚠️ MLX PID file found but process is not mlx_lm. Skipping kill."
+      fi
+    fi
+    rm -f .claw_state/mlx.pid
+  fi
+}
+
 case $COMMAND in
   up)
     echo "Starting ContainerClaw session: $SESSION_ID"
@@ -52,7 +68,7 @@ case $COMMAND in
     fi
     
     if $PYTHON_BIN -c "import yaml, pydantic" 2>/dev/null; then
-      if ! $PYTHON_BIN scripts/validate_config.py config.yaml; then
+      if ! CLAW_CONFIG_PATH=config.yaml $PYTHON_BIN scripts/validate_config.py config.yaml; then
         echo -e "\n❌ Startup aborted. Please fix configuration errors above."
         exit 1
       fi
@@ -60,19 +76,64 @@ case $COMMAND in
       echo "⚠️ Skipping pre-flight check: 'pyyaml' or 'pydantic' missing in host Python."
     fi
     
-    # Ensure secrets directory exists if referenced in compose
     if [ ! -d "secrets" ]; then
       mkdir -p secrets
       touch secrets/gemini_api_key.txt secrets/anthropic_api_key.txt secrets/openai_api_key.txt
       echo "⚠️ Created empty secrets files in secrets/. Please populate them before continuing."
     fi
     mkdir -p workspace .zk_data/data .zk_data/datalog .fluss_data .claw_state
+
+    # MLX Server (Host-side)
+    eval $(CLAW_CONFIG_PATH=config.yaml $PYTHON_BIN scripts/get_llm_info.py)
+    if [ "$LLM_SERVER_ENABLED" = "true" ]; then
+      ARCH=$(uname -m)
+      OS=$(uname -s)
+      if [ "$OS" = "Darwin" ] && [ "$ARCH" = "arm64" ]; then
+        echo "🚀 Starting host-side MLX server on port $LLM_SERVER_PORT..."
+        if ! $PYTHON_BIN -c "import mlx_lm" 2>/dev/null; then
+          echo "❌ Error: 'mlx-lm' not found in $PYTHON_BIN. Please install it."
+          exit 1
+        fi
+        
+        stop_mlx # Ensure no stale process
+        rm -f .claw_state/mlx.log
+        touch .claw_state/mlx.log
+        
+        # Modern MLX command with HF offline safety
+        HF_HUB_OFFLINE=1 nohup $PYTHON_BIN -m mlx_lm server $LLM_SERVER_ARGS > .claw_state/mlx.log 2>&1 &
+        MLX_PID=$!
+        echo $MLX_PID > .claw_state/mlx.pid
+        
+        echo "Waiting for MLX server to be ready..."
+        MAX_RETRIES=60
+        RETRY_COUNT=0
+        until curl -s -f "http://$LLM_SERVER_HOST:$LLM_SERVER_PORT/v1/models" >/dev/null 2>&1; do
+          if ! ps -p $MLX_PID > /dev/null; then
+            echo -e "\n❌ MLX server crashed on startup. See .claw_state/mlx.log"
+            exit 1
+          fi
+          RETRY_COUNT=$((RETRY_COUNT+1))
+          if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+            echo "❌ MLX server failed to start within timeout. Check .claw_state/mlx.log"
+            stop_mlx
+            exit 1
+          fi
+          echo -n "."
+          sleep 2
+        done
+        echo -e "\n✅ MLX server is ready."
+      else
+        echo "⚠️ Skipping MLX server: Host is not Darwin/arm64 ($OS/$ARCH)."
+      fi
+    fi
+
     $DOCKER_COMPOSE $PROFILE_FLAG up -d --build --remove-orphans
     ;;
   down)
     echo "Gracefully stopping ContainerClaw session: $SESSION_ID"
     $DOCKER_COMPOSE $ALL_PROFILES stop claw-agent 2>/dev/null
     $DOCKER_COMPOSE $ALL_PROFILES down --remove-orphans
+    stop_mlx
     ;;
   purge)
     echo "Purging state for session: $SESSION_ID"
@@ -90,13 +151,15 @@ case $COMMAND in
   restart)
     echo "Restarting ContainerClaw session: $SESSION_ID"
     $DOCKER_COMPOSE $ALL_PROFILES down --remove-orphans
-    $DOCKER_COMPOSE $PROFILE_FLAG up -d --build
+    stop_mlx
+    $0 up $SESSION_ID $PROFILE_FLAG
     ;;
   clean)
     echo "Deep cleaning ContainerClaw environment..."
     # Use ALL_PROFILES to guarantee every profiled container is stopped
     $DOCKER_COMPOSE $ALL_PROFILES down -v --remove-orphans
-    rm -rf .fluss_data .zk_data
+    stop_mlx
+    rm -rf .fluss_data .zk_data .claw_state/mlx.log .claw_state/mlx.pid
     docker network prune -f
     ;;
   logs)

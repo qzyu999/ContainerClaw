@@ -3,6 +3,16 @@
 # This file replaces .env, agent/src/config.py, and all scattered
 # os.getenv() calls. Secrets stay in Docker Secrets (/run/secrets/).
 
+# --- MLX LLM Server (Host-side) ---
+llm_server:
+  enabled: true
+  model: "models/MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-8bit"
+  port: 8080
+  host: "127.0.0.1"
+  max_tokens: -1 # Auto-sync from gateway.max_tokens_per_request
+  prompt_cache_size: 15
+  log_level: "DEBUG"
+
 # --- LLM Provider Definitions ---
 llm:
   providers:
@@ -39,7 +49,7 @@ llm:
 
   # Default provider + model (used when agent config doesn't specify)
   default_provider: "mlx-local"
-  default_model: "MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-8bit"
+  default_model: "auto"
 
 # --- Agent Roster ---
 agents:
@@ -143,7 +153,7 @@ gateway:
   port: 8000
   llm_timeout_s: 300
   rate_limit_rpm: 60
-  max_tokens_per_request: 32768
+  max_tokens_per_request: 8192
   retry:
     max_attempts: 3
     backoff_factor: 1

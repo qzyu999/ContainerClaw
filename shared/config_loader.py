@@ -42,6 +42,16 @@ class UIConfig(BaseModel):
             raise ValueError("Only one anchor template can be marked as default.")
         return v
 
+class LLMServerConfig(BaseModel):
+    """Configuration for the host-side MLX LLM server."""
+    enabled: bool = False
+    model: str = ""
+    port: int = 8080
+    host: str = "127.0.0.1"
+    max_tokens: int = 32768
+    prompt_cache_size: int = 15
+    log_level: str = "DEBUG"
+
 class ProviderConfig(BaseModel):
     """Configuration for a single LLM provider."""
     name: str
@@ -138,6 +148,8 @@ class ClawConfig(BaseModel):
     discord_channel_id: str = ""
     # UI
     ui: UIConfig = UIConfig()
+    # MLX Server
+    llm_server: LLMServerConfig = LLMServerConfig()
 
     def get_default_anchor(self) -> str:
         """Find the template with default=True, or fall back to the first one."""
@@ -232,9 +244,40 @@ def load_config(config_path: str | None = None) -> ClawConfig:
             settings=prov.get("settings", {}),
         )
 
-    # Parse agents
+    # Parse basic LLM settings
     default_prov = raw.get("llm", {}).get("default_provider", "")
     default_model = raw.get("llm", {}).get("default_model", "")
+    
+    # Parse Gateway and LLM Server early for inference
+    gateway_cfg = raw.get("gateway", {})
+    llm_server_raw = raw.get("llm_server", {})
+    llm_server = LLMServerConfig(**llm_server_raw)
+    
+    # --- Configuration Deduplication (Inference) ---
+    max_tokens_per_request = gateway_cfg.get("max_tokens_per_request", 8192)
+
+    if llm_server.enabled:
+        # 1. Use the exact model path for inference (exact match for MLX)
+        inferred_model = llm_server.model
+        
+        # 2. Sync default_model if set to sentinel
+        if default_model == "auto":
+            default_model = inferred_model
+            
+        # 3. Sync llm_server.max_tokens from gateway if set to sentinel
+        if llm_server.max_tokens <= 0:
+            llm_server.max_tokens = max_tokens_per_request
+        elif max_tokens_per_request <= 0:
+            # Fallback for original user direction if they flip it again
+            max_tokens_per_request = llm_server.max_tokens
+            
+        # 4. Inject into mlx-local provider models
+        if "mlx-local" in providers:
+            prov = providers["mlx-local"]
+            if inferred_model not in prov.models:
+                prov.models.append(inferred_model)
+
+    # Parse agents
     agent_settings = raw.get("agents", {}).get("settings", {})
     agents = []
     for entry in raw.get("agents", {}).get("roster", []):
@@ -249,7 +292,6 @@ def load_config(config_path: str | None = None) -> ClawConfig:
     prompts_raw = raw.get("agents", {}).get("prompts", {})
     prompts = PromptsConfig(**prompts_raw)
 
-    gateway_cfg = raw.get("gateway", {})
     infra = raw.get("infrastructure", {})
 
     return ClawConfig(
@@ -275,7 +317,7 @@ def load_config(config_path: str | None = None) -> ClawConfig:
         gateway_url=os.getenv("LLM_GATEWAY_URL", "http://llm-gateway:8000"),
         llm_timeout_s=gateway_cfg.get("llm_timeout_s", 300),
         rate_limit_rpm=gateway_cfg.get("rate_limit_rpm", 60),
-        max_tokens_per_request=gateway_cfg.get("max_tokens_per_request", 8192),
+        max_tokens_per_request=max_tokens_per_request,
         fluss_bootstrap_servers=(
             infra.get("fluss", {}).get("bootstrap_servers", "coordinator-server:9123")
         ),
@@ -289,5 +331,5 @@ def load_config(config_path: str | None = None) -> ClawConfig:
         discord_webhook_url=_resolve_secret(raw.get("integrations", {}).get("discord", {}).get("webhook_url_secret", "")),
         discord_channel_id=_resolve_secret(raw.get("integrations", {}).get("discord", {}).get("channel_id_secret", "")),
         ui=UIConfig(**raw.get("ui", {})),
+        llm_server=llm_server,
     )
-
