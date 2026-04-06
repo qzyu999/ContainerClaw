@@ -61,6 +61,7 @@ This document shows the full list of features that should remain stable as the c
     - [Planned] AI neuroscience - log the weight activations during processes - do analysis (clustering/PCA/etc. to provide interpretation of the specific model’s weights) -> AI neurosurgery -> manage prompting better to find the nature/language of the model to speak more directly to its understanding - or tweak the weights to control the agent behavior (https://nnsight.net/tutorials/mini-papers/) https://gemini.google.com/app/074407dfd5339597
     - [Planned] Systematic tracking of "traces" - https://x.com/caspar_br/status/2039576939724521609 - https://gemini.google.com/app/c701fd1496efa0f2
     - [Planned] Use pretext over the current React setup - https://news.ycombinator.com/item?id=47556290 - https://github.com/chenglou/pretext
+    - [Planned] Archive full logs of agent sessions and use them for SSD (https://arxiv.org/pdf/2604.01193)
 - Performance
     - [Planned] Chat window clears slowly after creating new chat session
 
