@@ -124,14 +124,14 @@ class StageModerator:
 
     # ── Message Processing ─────────────────────────────────────────
 
-    async def _handle_single_message(self, actor_id, content, ts, event_id="") -> bool:
+    async def _handle_single_message(self, actor_id, content, ts, event_id="", m_type="output") -> bool:
         """Process a single message. Returns True if human message (non-command).
 
         The event_id kwarg is passed by the publisher's on_message callback,
         allowing us to capture _last_human_event_id at callback time (before
         the scanner path sees it as a duplicate).
         """
-        if not self.context.add_message(actor_id, content, ts):
+        if not self.context.add_message(actor_id, content, ts, event_id=event_id, m_type=m_type):
             return False  # Duplicate
 
         human_was_message = False

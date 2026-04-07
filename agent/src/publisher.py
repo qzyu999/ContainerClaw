@@ -102,7 +102,7 @@ class FlussPublisher:
 
         # Fire callback immediately (memory update, includes event_id for backbone tracking)
         if self.on_message:
-            await self.on_message(actor_id, content, ts, event_id=event_id)
+            await self.on_message(actor_id, content, ts, event_id=event_id, m_type=m_type)
 
         async with self._lock:
             self._buffer.append(record)

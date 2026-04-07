@@ -38,9 +38,18 @@ class ContextBuilder:
         for msg in reversed(recent_messages):
             content = str(msg.get("content", ""))
             actor = msg.get("actor_id", "System")
+            m_type = msg.get("type", "output")
+            
+            # Default role assignment
             role = "assistant" if actor == actor_id else "user"
             
-            if actor == "Moderator":
+            # --- FIX: Intercept Tool Actions ---
+            # If the agent published an action to the UI, force it to 'user' role
+            # so they don't hallucinate it as their own text.
+            if m_type == "action":
+                role = "user"
+                text = f"[System Log - {actor}]: {content}"
+            elif actor == "Moderator":
                 text = f"[Moderator Note]: {content}"
             elif role == "user":
                 text = f"{actor}: {content}"

@@ -116,9 +116,9 @@ class ToolExecutor:
                 call_id = call["id"]
 
                 print(f"🔧 [{agent.agent_id}] Tool call: {tool_name}({json.dumps(tool_args)[:200]})")
-                # Log tool call (Change agent.agent_id to "Moderator")
+                # Log tool call (Use agent.agent_id for UI filtering)
                 tool_call_id = await self.publish(
-                    "Moderator",
+                    agent.agent_id,
                     f"[{agent.agent_id} Action]: $ {tool_name} {json.dumps(tool_args)[:200]}",
                     "action",
                     parent_event_id=current_parent,
@@ -152,9 +152,9 @@ class ToolExecutor:
                 # Log tool result (child of tool call)
                 result_summary = result.output[:500] if result.success else f"ERROR: {result.error}"
                 print(f"  → {'✅' if result.success else '❌'} {result_summary[:200]}")
-                # Log tool result summary (Change agent.agent_id to "Moderator")
+                # Log tool result summary (Use agent.agent_id for UI filtering)
                 tool_result_id = await self.publish(
-                    "Moderator",
+                    agent.agent_id,
                     f"[{agent.agent_id} Result]: {'✅' if result.success else '❌'} {result_summary[:500]}",
                     "action",
                     parent_event_id=tool_call_id,
@@ -169,7 +169,7 @@ class ToolExecutor:
                     f"{(' | Error: ' + result.error) if result.error else ''}"
                 )
                 await self.publish(
-                    "Moderator", tool_result_content, "action",
+                    agent.agent_id, tool_result_content, "action",
                     tool_name=tool_name,
                     tool_success=result.success,
                     parent_actor=agent.agent_id,

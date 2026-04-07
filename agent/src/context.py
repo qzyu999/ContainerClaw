@@ -23,7 +23,7 @@ class ContextManager:
         self.history_keys: set[str] = set()
 
     def add_message(self, actor_id: str, content: str, ts: int,
-                     event_id: str | None = None) -> bool:
+                     event_id: str | None = None, m_type: str = "output") -> bool:
         """Add a message to the cache. Returns True if it was new (not a duplicate).
         
         Uses event_id (UUID) as the primary dedup key when available,
@@ -39,6 +39,7 @@ class ContextManager:
             "actor_id": actor_id,
             "content": content,
             "ts": ts,
+            "type": m_type,
         })
         return True
 
