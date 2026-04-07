@@ -25,6 +25,7 @@ This document shows the full list of features that should remain stable as the c
     - [Planned] Complete the R6, R7, and R8 goals from draft_pt20_validate.md
     - [Planned] Snorkel is missing the agent voting prompts (what they see per vote) - also tool calling prompts (noted above)
     - [Planned] Guarantee that agent messages are properly re-mapped to assisstant on their turn when they say something i.e., not just the full history returned
+    - [Planned] Make the Snorkel recreation of the Anchor location after the ping-pong tool call chain is more accurate. Reality should be: [History] -> [Anchor] -> [Tool Call] -> [Tool Result] -> [Model Generates Response]; but Snorkel seems to mistakenly show: [History] -> [Tool Call] -> [Tool Result] -> [Anchor] -> [Model Generates Response]
 - Turtle (AI sliding context window)
     - [Existing] Move config files to the root folder / config.yaml similar to DeerFlow
     - [Planned] DeerFlow-style JSON memories for AI context HUD
