@@ -202,7 +202,7 @@ services:
     command: standalone-job --job-classname com.containerclaw.telemetry.TelemetryJob
     ports:
       - "8081:8081"
-    profiles: ["telemetry"]
+    profiles: [ "telemetry" ]
     restart: on-failure
     volumes:
       - ${PROJECT_DIR:-.}/telemetry/telemetry-config.yaml:/config/telemetry-config.yaml:ro
@@ -226,7 +226,7 @@ services:
       context: ./telemetry
       dockerfile: Dockerfile
     command: taskmanager
-    profiles: ["telemetry"]
+    profiles: [ "telemetry" ]
     environment:
       - |
         FLINK_PROPERTIES=
@@ -242,11 +242,11 @@ services:
   mlx-logs:
     image: alpine:3.20
     container_name: mlx-logs
-    command: ["/bin/sh", "-c", "touch /state/mlx.log && tail -f /state/mlx.log"]
+    command: [ "/bin/sh", "-c", "touch /state/mlx.log && tail -f /state/mlx.log" ]
     networks:
       - internal
     volumes:
-      - ${PROJECT_DIR:-.}/.claw_state:/state:ro
+      - ${PROJECT_DIR:-.}/.claw_state:/state:rw
     restart: unless-stopped
 
 networks:

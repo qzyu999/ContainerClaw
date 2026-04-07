@@ -94,16 +94,23 @@ public class TelemetryJob {
             + ") WITH ('bucket.num' = '4', 'bucket.key' = 'session_id')"
         );
 
-        // PK table: live metrics per session
+        // LOG table: live metrics per window
+        // Dropped first because we are migrating it from a PK table to a LOG table
+        tableEnv.executeSql("DROP TABLE IF EXISTS fluss_catalog." + database + ".live_metrics");
         tableEnv.executeSql(
-            "CREATE TABLE IF NOT EXISTS fluss_catalog." + database + ".live_metrics ("
+            "CREATE TABLE fluss_catalog." + database + ".live_metrics ("
             + "    session_id STRING,"
+            + "    window_start TIMESTAMP(3),"
             + "    total_messages BIGINT,"
             + "    tool_calls BIGINT,"
-            + "    tool_successes BIGINT,"
-            + "    last_updated_at BIGINT,"
-            + "    PRIMARY KEY (session_id) NOT ENFORCED"
+            + "    tool_successes BIGINT"
             + ") WITH ('bucket.num' = '4', 'bucket.key' = 'session_id')"
+        );
+
+        // Create a temporary view to assign processing time so we can use TUMBLE windows
+        tableEnv.executeSql(
+            "CREATE TEMPORARY VIEW temp_chatroom AS "
+            + "SELECT *, PROCTIME() AS pt FROM fluss_catalog." + database + ".chatroom"
         );
     }
 

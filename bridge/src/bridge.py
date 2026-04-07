@@ -547,33 +547,67 @@ def telemetry_dag_stream(session_id):
 
 
 async def _lookup_metrics(session_id):
-    """Point lookup on live_metrics PK table. O(1)."""
+    """Scan live_metrics log table. O(N)."""
     table = await _get_table("live_metrics")
     if table is None:
-        return None
+        return []
 
-    lookuper = table.new_lookup().create_lookuper()
-    result = await lookuper.lookup({"session_id": session_id})
-    return result
+    metrics = []
+    try:
+        import fluss
+        conn = await _ensure_fluss_conn()
+        admin = await conn.get_admin()
+        table_path = fluss.TablePath("containerclaw", "live_metrics")
+        table_info = await admin.get_table_info(table_path)
+
+        scanner = await table.new_scan().create_record_batch_log_scanner()
+        scanner.subscribe_buckets({b: fluss.EARLIEST_OFFSET for b in range(table_info.num_buckets)})
+
+        processed_any = False
+        for poll_attempt in range(25):
+            batches = await scanner._async_poll_batches(200)
+            if not batches:
+                if processed_any: break
+                await asyncio.sleep(0.1)
+                continue
+
+            processed_any = True
+            for record_batch in batches:
+                batch = record_batch.batch
+                sid_arr = batch.column("session_id")
+                ws_arr = batch.column("window_start")
+                tm_arr = batch.column("total_messages")
+                tc_arr = batch.column("tool_calls")
+                ts_arr = batch.column("tool_successes")
+
+                for i in range(batch.num_rows):
+                    if sid_arr[i].as_py() != session_id:
+                        continue
+                    dt = ws_arr[i].as_py()
+                    ms = int(dt.timestamp() * 1000) if dt else 0
+                    metrics.append({
+                        "window_start": ms,
+                        "total_messages": tm_arr[i].as_py(),
+                        "tool_calls": tc_arr[i].as_py(),
+                        "tool_successes": ts_arr[i].as_py(),
+                        "avg_latency_ms": 0.0,
+                    })
+    except Exception as e:
+        print(f"Bridge metrics scan error: {e}")
+
+    # Sort chronologically
+    metrics.sort(key=lambda x: x["window_start"])
+    return metrics
 
 
 @app.route("/telemetry/metrics/<session_id>")
 def telemetry_metrics(session_id):
-    """Return aggregated metrics for HUD sparklines."""
+    """Return array of metrics windows for HUD sparklines."""
     bootstrap = CONFIG.fluss_bootstrap_servers
     if not bootstrap:
         return {"status": "ok", "metrics": []}
     try:
-        result = _run_async(_lookup_metrics(session_id))
-        if result is None:
-            return {"status": "ok", "metrics": []}
-        metrics = [{
-            "window_start": result.get("last_updated_at", 0),
-            "total_messages": result.get("total_messages", 0),
-            "tool_calls": result.get("tool_calls", 0),
-            "tool_successes": result.get("tool_successes", 0),
-            "avg_latency_ms": 0.0,
-        }]
+        metrics = _run_async(_lookup_metrics(session_id))
         return {"status": "ok", "metrics": metrics}
     except Exception as e:
         print(f"Bridge: Telemetry Metrics Error: {e}")
