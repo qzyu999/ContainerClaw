@@ -25,6 +25,7 @@ Usage:
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -176,6 +177,14 @@ def run_official_evaluation(
     else:
         cmd.extend(["--namespace", "none"])
 
+    # 4. Inject runtime patch for git clones via PYTHONPATH
+    # This automatically invokes sitecustomize.py across all child processes
+    # protecting the git clone against network dropouts without touching .venv files!
+    env = os.environ.copy()
+    swe_bench_dir = str(Path(__file__).resolve().parent)
+    original_python_path = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{swe_bench_dir}:{original_python_path}" if original_python_path else swe_bench_dir
+
     print(f"🚀 Running official SWE-bench evaluation")
     print(f"   Dataset:     {dataset_name}")
     print(f"   Predictions: {predictions_path} ({stats['non_empty_patches']} non-empty)")
@@ -186,7 +195,8 @@ def run_official_evaluation(
     print(f"   Command:     {' '.join(cmd)}")
     print()
 
-    result = subprocess.run(cmd)
+    # 5. Run evaluation harness
+    result = subprocess.run(cmd, env=env)
 
     if result.returncode == 0:
         print(f"\n✅ Official evaluation completed successfully.")
