@@ -45,6 +45,7 @@ bridge/src/proto/*_pb2_grpc.py
 Thumbs.db
 
 # LLMs
+models/*
 Qwen2.5*
 Qwen3*
 MLX-*
@@ -52,3 +53,7 @@ gemma-*
 
 # Workspace
 workspace/*
+
+# SWE-bench
+dummy_*
+gold_patch_test*
