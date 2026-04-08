@@ -150,66 +150,68 @@ def run_single(instance_id: str, args) -> dict:
         print("⏭️  Skipping workspace setup")
 
     # 3. Boot ContainerClaw
-    if not args.skip_docker:
-        compose_cmd = [
-            "docker", "compose",
-            "-f", str(COMPOSE_FILE),
-            "-f", str(COMPOSE_OVERRIDE),
-            "up", "--build", "-d",
-        ]
-        print(f"🚀 Booting ContainerClaw...")
-        result = subprocess.run(compose_cmd, capture_output=True, text=True,
-                                cwd=str(PROJECT_ROOT), timeout=300)
-        if result.returncode != 0:
-            print(f"❌ Docker Compose failed: {result.stderr[:500]}")
-            return {"instance_id": instance_id, "error": "Docker failed to start"}
+    try:
+        if not args.skip_docker:
+            compose_cmd = [
+                "docker", "compose",
+                "-f", str(COMPOSE_FILE),
+                "-f", str(COMPOSE_OVERRIDE),
+                "up", "--build", "-d",
+            ]
+            print(f"🚀 Booting ContainerClaw...")
+            result = subprocess.run(compose_cmd, capture_output=True, text=True,
+                                    cwd=str(PROJECT_ROOT), timeout=300)
+            if result.returncode != 0:
+                print(f"❌ Docker Compose failed: {result.stderr[:500]}")
+                return {"instance_id": instance_id, "error": "Docker failed to start"}
 
-        if not wait_for_health(max_wait=600):
-            return {"instance_id": instance_id, "error": "Health check timeout"}
-    else:
-        print("⏭️  Skipping Docker (using running instance)")
+            if not wait_for_health(max_wait=600):
+                return {"instance_id": instance_id, "error": "Health check timeout"}
+        else:
+            print("⏭️  Skipping Docker (using running instance)")
 
-    # 4. Submit task
-    problem_statement = instance.get("problem_statement", "")
-    if not submit_task(problem_statement):
-        return {"instance_id": instance_id, "error": "Task submission failed"}
+        # 4. Submit task
+        problem_statement = instance.get("problem_statement", "")
+        if not submit_task(problem_statement):
+            return {"instance_id": instance_id, "error": "Task submission failed"}
 
-    # 5. Wait for completion
-    turns = wait_for_completion(args.timeout)
+        # 5. Wait for completion
+        turns = wait_for_completion(args.timeout)
 
-    # 6. Extract patch
-    agent_patch = extract_patch(workspace_dir)
-    wall_clock = time.time() - start_time
+        # 6. Extract patch
+        agent_patch = extract_patch(workspace_dir)
+        wall_clock = time.time() - start_time
 
-    # 7. Evaluate
-    if not args.skip_eval:
-        eval_result = evaluate_patch(instance, agent_patch, workspace_dir)
-    else:
-        print("⏭️  Skipping evaluation")
-        eval_result = {
-            "instance_id": instance_id,
-            "resolved": None,
-            "tests_passed": 0,
-            "tests_total": 0,
-            "agent_patch_size": len(agent_patch.splitlines()),
-        }
+        # 7. Evaluate
+        if not args.skip_eval:
+            eval_result = evaluate_patch(instance, agent_patch, workspace_dir)
+        else:
+            print("⏭️  Skipping evaluation")
+            eval_result = {
+                "instance_id": instance_id,
+                "resolved": None,
+                "tests_passed": 0,
+                "tests_total": 0,
+                "agent_patch_size": len(agent_patch.splitlines()),
+            }
 
-    # Add timing metadata
-    eval_result["turns"] = turns
-    eval_result["wall_clock_s"] = round(wall_clock, 1)
-    eval_result["patch_size_lines"] = len(agent_patch.splitlines())
+        # Add timing metadata
+        eval_result["turns"] = turns
+        eval_result["wall_clock_s"] = round(wall_clock, 1)
+        eval_result["patch_size_lines"] = len(agent_patch.splitlines())
 
-    # 8. Save result
-    save_result(instance_id, eval_result, args.output)
+        # 8. Save result
+        save_result(instance_id, eval_result, args.output)
 
-    # 9. Cleanup Docker (unless skip)
-    if not args.skip_docker and not args.keep_alive:
-        print("🧹 Shutting down ContainerClaw...")
-        subprocess.run(
-            ["docker", "compose", "-f", str(COMPOSE_FILE),
-             "-f", str(COMPOSE_OVERRIDE), "down", "-v"],
-            capture_output=True, text=True, cwd=str(PROJECT_ROOT),
-        )
+    finally:
+        # 9. Cleanup Docker (unless skip)
+        if not args.skip_docker and not args.keep_alive:
+            print("🧹 Shutting down ContainerClaw...")
+            subprocess.run(
+                ["docker", "compose", "-f", str(COMPOSE_FILE),
+                 "-f", str(COMPOSE_OVERRIDE), "down", "-v", "--remove-orphans"],
+                capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+            )
 
     return eval_result
 
@@ -284,11 +286,21 @@ Examples:
 
         for i, inst in enumerate(instances):
             iid = inst["instance_id"]
+            
+            # Checkpoint: skip if result exists
+            result_file = Path(args.output) / f"{iid.replace('/', '_')}.json"
+            if result_file.exists():
+                print(f"⏩ Skipping {iid} (already completed)")
+                continue
+
             print(f"\n[{i+1}/{len(instances)}] {iid}")
             try:
                 run_single(iid, args)
+            except KeyboardInterrupt:
+                print("\n🛑 Batch run interrupted by user. Gracefully exiting...")
+                break
             except Exception as e:
-                print(f"❌ Failed: {e}")
+                print(f"❌ Failed {iid}: {e}")
                 save_result(iid, {"instance_id": iid, "error": str(e)}, args.output)
 
         # Generate summary
