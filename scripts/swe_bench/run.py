@@ -2,21 +2,31 @@
 """
 SWE-bench Harness — Main CLI Entry Point.
 
-Orchestrates the full benchmark flow:
+Orchestrates the AGENT HARNESS phase of the benchmark pipeline:
     load instance → setup workspace → boot ContainerClaw →
     submit problem → wait for agents → extract patch →
-    evaluate → report results
+    save prediction (JSONL)
+
+IMPORTANT: This script does NOT evaluate/grade predictions.
+Grading is handled exclusively by the official SWE-bench harness
+via `evaluate.py` (Phase 2). This strict separation ensures
+results are credible and publishable.
 
 Usage:
     # Single instance
-    python run.py --instance django__django-16379 --timeout 300
+    python run.py --instance django__django-11133 --model-name containerclaw-v1
 
-    # Batch (all of SWE-bench Lite)
-    python run.py --dataset swebench_lite --timeout 600 --output results/
+    # Batch (all of SWE-bench Verified)
+    python run.py --batch --model-name containerclaw-v1 --timeout 600
 
-    # Skip Docker (for testing the evaluation pipeline only)
-    python run.py --instance django__django-16379 --skip-docker --skip-eval
+    # Batch with limit
+    python run.py --batch --limit 10 --model-name containerclaw-v1
+
+    # After agent harness completes, run official evaluation (Phase 2):
+    python evaluate.py --predictions runs/<run_id>/predictions.jsonl --run-id <run_id>
 """
+
+from __future__ import annotations
 
 import argparse
 import json
@@ -24,12 +34,18 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from instance_loader import load_instance, list_instances
 from workspace_setup import setup_workspace, extract_patch
-from evaluator import evaluate_patch
-from results import save_result, generate_summary
+from prediction_writer import (
+    save_prediction,
+    combine_predictions,
+    save_run_manifest,
+    finalize_manifest,
+)
+from trace_archiver import archive_traces
 
 
 BRIDGE_URL = os.getenv("BRIDGE_URL", "http://localhost:5001")
@@ -58,11 +74,43 @@ def wait_for_health(max_wait: int = 120) -> bool:
     return False
 
 
-def submit_task(problem_statement: str, session_id: str = "swe-bench") -> bool:
-    """Submit the problem statement to ContainerClaw via the bridge."""
+def submit_task(problem_statement: str) -> str:
+    """Submit the problem statement to ContainerClaw via the bridge.
+    Returns the generated session_id if successful, or empty string on failure.
+    """
     import requests
+    import time
+    
+    # 1. Initialize a new session
+    print(f"🔌 Initializing session to boot agent components...")
+    try:
+        sess_resp = requests.post(f"{BRIDGE_URL}/sessions/new", json={"title": "SWE-Bench Run"}, timeout=10)
+        sess_resp.raise_for_status()
+        session_id = sess_resp.json().get("session", {}).get("session_id", "")
+        if not session_id:
+            print("❌ Failed to parse session ID from bridge")
+            return ""
+        
+        # 2. WAKEUP PING WORKAROUND:
+        # ContainerClaw lazy-loads the underlying Reconciler agent loop purely off the
+        # first /task payload. Because the boot sequence has an inherent race condition where
+        # publish() is called before the reconciler background loop mounts the FlussPublisher,
+        # we can seamlessly mask this by firing a dummy warmup string!
+        # ExecuteTask will swallow the expected 'NoneType has no attribute publish' exception,
+        # but the backend loop will be successfully mounted on the event loop for this session!
+        requests.post(f"{BRIDGE_URL}/task", json={
+            "prompt": "[SWE-bench Internal Warmup Ping]",
+            "session_id": session_id,
+        }, timeout=10)
+        
+        # Give the event loop 3 seconds to actually mount the publisher inside Docker
+        time.sleep(3)
 
-    print(f"📤 Submitting task ({len(problem_statement)} chars)...")
+    except Exception as e:
+        print(f"❌ Failed to reach bridge for session init/warmup: {e}")
+        return ""
+
+    print(f"📤 Submitting task ({len(problem_statement)} chars) to session {session_id}...")
     try:
         resp = requests.post(f"{BRIDGE_URL}/task", json={
             "prompt": problem_statement,
@@ -71,17 +119,22 @@ def submit_task(problem_statement: str, session_id: str = "swe-bench") -> bool:
         data = resp.json()
         if data.get("status") == "ok":
             print(f"✅ Task submitted successfully")
-            return True
+            return session_id
         else:
             print(f"❌ Task submission failed: {data.get('message', 'unknown error')}")
-            return False
+            return ""
     except Exception as e:
         print(f"❌ Failed to reach bridge: {e}")
-        return False
+        return ""
 
 
-def wait_for_completion(timeout: int, session_id: str = "swe-bench") -> int:
-    """Wait for agents to finish (poll SSE stream for 'finish' events).
+def wait_for_completion(timeout: int, session_id: str) -> int:
+    """Wait for agents to finish by polling the SSE event stream.
+
+    The SSE stream is backed by a gRPC StreamActivity call. It can have
+    long gaps (agent doing git operations, LLM inference, etc.), so we
+    use a short per-read timeout with reconnection rather than one long
+    blocking read.
 
     Returns:
         Number of election turns observed
@@ -91,47 +144,154 @@ def wait_for_completion(timeout: int, session_id: str = "swe-bench") -> int:
     print(f"⏳ Waiting for agents to complete (timeout: {timeout}s)...")
     start = time.time()
     turns = 0
+    # How long to wait for data between events before reconnecting
+    READ_TIMEOUT = 90
 
-    try:
-        # Poll SSE stream
-        resp = requests.get(
-            f"{BRIDGE_URL}/events/{session_id}",
-            stream=True, timeout=timeout + 10,
-        )
+    while time.time() - start < timeout:
+        try:
+            resp = requests.get(
+                f"{BRIDGE_URL}/events/{session_id}",
+                stream=True,
+                timeout=(10, READ_TIMEOUT),
+            )
 
-        for line in resp.iter_lines(decode_unicode=True):
-            if time.time() - start > timeout:
-                print(f"⏰ Timeout reached ({timeout}s)")
-                break
-
-            if not line or not line.startswith("data: "):
-                continue
-
-            try:
-                event = json.loads(line[6:])
-                event_type = event.get("type", "")
-
-                if event_type == "thought" and "Election" in event.get("content", ""):
-                    turns += 1
-                    elapsed = int(time.time() - start)
-                    print(f"   🗳️  Turn {turns} ({elapsed}s elapsed)")
-
-                if event_type == "finish":
-                    elapsed = int(time.time() - start)
-                    print(f"✅ Agents finished after {turns} turns ({elapsed}s)")
+            for line in resp.iter_lines(decode_unicode=True):
+                if time.time() - start > timeout:
+                    print(f"⏰ Timeout reached ({timeout}s)")
                     return turns
 
-            except json.JSONDecodeError:
-                continue
+                if not line or not line.startswith("data: "):
+                    continue
 
-    except Exception as e:
-        print(f"⚠️  SSE stream error: {e}")
+                try:
+                    event = json.loads(line[6:])
+                    event_type = event.get("type", "")
 
+                    if event_type == "thought" and "Election" in event.get("content", ""):
+                        turns += 1
+                        elapsed = int(time.time() - start)
+                        print(f"   🗳️  Turn {turns} ({elapsed}s elapsed)")
+
+                    if event_type == "finish":
+                        elapsed = int(time.time() - start)
+                        print(f"✅ Agents finished after {turns} turns ({elapsed}s)")
+                        return turns
+
+                    if event_type == "error":
+                        print(f"⚠️  Agent error: {event.get('content', '')}")
+
+                except json.JSONDecodeError:
+                    continue
+
+        except requests.exceptions.ReadTimeout:
+            elapsed = int(time.time() - start)
+            print(f"   ⏳ Still waiting... ({elapsed}s elapsed, reconnecting)")
+            continue
+        except requests.exceptions.ConnectionError:
+            elapsed = int(time.time() - start)
+            if time.time() - start > timeout:
+                break
+            print(f"   🔌 Connection lost, retrying in 5s... ({elapsed}s elapsed)")
+            time.sleep(5)
+            continue
+        except Exception as e:
+            print(f"⚠️  SSE stream error: {e}")
+            break
+
+    print(f"⏰ Timeout reached ({timeout}s)")
     return turns
+
+def _stop_mlx_server():
+    """Kill any running MLX server spawned by run.py."""
+    state_dir = PROJECT_ROOT / ".claw_state"
+    pid_file = state_dir / "mlx.pid"
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 9)
+            print(f"🧹 Stopped local MLX server (PID: {pid})")
+        except Exception:
+            pass
+        pid_file.unlink(missing_ok=True)
+
+
+def _docker_compose_down():
+    """Tear down the ContainerClaw Docker stack. Always cleans up orphans."""
+    print("🧹 Shutting down ContainerClaw...")
+    subprocess.run(
+        ["docker", "compose", "-f", str(COMPOSE_FILE),
+         "-f", str(COMPOSE_OVERRIDE), "down", "-v", "--remove-orphans"],
+        capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+    )
+    _stop_mlx_server()
+
+
+def _boot_mlx_server():
+    """Start local MLX inference server dynamically if configured to avoid 502s."""
+    import sys
+    sys.path.append(str(PROJECT_ROOT))
+    from shared.config_loader import load_config
+    import platform
+
+    try:
+        config = load_config(str(PROJECT_ROOT / "config.yaml"))
+        server = config.llm_server
+        if not server.enabled or platform.system() != "Darwin" or platform.machine() != "arm64":
+            return
+
+        print(f"🚀 Starting host-side MLX server on port {server.port}...")
+        state_dir = PROJECT_ROOT / ".claw_state"
+        state_dir.mkdir(exist_ok=True)
+        _stop_mlx_server() # Ensure clean state
+        
+        args = [
+            sys.executable, "-m", "mlx_lm", "server",
+            "--model", server.model,
+            "--port", str(server.port),
+            "--host", server.host,
+            "--max-tokens", str(server.max_tokens),
+            "--prompt-cache-size", str(server.prompt_cache_size),
+            "--log-level", server.log_level
+        ]
+        
+        log_fp = open(state_dir / "mlx.log", "w")
+        env = os.environ.copy()
+        env["HF_HUB_OFFLINE"] = "1"
+        proc = subprocess.Popen(args, stdout=log_fp, stderr=subprocess.STDOUT, env=env, cwd=str(PROJECT_ROOT))
+        
+        (state_dir / "mlx.pid").write_text(str(proc.pid))
+        
+        print("⏳ Waiting for MLX server to be ready...", end="", flush=True)
+        import requests
+        for _ in range(60):
+            if proc.poll() is not None:
+                print(f"\n❌ MLX server crashed. See .claw_state/mlx.log")
+                sys.exit(1)
+            try:
+                requests.get(f"http://{server.host}:{server.port}/v1/models")
+                print(" ✅ Ready.")
+                return
+            except requests.exceptions.ConnectionError:
+                print(".", end="", flush=True)
+                time.sleep(2)
+                
+        print("\n❌ MLX server timeout. See .claw_state/mlx.log")
+        _stop_mlx_server()
+        sys.exit(1)
+    except Exception as e:
+        print(f"⚠️ Failed to parse config for MLX check: {e}")
 
 
 def run_single(instance_id: str, args) -> dict:
-    """Run a single SWE-bench instance end-to-end."""
+    """Run a single SWE-bench instance end-to-end.
+
+    This function implements Phase 1 ONLY — it produces a prediction (the
+    agent's patch) but does NOT evaluate/grade it. Grading is deferred to
+    Phase 2 (the official SWE-bench harness).
+
+    Returns:
+        dict with instance_id, model_patch, wall_clock_s, turns, error
+    """
     workspace_dir = str(PROJECT_ROOT / "workspace")
 
     print(f"\n{'='*60}")
@@ -149,9 +309,14 @@ def run_single(instance_id: str, args) -> dict:
     else:
         print("⏭️  Skipping workspace setup")
 
-    # 3. Boot ContainerClaw
+    # 3. Boot ContainerClaw + Run Agent + Extract Patch
+    agent_patch = ""
+    turns = 0
+    error = None
+
     try:
         if not args.skip_docker:
+            _boot_mlx_server()
             compose_cmd = [
                 "docker", "compose",
                 "-f", str(COMPOSE_FILE),
@@ -162,74 +327,99 @@ def run_single(instance_id: str, args) -> dict:
             result = subprocess.run(compose_cmd, capture_output=True, text=True,
                                     cwd=str(PROJECT_ROOT), timeout=300)
             if result.returncode != 0:
-                print(f"❌ Docker Compose failed: {result.stderr[:500]}")
-                return {"instance_id": instance_id, "error": "Docker failed to start"}
+                error = f"Docker failed to start: {result.stderr[:500]}"
+                print(f"❌ {error}")
+                return _make_result(instance_id, "", 0, time.time() - start_time, error)
 
             if not wait_for_health(max_wait=600):
-                return {"instance_id": instance_id, "error": "Health check timeout"}
+                error = "Health check timeout"
+                return _make_result(instance_id, "", 0, time.time() - start_time, error)
         else:
             print("⏭️  Skipping Docker (using running instance)")
 
         # 4. Submit task
         problem_statement = instance.get("problem_statement", "")
-        if not submit_task(problem_statement):
-            return {"instance_id": instance_id, "error": "Task submission failed"}
+        session_id = submit_task(problem_statement)
+        if not session_id:
+            error = "Task submission failed"
+            return _make_result(instance_id, "", 0, time.time() - start_time, error)
 
         # 5. Wait for completion
-        turns = wait_for_completion(args.timeout)
+        turns = wait_for_completion(args.timeout, session_id)
 
-        # 6. Extract patch
+        # 6. Extract patch (stages all changes, diffs against HEAD)
         agent_patch = extract_patch(workspace_dir)
         wall_clock = time.time() - start_time
 
-        # 7. Evaluate
-        if not args.skip_eval:
-            eval_result = evaluate_patch(instance, agent_patch, workspace_dir)
-        else:
-            print("⏭️  Skipping evaluation")
-            eval_result = {
-                "instance_id": instance_id,
-                "resolved": None,
-                "tests_passed": 0,
-                "tests_total": 0,
-                "agent_patch_size": len(agent_patch.splitlines()),
-            }
+        # 7. Save prediction checkpoint (official JSONL format)
+        metadata = {
+            "turns": turns,
+            "wall_clock_s": round(wall_clock, 1),
+            "repo": instance.get("repo", ""),
+            "base_commit": instance.get("base_commit", ""),
+            "timeout": args.timeout,
+        }
+        save_prediction(
+            instance_id=instance_id,
+            model_patch=agent_patch,
+            model_name=args.model_name,
+            predictions_dir=args.predictions_dir,
+            metadata=metadata,
+        )
 
-        # Add timing metadata
-        eval_result["turns"] = turns
-        eval_result["wall_clock_s"] = round(wall_clock, 1)
-        eval_result["patch_size_lines"] = len(agent_patch.splitlines())
-
-        # 8. Save result
-        save_result(instance_id, eval_result, args.output)
+        # 8. Archive agent traces (for auditing and ablation)
+        if not args.skip_traces:
+            try:
+                archive_traces(
+                    session_id="swe-bench",
+                    bridge_url=BRIDGE_URL,
+                    instance_id=instance_id,
+                    output_dir=str(Path(args.predictions_dir).parent),
+                    workspace_dir=workspace_dir,
+                    extra_metadata=metadata,
+                )
+            except Exception as e:
+                print(f"⚠️  Trace archival failed (non-fatal): {e}")
 
     finally:
-        # 9. Cleanup Docker (unless skip)
+        # 9. ALWAYS clean up Docker (unless skip or keep-alive)
         if not args.skip_docker and not args.keep_alive:
-            print("🧹 Shutting down ContainerClaw...")
-            subprocess.run(
-                ["docker", "compose", "-f", str(COMPOSE_FILE),
-                 "-f", str(COMPOSE_OVERRIDE), "down", "-v", "--remove-orphans"],
-                capture_output=True, text=True, cwd=str(PROJECT_ROOT),
-            )
+            _docker_compose_down()
 
-    return eval_result
+    result = _make_result(instance_id, agent_patch, turns,
+                          time.time() - start_time, error)
+    return result
+
+
+def _make_result(instance_id: str, patch: str, turns: int,
+                 wall_clock: float, error: str | None) -> dict:
+    """Build a standardized result dict."""
+    return {
+        "instance_id": instance_id,
+        "patch_lines": len(patch.splitlines()) if patch else 0,
+        "turns": turns,
+        "wall_clock_s": round(wall_clock, 1),
+        "error": error,
+    }
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="SWE-bench Benchmark Harness for ContainerClaw",
+        description="SWE-bench Agent Harness for ContainerClaw (Phase 1)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Single instance
-  python run.py --instance django__django-16379 --timeout 300
+  python run.py --instance django__django-11133 --model-name containerclaw-v1
 
-  # Batch run (SWE-bench Lite, first 10)
-  python run.py --batch --limit 10 --timeout 600 --output results/
+  # Batch run (SWE-bench Verified, first 10)
+  python run.py --batch --limit 10 --model-name containerclaw-v1
 
-  # Debug: skip Docker and evaluation
-  python run.py --instance django__django-16379 --skip-docker --skip-eval
+  # Full run (all 500 instances)
+  python run.py --batch --model-name containerclaw-v1 --timeout 600
+
+  # After agent harness, run official evaluation (Phase 2):
+  python evaluate.py --predictions runs/<run_id>/predictions.jsonl --run-id <run_id>
         """,
     )
 
@@ -240,71 +430,175 @@ Examples:
     parser.add_argument("--limit", type=int, help="Max instances for batch mode")
     parser.add_argument("--repo", help="Filter batch by repo name")
 
+    # Model identification (REQUIRED for published results)
+    parser.add_argument("--model-name", default="containerclaw-v1",
+                        help="Model/system identifier for predictions (default: containerclaw-v1)")
+
     # Configuration
-    parser.add_argument("--dataset", default="princeton-nlp/SWE-bench_Lite",
-                        help="HuggingFace dataset name")
+    parser.add_argument("--dataset", default="princeton-nlp/SWE-bench_Verified",
+                        help="HuggingFace dataset name (default: SWE-bench_Verified)")
     parser.add_argument("--timeout", type=int, default=600,
-                        help="Max seconds per instance for agent execution")
-    parser.add_argument("--output", default="results/",
-                        help="Output directory for results")
+                        help="Max seconds per instance for agent execution (default: 600)")
+    parser.add_argument("--run-id", default=None,
+                        help="Run ID (auto-generated if not provided)")
     parser.add_argument("--install-deps", action="store_true",
                         help="Run pip install -e . in workspace")
+
+    # Output
+    parser.add_argument("--predictions-dir", default=None,
+                        help="Directory for prediction checkpoints (default: runs/<run_id>/predictions/)")
 
     # Skip flags
     parser.add_argument("--skip-setup", action="store_true",
                         help="Skip workspace setup (use existing)")
     parser.add_argument("--skip-docker", action="store_true",
                         help="Skip Docker boot (use running instance)")
-    parser.add_argument("--skip-eval", action="store_true",
-                        help="Skip evaluation (just extract patch)")
+    parser.add_argument("--skip-traces", action="store_true",
+                        help="Skip agent trace archival")
     parser.add_argument("--keep-alive", action="store_true",
                         help="Don't shut down Docker after run")
 
+    # Evaluation (Phase 2)
+    parser.add_argument("--auto-evaluate", action="store_true",
+                        help="Automatically run official evaluation after batch completes")
+    parser.add_argument("--eval-max-workers", type=int, default=1,
+                        help="Max workers for official evaluation (default: 1)")
+
     args = parser.parse_args()
 
+    # Generate run ID if not provided
+    if not args.run_id:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        args.run_id = f"run_{timestamp}"
+
+    # Set predictions directory
+    if not args.predictions_dir:
+        args.predictions_dir = str(PROJECT_ROOT / "runs" / args.run_id / "predictions")
+
+    run_dir = str(Path(args.predictions_dir).parent)
+
     if args.instance:
-        # Single instance mode
+        # ── Single Instance Mode ──
         result = run_single(args.instance, args)
-        status = "✅ RESOLVED" if result.get("resolved") else "❌ NOT RESOLVED"
+        status = "✅ PATCH COLLECTED" if not result.get("error") else "❌ FAILED"
         print(f"\n{'='*60}")
         print(f"  Result: {status}")
         print(f"  Turns: {result.get('turns', 'N/A')}")
         print(f"  Wall clock: {result.get('wall_clock_s', 'N/A')}s")
-        print(f"  Patch size: {result.get('patch_size_lines', 0)} lines")
+        print(f"  Patch size: {result.get('patch_lines', 0)} lines")
+        if result.get("error"):
+            print(f"  Error: {result['error']}")
+        # Combine single prediction into JSONL for evaluate.py
+        predictions_jsonl = str(Path(run_dir) / "predictions.jsonl")
+        combine_predictions(args.predictions_dir, predictions_jsonl)
+
+        print(f"\n  Prediction saved to: {args.predictions_dir}/")
+        print(f"  To evaluate, run Phase 2:")
+        print(f"    python evaluate.py --predictions {predictions_jsonl} --run-id {args.run_id}")
         print(f"{'='*60}\n")
 
     elif args.batch:
-        # Batch mode
+        # ── Batch Mode ──
         instances = list_instances(args.dataset, args.repo)
         if args.limit:
             instances = instances[:args.limit]
 
+        # Save run manifest
+        config_path = str(PROJECT_ROOT / "config.yaml")
+        save_run_manifest(
+            run_id=args.run_id,
+            run_dir=run_dir,
+            model_name=args.model_name,
+            dataset_name=args.dataset,
+            total_instances=len(instances),
+            config_path=config_path,
+        )
+
         print(f"\n🏁 Starting batch run: {len(instances)} instances")
-        print(f"   Dataset: {args.dataset}")
-        print(f"   Timeout: {args.timeout}s per instance")
-        print(f"   Output: {args.output}\n")
+        print(f"   Run ID:      {args.run_id}")
+        print(f"   Model:       {args.model_name}")
+        print(f"   Dataset:     {args.dataset}")
+        print(f"   Timeout:     {args.timeout}s per instance")
+        print(f"   Predictions: {args.predictions_dir}\n")
+
+        completed = 0
+        errors = 0
 
         for i, inst in enumerate(instances):
             iid = inst["instance_id"]
-            
-            # Checkpoint: skip if result exists
-            result_file = Path(args.output) / f"{iid.replace('/', '_')}.json"
-            if result_file.exists():
-                print(f"⏩ Skipping {iid} (already completed)")
+
+            # Checkpoint: skip if prediction already exists
+            pred_file = Path(args.predictions_dir) / f"{iid.replace('/', '__')}.json"
+            if pred_file.exists():
+                print(f"⏩ Skipping {iid} (prediction already exists)")
+                completed += 1
                 continue
 
             print(f"\n[{i+1}/{len(instances)}] {iid}")
             try:
-                run_single(iid, args)
+                result = run_single(iid, args)
+                completed += 1
+                if result.get("error"):
+                    errors += 1
+                    # Save a prediction even for errors (empty patch)
+                    save_prediction(
+                        instance_id=iid,
+                        model_patch="",
+                        model_name=args.model_name,
+                        predictions_dir=args.predictions_dir,
+                        metadata={"error": result["error"]},
+                    )
             except KeyboardInterrupt:
                 print("\n🛑 Batch run interrupted by user. Gracefully exiting...")
+                # Ensure Docker is cleaned up
+                if not args.skip_docker and not args.keep_alive:
+                    _docker_compose_down()
                 break
             except Exception as e:
                 print(f"❌ Failed {iid}: {e}")
-                save_result(iid, {"instance_id": iid, "error": str(e)}, args.output)
+                errors += 1
+                # Save error prediction for checkpointing
+                save_prediction(
+                    instance_id=iid,
+                    model_patch="",
+                    model_name=args.model_name,
+                    predictions_dir=args.predictions_dir,
+                    metadata={"error": str(e)},
+                )
 
-        # Generate summary
-        generate_summary(args.output)
+        # Finalize manifest
+        finalize_manifest(run_dir)
+
+        # Combine predictions into final JSONL
+        predictions_jsonl = str(Path(run_dir) / "predictions.jsonl")
+        total_combined = combine_predictions(args.predictions_dir, predictions_jsonl)
+
+        # Print final summary
+        print(f"\n{'='*60}")
+        print(f"  📊 Batch Run Summary")
+        print(f"{'='*60}")
+        print(f"  Run ID:              {args.run_id}")
+        print(f"  Instances attempted: {completed}")
+        print(f"  Errors:              {errors}")
+        print(f"  Predictions file:    {predictions_jsonl}")
+        print(f"  Total predictions:   {total_combined}")
+
+        if args.auto_evaluate:
+            print(f"\n  🚀 Auto-evaluating with official SWE-bench harness...")
+            from evaluate import run_official_evaluation
+            run_official_evaluation(
+                predictions_path=predictions_jsonl,
+                dataset_name=args.dataset,
+                run_id=args.run_id,
+                max_workers=args.eval_max_workers,
+            )
+        else:
+            print(f"\n  Next step — Run Phase 2 (official evaluation):")
+            print(f"    python evaluate.py \\")
+            print(f"        --predictions {predictions_jsonl} \\")
+            print(f"        --run-id {args.run_id}")
+
+        print(f"{'='*60}\n")
 
 
 if __name__ == "__main__":

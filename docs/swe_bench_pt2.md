@@ -1038,10 +1038,11 @@ Verify:
 | File | Action | Rationale |
 |------|--------|-----------|
 | `scripts/swe_bench/run.py` | **Major refactor** | Remove custom eval, add prediction writing + trace archival |
-| `scripts/swe_bench/evaluator.py` | **Delete or rename** | Scientifically invalid; replaced by official harness |
+| `scripts/swe_bench/evaluator.py` | **Deleted** | Scientifically invalid; replaced by official harness |
 | `scripts/swe_bench/workspace_setup.py` | **Fix `extract_patch()`** | Must capture untracked files via `git add -A` |
 | `scripts/swe_bench/instance_loader.py` | **Fix defaults** | Change to `SWE-bench_Verified` |
-| `scripts/swe_bench/results.py` | **Simplify** | Remove custom summary; official report replaces it |
+| `scripts/swe_bench/results.py` | **Deleted** | Custom summary replaced by official report |
+| `scripts/swe_bench/results/` | **Deleted** | Old per-instance JSON results directory |
 | `scripts/swe_bench/prediction_writer.py` | **New** | JSONL prediction checkpointing + combining |
 | `scripts/swe_bench/trace_archiver.py` | **New** | Agent conversation log archival |
 | `scripts/swe_bench/evaluate.py` | **New** | Official evaluation wrapper |

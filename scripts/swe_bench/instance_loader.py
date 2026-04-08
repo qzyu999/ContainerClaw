@@ -5,6 +5,8 @@ Downloads instances from the princeton-nlp/SWE-bench_Lite dataset hosted
 on HuggingFace and provides lookup by instance_id.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import sys
@@ -15,7 +17,7 @@ from pathlib import Path
 CACHE_DIR = Path(__file__).parent / ".cache"
 
 
-def load_dataset_cached(dataset_name: str = "princeton-nlp/SWE-bench_Lite",
+def load_dataset_cached(dataset_name: str = "princeton-nlp/SWE-bench_Verified",
                         split: str = "test") -> list[dict]:
     """Load SWE-bench dataset, caching locally as JSON for fast reuse."""
     cache_file = CACHE_DIR / f"{dataset_name.replace('/', '_')}_{split}.json"
@@ -40,7 +42,7 @@ def load_dataset_cached(dataset_name: str = "princeton-nlp/SWE-bench_Lite",
         sys.exit(1)
 
 
-def load_instance(instance_id: str, dataset_name: str = "princeton-nlp/SWE-bench_Lite") -> dict:
+def load_instance(instance_id: str, dataset_name: str = "princeton-nlp/SWE-bench_Verified") -> dict:
     """Load a single SWE-bench instance by its instance_id.
 
     Returns a dict with keys:
@@ -71,7 +73,7 @@ def load_instance(instance_id: str, dataset_name: str = "princeton-nlp/SWE-bench
     sys.exit(1)
 
 
-def list_instances(dataset_name: str = "princeton-nlp/SWE-bench_Lite",
+def list_instances(dataset_name: str = "princeton-nlp/SWE-bench_Verified",
                    repo_filter: str | None = None) -> list[dict]:
     """List all available instances, optionally filtered by repo."""
     items = load_dataset_cached(dataset_name)
@@ -85,7 +87,7 @@ if __name__ == "__main__":
     parser.add_argument("--instance", help="Instance ID to load")
     parser.add_argument("--list", action="store_true", help="List all instances")
     parser.add_argument("--repo", help="Filter instances by repo name")
-    parser.add_argument("--dataset", default="princeton-nlp/SWE-bench_Lite")
+    parser.add_argument("--dataset", default="princeton-nlp/SWE-bench_Verified")
     args = parser.parse_args()
 
     if args.list or args.repo:
