@@ -50,6 +50,8 @@ This document shows the full list of features that should remain stable as the c
     - [Planned] Add enable/disable for integrations like Discord etc.
 - UI/UX
     - [Planned] "Thinking" - type notification with TTL for per-agent-request to the API
+- Paper
+    - [Planned] Super radiance analogy
 - [Planned] Read-only access to other system files (may need to just do docker cp or mount large folders at startup with read-only)
 - [Planned] Kaggle/autoresearch module: allow the agents to loop and improve on their own solutions through an API 
 - [Planned] Kubernetes integrations
