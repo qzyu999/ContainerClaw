@@ -48,14 +48,22 @@ def archive_traces(
     archive_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Fetch conversation history from Bridge
-    conversation = _fetch_conversation(bridge_url, session_id)
-    if conversation:
-        (archive_dir / "conversation.json").write_text(
-            json.dumps(conversation, indent=2, default=str)
-        )
-        stats = _extract_stats(conversation)
+    raw_conversation = _fetch_conversation(bridge_url, session_id)
+    # The bridge returns {"status": "ok", "events": [...]} — extract the list
+    if isinstance(raw_conversation, dict) and "events" in raw_conversation:
+        conversation = raw_conversation
+        event_list = raw_conversation["events"]
+    elif isinstance(raw_conversation, list):
+        conversation = {"events": raw_conversation, "status": "ok"}
+        event_list = raw_conversation
     else:
-        stats = {"error": "Failed to fetch conversation"}
+        conversation = {"events": [], "status": "ok"}
+        event_list = []
+
+    (archive_dir / "conversation.json").write_text(
+        json.dumps(conversation, indent=2, default=str)
+    )
+    stats = _extract_stats(event_list) if event_list else {"error": "No events fetched"}
 
     # 2. Save workspace git log (last 20 commits if available)
     git_log = _get_git_log(workspace_dir)

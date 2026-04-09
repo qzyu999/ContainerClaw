@@ -14,6 +14,16 @@ while [[ $# -gt 0 ]]; do
       TELEMETRY_PROFILE="telemetry"
       shift
       ;;
+    --bench)
+      # SWE-bench mode: run agent as root with writable fs for git/pip
+      export CLAW_USER="root"
+      export CLAW_READ_ONLY="false"
+      export CONCHSHELL_ENABLED="true"
+      export SWE_BENCH_MODE="true"
+      export CLAW_HOME="/root"
+      echo "🧪 SWE-bench mode enabled (root user, writable fs)"
+      shift
+      ;;
     *)
       SESSION_ID=$1
       shift

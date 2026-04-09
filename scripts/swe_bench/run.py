@@ -50,7 +50,7 @@ from trace_archiver import archive_traces
 
 BRIDGE_URL = os.getenv("BRIDGE_URL", "http://localhost:5001")
 COMPOSE_FILE = Path(__file__).resolve().parent.parent.parent / "docker-compose.yml"
-COMPOSE_OVERRIDE = Path(__file__).resolve().parent.parent.parent / "docker-compose.swebench.yml"
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
@@ -267,71 +267,25 @@ def _stop_mlx_server():
         pid_file.unlink(missing_ok=True)
 
 
-def _docker_compose_down():
-    """Tear down the ContainerClaw Docker stack. Always cleans up orphans."""
-    print("🧹 Shutting down ContainerClaw...")
-    subprocess.run(
-        ["docker", "compose", "-f", str(COMPOSE_FILE),
-         "-f", str(COMPOSE_OVERRIDE), "down", "-v", "--remove-orphans"],
-        capture_output=True, text=True, cwd=str(PROJECT_ROOT),
+CLAW_SH = PROJECT_ROOT / "claw.sh"
+
+
+def _claw(command: str, *extra_args: str, check: bool = True) -> subprocess.CompletedProcess:
+    """Run a claw.sh command. Single source of truth for lifecycle management."""
+    cmd = ["bash", str(CLAW_SH), command] + list(extra_args)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True,
+        cwd=str(PROJECT_ROOT), timeout=600,
     )
-    _stop_mlx_server()
+    if check and result.returncode != 0:
+        print(f"❌ claw.sh {command} failed:\n{result.stdout[-500:]}\n{result.stderr[-500:]}")
+    return result
 
 
-def _boot_mlx_server():
-    """Start local MLX inference server dynamically if configured to avoid 502s."""
-    import sys
-    sys.path.append(str(PROJECT_ROOT))
-    from shared.config_loader import load_config
-    import platform
-
-    try:
-        config = load_config(str(PROJECT_ROOT / "config.yaml"))
-        server = config.llm_server
-        if not server.enabled or platform.system() != "Darwin" or platform.machine() != "arm64":
-            return
-
-        print(f"🚀 Starting host-side MLX server on port {server.port}...")
-        state_dir = PROJECT_ROOT / ".claw_state"
-        state_dir.mkdir(exist_ok=True)
-        _stop_mlx_server() # Ensure clean state
-        
-        args = [
-            sys.executable, "-m", "mlx_lm", "server",
-            "--model", server.model,
-            "--port", str(server.port),
-            "--host", server.host,
-            "--max-tokens", str(server.max_tokens),
-            "--prompt-cache-size", str(server.prompt_cache_size),
-            "--log-level", server.log_level
-        ]
-        
-        log_fp = open(state_dir / "mlx.log", "w")
-        env = os.environ.copy()
-        env["HF_HUB_OFFLINE"] = "1"
-        proc = subprocess.Popen(args, stdout=log_fp, stderr=subprocess.STDOUT, env=env, cwd=str(PROJECT_ROOT))
-        
-        (state_dir / "mlx.pid").write_text(str(proc.pid))
-        
-        print("⏳ Waiting for MLX server to be ready...", end="", flush=True)
-        import requests
-        for _ in range(60):
-            if proc.poll() is not None:
-                print(f"\n❌ MLX server crashed. See .claw_state/mlx.log")
-                sys.exit(1)
-            try:
-                requests.get(f"http://{server.host}:{server.port}/v1/models")
-                print(" ✅ Ready.")
-                return
-            except requests.exceptions.ConnectionError:
-                print(".", end="", flush=True)
-                time.sleep(2)
-                
-        print("\n❌ MLX server timeout. See .claw_state/mlx.log")
-        _stop_mlx_server()
-        sys.exit(1)
-    except Exception as e:
-        print(f"⚠️ Failed to parse config for MLX check: {e}")
+def _docker_compose_down():
+    """Tear down the ContainerClaw Docker stack via claw.sh."""
+    print("🧹 Shutting down ContainerClaw...")
+    _claw("down", "--bench", check=False)
 
 
 def run_single(instance_id: str, args) -> dict:
@@ -368,18 +322,17 @@ def run_single(instance_id: str, args) -> dict:
 
     try:
         if not args.skip_docker:
-            _boot_mlx_server()
-            compose_cmd = [
-                "docker", "compose",
-                "-f", str(COMPOSE_FILE),
-                "-f", str(COMPOSE_OVERRIDE),
-                "up", "--build", "-d",
-            ]
-            print(f"🚀 Booting ContainerClaw...")
-            result = subprocess.run(compose_cmd, capture_output=True, text=True,
-                                    cwd=str(PROJECT_ROOT), timeout=300)
+            # ── Full lifecycle via claw.sh --bench ──
+            # --bench sets env vars (CLAW_USER=root, SWE_BENCH_MODE=true, etc.)
+            # that docker-compose.yml reads via ${VAR:-default} syntax.
+            # No override file, no restart, no Python reimplementation.
+            print("🧹 Full clean (claw.sh clean --bench)...")
+            _claw("clean", "--bench", check=False)
+
+            print("🚀 Booting ContainerClaw (claw.sh up --bench)...")
+            result = _claw("up", "--bench")
             if result.returncode != 0:
-                error = f"Docker failed to start: {result.stderr[:500]}"
+                error = f"claw.sh up failed:\n{result.stdout[-500:]}\n{result.stderr[-500:]}"
                 print(f"❌ {error}")
                 return _make_result(instance_id, "", 0, time.time() - start_time, error)
 
@@ -423,7 +376,7 @@ def run_single(instance_id: str, args) -> dict:
         if not args.skip_traces:
             try:
                 archive_traces(
-                    session_id="swe-bench",
+                    session_id=session_id,
                     bridge_url=BRIDGE_URL,
                     instance_id=instance_id,
                     output_dir=str(Path(args.predictions_dir).parent),
