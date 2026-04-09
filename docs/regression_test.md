@@ -31,6 +31,7 @@ This document shows the full list of features that should remain stable as the c
     - [Planned] DeerFlow-style JSON memories for AI context HUD
     - [Planned] Turtle concept for problem density progressing over time
     - [Planned] Document that the optimization step is to optimize P(SELF.md, system-message, window(chat-history), anchor-message|next-step-is-goal)
+    - [Planned] Understand forgetting: https://x.com/ashwingop/status/2042091130213560759
 - [Existing] Subagents that work independently and async with the main chatroom
 - Flink Metrics
     - [Planned] Telemetry/querying into the underlying Fluss tables, e.g., SELECT * FROM table WHERE user=Alice
