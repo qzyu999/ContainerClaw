@@ -121,7 +121,7 @@ Run ContainerClaw on one instance to verify the full agent → prediction pipeli
 python run.py \
     --instance django__django-11133 \
     --model-name containerclaw-v1 \
-    --timeout 600
+    --timeout 7200
 
 # Phase 2: Official evaluation
 python evaluate.py \
@@ -160,7 +160,7 @@ python run.py \
     --batch \
     --limit 30 \
     --model-name containerclaw-v1 \
-    --timeout 600 \
+    --timeout 7200 \
     --run-id smoke_test_30
 
 # Phase 2: Official evaluation
@@ -179,7 +179,7 @@ python run.py \
     --batch \
     --limit 30 \
     --model-name containerclaw-v1 \
-    --timeout 600 \
+    --timeout 7200 \
     --run-id smoke_test_30
 ```
 
@@ -209,14 +209,14 @@ python run.py --batch --limit 10 --repo scikit-learn --model-name containerclaw-
 python run.py \
     --batch \
     --model-name containerclaw-v1 \
-    --timeout 600 \
+    --timeout 7200 \
     --run-id containerclaw-v1
 
 # Phase 2: Official evaluation (can also auto-trigger)
 python run.py \
     --batch \
     --model-name containerclaw-v1 \
-    --timeout 600 \
+    --timeout 7200 \
     --run-id containerclaw-v1 \
     --auto-evaluate
 ```
