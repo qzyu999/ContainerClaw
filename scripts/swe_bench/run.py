@@ -74,13 +74,62 @@ def wait_for_health(max_wait: int = 120) -> bool:
     return False
 
 
+def _wait_for_reconciler_boot(session_id: str, max_wait: int = 60) -> bool:
+    """Poll the SSE stream until the Reconciler publishes its boot message.
+
+    The reconciler emits 'Multi-Agent System Online' once the FlussPublisher,
+    ToolExecutor, and agent roster are fully initialized. We must wait for
+    this before submitting the real task — otherwise the agents see the task
+    arrive before their internal state machine is running, causing them to
+    silently produce empty votes and [WAIT] forever.
+
+    Returns True if booted, False on timeout.
+    """
+    import requests
+
+    print(f"   ⏳ Waiting for agent reconciler to boot (max {max_wait}s)...")
+    start = time.time()
+
+    while time.time() - start < max_wait:
+        try:
+            resp = requests.get(
+                f"{BRIDGE_URL}/events/{session_id}",
+                stream=True,
+                timeout=(5, 10),
+            )
+            for line in resp.iter_lines(decode_unicode=True):
+                if time.time() - start > max_wait:
+                    break
+                if not line or not line.startswith("data: "):
+                    continue
+                try:
+                    event = json.loads(line[6:])
+                    content = event.get("content", "")
+                    if "Multi-Agent System Online" in content:
+                        elapsed = int(time.time() - start)
+                        print(f"   ✅ Reconciler booted ({elapsed}s)")
+                        return True
+                except json.JSONDecodeError:
+                    continue
+        except requests.exceptions.ReadTimeout:
+            continue
+        except requests.exceptions.ConnectionError:
+            time.sleep(2)
+            continue
+        except Exception:
+            time.sleep(2)
+            continue
+
+    print(f"   ⚠️  Reconciler boot not confirmed within {max_wait}s (proceeding anyway)")
+    return False
+
+
 def submit_task(problem_statement: str) -> str:
     """Submit the problem statement to ContainerClaw via the bridge.
     Returns the generated session_id if successful, or empty string on failure.
     """
     import requests
-    import time
-    
+
     # 1. Initialize a new session
     print(f"🔌 Initializing session to boot agent components...")
     try:
@@ -90,21 +139,24 @@ def submit_task(problem_statement: str) -> str:
         if not session_id:
             print("❌ Failed to parse session ID from bridge")
             return ""
-        
-        # 2. WAKEUP PING WORKAROUND:
-        # ContainerClaw lazy-loads the underlying Reconciler agent loop purely off the
-        # first /task payload. Because the boot sequence has an inherent race condition where
-        # publish() is called before the reconciler background loop mounts the FlussPublisher,
-        # we can seamlessly mask this by firing a dummy warmup string!
-        # ExecuteTask will swallow the expected 'NoneType has no attribute publish' exception,
-        # but the backend loop will be successfully mounted on the event loop for this session!
+
+        # 2. WAKEUP PING:
+        # ContainerClaw lazy-loads the Reconciler agent loop on the first /task call.
+        # The first ExecuteTask triggers _init_moderator → asyncio.create_task(reconciler.run())
+        # which asynchronously starts the FlussPublisher, replays history, and begins polling.
+        # The warmup ping's "Human" message may fail to publish (publisher not ready yet),
+        # but crucially it causes the reconciler background task to be scheduled.
         requests.post(f"{BRIDGE_URL}/task", json={
             "prompt": "[SWE-bench Internal Warmup Ping]",
             "session_id": session_id,
         }, timeout=10)
-        
-        # Give the event loop 3 seconds to actually mount the publisher inside Docker
-        time.sleep(3)
+
+        # 3. Wait for the reconciler to fully boot.
+        # Instead of a blind sleep, poll the SSE stream for the boot confirmation.
+        # The reconciler publishes "Multi-Agent System Online" once all components
+        # (FlussPublisher, ToolExecutor, agents) are initialized and the polling
+        # loop is running. Only then is it safe to submit the real task.
+        _wait_for_reconciler_boot(session_id, max_wait=60)
 
     except Exception as e:
         print(f"❌ Failed to reach bridge for session init/warmup: {e}")

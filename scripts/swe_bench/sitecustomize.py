@@ -21,7 +21,7 @@ def patch_swebench():
                 if c.startswith("git clone"):
                     parts = c.split(" ")
                     tgt = parts[-1]
-                    cmds[i] = f"for i in 1 2 3 4 5; do {c} --filter=blob:none && break || (rm -rf {tgt} && sleep 2); done"
+                    cmds[i] = f"cd /root && for i in 1 2 3 4 5; do {c} --filter=blob:none && break || (rm -rf {tgt} && sleep 2); done"
                 elif c.startswith("git gc") or c.startswith("git reflog expire"):
                     cmds[i] = f"echo 'Skipped {c.split()[1]} to support blobless clones'"
             return cmds
@@ -38,7 +38,7 @@ def patch_swebench():
                 if c.startswith("git clone"):
                     parts = c.split(" ")
                     tgt = parts[-1]
-                    cmds[i] = f"for i in 1 2 3 4 5; do {c} --filter=blob:none && break || (rm -rf {tgt} && sleep 2); done"
+                    cmds[i] = f"cd /root && for i in 1 2 3 4 5; do {c} --filter=blob:none && break || (rm -rf {tgt} && sleep 2); done"
                 elif c.startswith("git gc") or c.startswith("git reflog expire"):
                     cmds[i] = f"echo 'Skipped {c.split()[1]} to support blobless clones'"
             return cmds
