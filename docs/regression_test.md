@@ -52,6 +52,7 @@ This document shows the full list of features that should remain stable as the c
     - [Planned] "Thinking" - type notification with TTL for per-agent-request to the API
 - Paper
     - [Planned] Super radiance analogy
+    - [Planned] Compare to https://llm-as-a-verifier.notion.site/ styling
 - [Planned] Read-only access to other system files (may need to just do docker cp or mount large folders at startup with read-only)
 - [Planned] Kaggle/autoresearch module: allow the agents to loop and improve on their own solutions through an API 
 - [Planned] Kubernetes integrations
