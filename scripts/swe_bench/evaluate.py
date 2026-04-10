@@ -151,6 +151,8 @@ def run_official_evaluation(
     # Validate first
     stats = validate_predictions(predictions_path, dataset_name)
     if not stats["valid"]:
+        if "error" in stats:
+            print(f"❌ {stats['error']}")
         print("❌ Prediction validation failed. Fix errors above before evaluating.")
         return 1
 
