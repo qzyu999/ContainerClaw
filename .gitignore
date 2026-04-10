@@ -57,3 +57,8 @@ workspace/*
 # SWE-bench
 dummy_*
 gold_patch_test*
+scripts/swe_bench/logs/*
+runs/*
+gold_predictions*
+gold_patch_sanity*
+logs/*
