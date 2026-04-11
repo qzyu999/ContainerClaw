@@ -59,6 +59,7 @@ dummy_*
 gold_patch_test*
 scripts/swe_bench/logs/*
 runs/*
+!runs/.gitkeep
 gold_predictions*
 gold_patch_sanity*
 logs/*
