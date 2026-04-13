@@ -1,6 +1,31 @@
+# Git
 .git
 .github
-node_modules
-target
-**/*.whl
-.claw_state
+
+# Python
+.venv/
+venv/
+**/__pycache__/
+*.pyc
+
+# Rust
+**/target/
+
+# Node
+node_modules/
+.next/
+dist/
+build/
+
+# Data & Logs
+.fluss_data/
+.zk_data/
+.zk_log/
+logs/
+runs/
+.claw_state/
+fluss_data/
+
+# Misc
+.DS_Store
+vendor/*/target/

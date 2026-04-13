@@ -1,0 +1,5 @@
+# Service-specific ignore for UI
+node_modules/
+dist/
+.next/
+.DS_Store
