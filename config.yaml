@@ -167,12 +167,6 @@ gateway:
 infrastructure:
   telemetry:
     enabled: true
-    engine: "duckdb"        # "duckdb" for local MVP, "starrocks" for K8s enterprise
-    duckdb:
-      path: "/state/telemetry.duckdb"
-    starrocks:
-      host: "starrocks-fe"
-      port: 9030
   flink:
     host: "flink-jobmanager"
     port: 8081
