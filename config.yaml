@@ -5,7 +5,7 @@
 
 # --- MLX LLM Server (Host-side) ---
 llm_server:
-  enabled: true
+  enabled: false
   model: "models/MLX-Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-v2-8bit"
   port: 8080
   host: "127.0.0.1"
@@ -33,8 +33,6 @@ llm:
       base_url: "https://generativelanguage.googleapis.com/v1beta"
       api_key_secret: "gemini_api_key"   # References Docker Secret
       models:
-        - "gemini-2.5-flash"
-        - "gemini-2.5-flash-lite"
         - "gemini-3-flash-preview"
       settings:
         thinking_level: "HIGH"           # Gemini 3 thinking
@@ -49,8 +47,10 @@ llm:
         - "gpt-4o-mini"
 
   # Default provider + model (used when agent config doesn't specify)
-  default_provider: "mlx-local"
-  default_model: "auto"
+  # default_provider: "mlx-local"
+  # default_model: "auto"
+  default_provider: "gemini-cloud"
+  default_model: "gemini-3-flash-preview"
 
 # --- Agent Roster ---
 agents:
