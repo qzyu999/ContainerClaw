@@ -47,6 +47,17 @@ from prediction_writer import (
 )
 from trace_archiver import archive_traces
 
+# ── Smart Bootstrap for Local Dev ──
+# Automatically resolve PYTHONPATH and config path when running manually from root
+ROOT = Path(__file__).resolve().parent.parent.parent
+if (ROOT / "agent" / "src").exists():
+    sys.path.insert(0, str(ROOT / "agent" / "src"))
+    sys.path.insert(0, str(ROOT))
+if "CLAW_CONFIG_PATH" not in os.environ and (ROOT / "config.yaml").exists():
+    os.environ["CLAW_CONFIG_PATH"] = str(ROOT / "config.yaml")
+
+import config
+
 
 BRIDGE_URL = os.getenv("BRIDGE_URL", "http://localhost:5001")
 COMPOSE_FILE = Path(__file__).resolve().parent.parent.parent / "docker-compose.yml"
@@ -133,7 +144,7 @@ def submit_task(problem_statement: str) -> str:
     # 1. Initialize a new session
     print(f"🔌 Initializing session to boot agent components...")
     try:
-        sess_resp = requests.post(f"{BRIDGE_URL}/sessions/new", json={"title": "SWE-Bench Run"}, timeout=10)
+        sess_resp = requests.post(f"{BRIDGE_URL}/sessions/new", json={"title": "SWE-Bench Run"}, timeout=60)
         sess_resp.raise_for_status()
         session_id = sess_resp.json().get("session", {}).get("session_id", "")
         if not session_id:
@@ -149,7 +160,7 @@ def submit_task(problem_statement: str) -> str:
         requests.post(f"{BRIDGE_URL}/task", json={
             "prompt": "[SWE-bench Internal Warmup Ping]",
             "session_id": session_id,
-        }, timeout=10)
+        }, timeout=30)
 
         # 3. Wait for the reconciler to fully boot.
         # Instead of a blind sleep, poll the SSE stream for the boot confirmation.
@@ -223,6 +234,11 @@ def wait_for_completion(timeout: int, session_id: str) -> int:
                         turns += 1
                         elapsed = int(time.time() - start)
                         print(f"   🗳️  Turn {turns} ({elapsed}s elapsed)")
+
+                    if event_type == "telemetry":
+                        content = event.get("content", "")
+                        # Print telemetry chunks in green for visibility
+                        print(f"\033[92m{content}\033[0m", end="", flush=True)
 
                     if event_type == "finish":
                         elapsed = int(time.time() - start)
@@ -309,7 +325,7 @@ def run_single(instance_id: str, args) -> dict:
     # 1. Load instance
     instance = load_instance(instance_id, args.dataset)
 
-    # 2. Setup workspace
+    # 2. Setup workspace (Deduplicated — ONLY call this once)
     if not args.skip_setup:
         setup_workspace(instance, workspace_dir, install_deps=args.install_deps)
     else:
@@ -322,25 +338,19 @@ def run_single(instance_id: str, args) -> dict:
 
     try:
         if not args.skip_docker:
-            # ── Full lifecycle via claw.sh --bench ──
-            # --bench sets env vars (CLAW_USER=root, SWE_BENCH_MODE=true, etc.)
-            # that docker-compose.yml reads via ${VAR:-default} syntax.
-            # No override file, no restart, no Python reimplementation.
-            print("🧹 Full clean (claw.sh clean --bench)...")
-            _claw("clean", "--bench", check=False)
-
-            print("🚀 Booting ContainerClaw (claw.sh up --bench)...")
-            result = _claw("up", "--bench")
-            if result.returncode != 0:
-                error = f"claw.sh up failed:\n{result.stdout[-500:]}\n{result.stderr[-500:]}"
-                print(f"❌ {error}")
-                return _make_result(instance_id, "", 0, time.time() - start_time, error)
-
-            if not wait_for_health(max_wait=600):
-                error = "Health check timeout"
-                return _make_result(instance_id, "", 0, time.time() - start_time, error)
+            # Choice 1: Instructional Approach
+            print(f"🚀 Verifying ContainerClaw services at {BRIDGE_URL}...")
+            if not wait_for_health(max_wait=30):
+                print("\n" + "="*60)
+                print("❌ ContainerClaw is NOT running or not responding.")
+                print("   Please start the stack in a separate terminal and try again:")
+                print("   $ bash claw.sh up --bench")
+                print("="*60 + "\n")
+                return _make_result(instance_id, "", 0, time.time() - start_time, "Stack not running")
         else:
-            print("⏭️  Skipping Docker (using running instance)")
+            print("⏭️  Skipping service verification")
+
+        # 3. Submit task (Workspace is already setup)
 
         # 4. Submit task
         problem_statement = instance.get("problem_statement", "")

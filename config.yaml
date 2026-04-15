@@ -35,7 +35,7 @@ llm:
       models:
         - "gemini-3-flash-preview"
       settings:
-        thinking_level: "HIGH"           # Gemini 3 thinking
+        thinking_level: "LOW"           # Gemini 3 thinking
         max_output_tokens: 8192
 
     openai-cloud:
@@ -115,6 +115,11 @@ agents:
       tools: "default_tools"
 
   settings:
+    execution_mode: "implicit_proxy"
+    sidecar_config:
+      default_target_id: "swe-sidecar"
+      network: "containerclaw-net"
+      docker_config_path: "secrets/docker_config.json"
     default_persona: "General purpose software engineering assistant."
     default_tools:
       - "board"

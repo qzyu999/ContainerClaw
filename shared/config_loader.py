@@ -106,6 +106,13 @@ class SearchLimits(BaseModel):
     results_per_page: int = 50
 
 
+class SidecarConfig(BaseModel):
+    """Configuration for Docker sidecar execution."""
+    default_target_id: str = "swe-sidecar"
+    network: str = "bridge"
+    docker_config_path: str = "secrets/docker_config.json"
+
+
 class ToolSettings(BaseModel):
     """Global configuration for agent tools."""
     workspace_root: str = "/workspace"
@@ -132,6 +139,9 @@ class ClawConfig(BaseModel):
     conchshell_enabled: bool = True
     subagent_ttl_seconds: int = 120
     tool_settings: ToolSettings = ToolSettings()
+    # Sidecar settings
+    execution_mode: str = "native"
+    sidecar_config: SidecarConfig = SidecarConfig()
     # Gateway settings
     gateway_port: int = 8000
     gateway_url: str = "http://llm-gateway:8000"
@@ -313,6 +323,8 @@ def load_config(config_path: str | None = None) -> ClawConfig:
         conchshell_enabled=agent_settings.get("conchshell_enabled", True),
         subagent_ttl_seconds=agent_settings.get("subagent_ttl_seconds", 120),
         tool_settings=ToolSettings(**agent_settings.get("tools", {})),
+        execution_mode=agent_settings.get("execution_mode", "native"),
+        sidecar_config=SidecarConfig(**agent_settings.get("sidecar_config", {})),
         gateway_port=gateway_cfg.get("port", 8000),
         gateway_url=os.getenv("LLM_GATEWAY_URL", "http://llm-gateway:8000"),
         llm_timeout_s=gateway_cfg.get("llm_timeout_s", 300),

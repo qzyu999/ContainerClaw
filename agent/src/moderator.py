@@ -41,6 +41,7 @@ class StageModerator:
         self.election = ElectionProtocol()
         self.executor = None  # Initialized in run() after tool_dispatcher check
         self.publisher = None  # Initialized in run() after _handle_single_message is bound
+        self._publisher_ready = asyncio.Event()
         self._last_human_event_id = ""  # Captured from incoming batches for backbone linking
 
     # ── Fluss I/O ──────────────────────────────────────────────────
@@ -50,6 +51,15 @@ class StageModerator:
                       parent_event_id="", edge_type="SEQUENTIAL"):
         """Publish a message via the batched FlussPublisher. Returns event_id."""
         try:
+            # Wait for publisher if we are in early startup race
+            if not self.publisher:
+                print("⏳ [Moderator] Waiting for publisher to initialize...")
+                try:
+                    await asyncio.wait_for(self._publisher_ready.wait(), timeout=10.0)
+                except asyncio.TimeoutError:
+                    print("❌ [Moderator] Publisher initialization timed out.")
+                    return ""
+
             return await self.publisher.publish(
                 actor_id=actor_id,
                 content=content,
@@ -202,6 +212,7 @@ class StageModerator:
             on_message=self._handle_single_message,
         )
         await self.publisher.start()
+        self._publisher_ready.set()
 
         # Wire SubagentManager publisher (deferred from main.py)
         if hasattr(self, 'subagent_manager') and self.subagent_manager:

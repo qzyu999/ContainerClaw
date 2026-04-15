@@ -12,6 +12,20 @@ import subprocess
 import sys
 from pathlib import Path
 
+# ── Smart Bootstrap for Local Dev ──
+# Automatically resolve PYTHONPATH and config path when running manually from root
+ROOT = Path(__file__).resolve().parent.parent.parent
+if (ROOT / "agent" / "src").exists():
+    sys.path.insert(0, str(ROOT / "agent" / "src"))
+    sys.path.insert(0, str(ROOT))
+if "CLAW_CONFIG_PATH" not in os.environ and (ROOT / "config.yaml").exists():
+    os.environ["CLAW_CONFIG_PATH"] = str(ROOT / "config.yaml")
+
+import docker
+import json
+import time
+import config
+
 
 def _retry_subprocess(cmd: list, max_retries: int = 3, **kwargs) -> subprocess.CompletedProcess:
     """Run a subprocess command with retries for transient failures."""
@@ -27,21 +41,101 @@ def _retry_subprocess(cmd: list, max_retries: int = 3, **kwargs) -> subprocess.C
 
 def setup_workspace(instance: dict, workspace_dir: str = "./workspace",
                     install_deps: bool = False) -> Path:
-    """Prepare the workspace with the target repo at base_commit.
+    """Prepare the workspace. Routes to local or sidecar setup based on config."""
+    mode = config.CONFIG.execution_mode
 
-    Args:
-        instance: SWE-bench instance dict (from instance_loader)
-        workspace_dir: Path to the workspace directory
-        install_deps: Whether to run `pip install -e .` in the workspace
+    if mode == "native":
+        return setup_local_workspace(instance, workspace_dir, install_deps)
+    else:
+        # Crucial Fix: We MUST seed the host workspace even if we use a sidecar.
+        # Otherwise, the sidecar's bind mount maps an empty host directory
+        # over the sidecar's internal codebase, leaving the Agent blind.
+        setup_local_workspace(instance, workspace_dir, install_deps=False)
+        
+        sidecar_id = setup_sidecar(instance)
+        print(f"🚀 Sidecar ready: {sidecar_id}")
+        
+        # Link the sidecar's expected evaluation directory to our shared workspace
+        # This resolves pathing issues inside the sidecar during evaluate.py runs
+        client = docker.from_env()
+        try:
+            client.api.exec_create(container=config.CONFIG.sidecar_config.default_target_id, cmd=["ln", "-s", "/workspace", "/testbed"])
+        except Exception:
+            pass
 
-    Returns:
-        Path to the workspace directory
-    """
+        return Path(workspace_dir)
+
+def setup_sidecar(instance: dict) -> str:
+    """Provisions a Docker sidecar container for the SWE-bench instance."""
+    client = docker.from_env()
+    repo = instance["repo"].replace("/", "__")
+    instance_id = instance["instance_id"]
+    
+    # Map to standard SWE-bench image naming pattern (Epoch Research GHCR)
+    # Example: ghcr.io/epoch-research/swe-bench.eval.x86_64.astropy__astropy-12907
+    image_name = f"ghcr.io/epoch-research/swe-bench.eval.x86_64.{instance_id}"
+    
+    container_name = config.CONFIG.sidecar_config.default_target_id
+    network_name = config.CONFIG.sidecar_config.network
+
+    print(f"🐳 Provisioning sidecar: {container_name} (Image: {image_name})")
+
+    # 0. Ensure network exists
+    _ensure_network(client, network_name)
+
+    # 1. Clean existing container
+    try:
+        old = client.containers.get(container_name)
+        print(f"🧹 Removing old sidecar: {container_name}")
+        old.remove(force=True)
+    except docker.errors.NotFound:
+        pass
+
+    # 2. Pull image with retries
+    print(f"📥 Pulling image {image_name}...")
+    max_pull_retries = 3
+    for attempt in range(max_pull_retries):
+        try:
+            client.images.pull(image_name)
+            print(f"✅ Successfully pulled {image_name}")
+            break
+        except Exception as e:
+            if attempt < max_pull_retries - 1:
+                print(f"⚠️ Pull attempt {attempt+1} failed: {e}. Retrying in 5s...")
+                time.sleep(5)
+            else:
+                print(f"❌ Pull failed after {max_pull_retries} attempts: {e}. Attempting to run from local cache...")
+
+    # 3. Start container
+    container = client.containers.run(
+        image=image_name,
+        name=container_name,
+        detach=True,
+        network=network_name,
+        restart_policy={"Name": "always"},
+        command="sleep infinity"
+    )
+
+    return container.id
+
+def _ensure_network(client: docker.DockerClient, network_name: str):
+    """Checks if the specified network exists, creates it if not."""
+    if network_name == "bridge":
+        return
+    try:
+        client.networks.get(network_name)
+    except docker.errors.NotFound:
+        print(f"🌐 Creating network: {network_name}")
+        client.networks.create(network_name, driver="bridge")
+
+def setup_local_workspace(instance: dict, workspace_dir: str = "./workspace",
+                          install_deps: bool = False) -> Path:
+    """Existing local setup logic (renamed)."""
     workspace = Path(workspace_dir).resolve()
     repo = instance["repo"]  # e.g. "django/django"
     base_commit = instance.get("base_commit", "")
 
-    print(f"🔧 Setting up workspace for {repo} @ {base_commit[:12]}")
+    print(f"🔧 Setting up local workspace for {repo} @ {base_commit[:12]}")
 
     # Clean existing workspace
     conchshell_backup = None

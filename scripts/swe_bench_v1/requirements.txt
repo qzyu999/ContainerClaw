@@ -1,0 +1,7 @@
+# Dependencies for the SWE-bench harness scripts
+#
+# Core requirements:
+datasets
+requests
+tabulate
+swebench

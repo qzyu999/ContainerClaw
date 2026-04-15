@@ -7,6 +7,7 @@ shift  # Remove the command from args
 # Parse remaining flags
 SESSION_ID="default-session"
 TELEMETRY_PROFILE=""
+COMPOSE_FILES="-f docker-compose.yml"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -15,13 +16,14 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --bench)
-      # SWE-bench mode: run agent as root with writable fs for git/pip
+      # SWE-bench mode: load the overlay and run as root
       export CLAW_USER="root"
       export CLAW_READ_ONLY="false"
       export CONCHSHELL_ENABLED="true"
       export SWE_BENCH_MODE="true"
       export CLAW_HOME="/root"
-      echo "🧪 SWE-bench mode enabled (root user, writable fs)"
+      COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.swebench.yml"
+      echo "🧪 SWE-bench mode enabled (root user, writable fs, docker-overlay)"
       shift
       ;;
     *)
@@ -137,12 +139,12 @@ case $COMMAND in
       fi
     fi
 
-    $DOCKER_COMPOSE $PROFILE_FLAG up -d --build --remove-orphans
+    $DOCKER_COMPOSE $COMPOSE_FILES $PROFILE_FLAG up -d --build --remove-orphans
     ;;
   down)
     echo "Gracefully stopping ContainerClaw session: $SESSION_ID"
-    $DOCKER_COMPOSE $ALL_PROFILES stop claw-agent 2>/dev/null
-    $DOCKER_COMPOSE $ALL_PROFILES down --remove-orphans
+    $DOCKER_COMPOSE $COMPOSE_FILES $ALL_PROFILES stop claw-agent 2>/dev/null
+    $DOCKER_COMPOSE $COMPOSE_FILES $ALL_PROFILES down --remove-orphans
     stop_mlx
     ;;
   purge)
@@ -154,20 +156,20 @@ case $COMMAND in
     ;;
   status)
     echo "--- ContainerClaw Swarm Status ---"
-    $DOCKER_COMPOSE $PROFILE_FLAG ps
+    $DOCKER_COMPOSE $COMPOSE_FILES $PROFILE_FLAG ps
     echo -e "\n--- LLM Gateway Health ---"
-    $DOCKER_COMPOSE logs --tail=50 llm-gateway | grep -E "429|500" || echo "No API errors detected in recent logs."
+    $DOCKER_COMPOSE $COMPOSE_FILES logs --tail=50 llm-gateway | grep -E "429|500" || echo "No API errors detected in recent logs."
     ;;
   restart)
     echo "Restarting ContainerClaw session: $SESSION_ID"
-    $DOCKER_COMPOSE $ALL_PROFILES down --remove-orphans
+    $DOCKER_COMPOSE $COMPOSE_FILES $ALL_PROFILES down --remove-orphans
     stop_mlx
     $0 up $SESSION_ID $PROFILE_FLAG
     ;;
   clean)
     echo "Deep cleaning ContainerClaw environment..."
     # Use ALL_PROFILES to guarantee every profiled container is stopped
-    $DOCKER_COMPOSE $ALL_PROFILES down -v --remove-orphans
+    $DOCKER_COMPOSE $COMPOSE_FILES $ALL_PROFILES down -v --remove-orphans
     stop_mlx
     rm -rf .fluss_data .zk_data .claw_state/mlx.log .claw_state/mlx.pid
     docker network prune -f
@@ -177,7 +179,7 @@ case $COMMAND in
     # Try to stream from Fluss log server, fallback to docker logs if it fails
     if ! curl -s --fail http://localhost:9092/v1/logs/$SESSION_ID/stream; then
       echo "Failed to reach log server. Falling back to docker compose logs..."
-      $DOCKER_COMPOSE $PROFILE_FLAG logs -f
+      $DOCKER_COMPOSE $COMPOSE_FILES $PROFILE_FLAG logs -f
     fi
     ;;
   clear-workspace)

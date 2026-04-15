@@ -29,8 +29,9 @@ from tools import (
     DiffTool, TestRunnerTool, BoardTool,
     SurgicalEditTool, AdvancedReadTool, RepoMapTool,
     StructuredSearchTool, LinterTool, SessionShellTool,
-    CreateFileTool,
+    CreateFileTool, ExecuteInSandboxTool,
 )
+from sandbox import SandboxManager
 from subagent_manager import SubagentManager
 from reconciler import ReconciliationController
 from heartbeat import HeartbeatEmitter
@@ -119,7 +120,8 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         await board.initialize()
 
         if conchshell_enabled:
-            session_shell = SessionShellTool()
+            sandbox_mgr = SandboxManager()
+            session_shell = SessionShellTool(sandbox_manager=sandbox_mgr)
             test_runner = TestRunnerTool(session_shell=session_shell)
             diff = DiffTool(session_shell=session_shell)
             board_rw = BoardTool(board, write_access=True)
@@ -131,11 +133,14 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             structured_search = StructuredSearchTool()
             linter = LinterTool()
             create_file = CreateFileTool()
+            
+            # Explicit Sidecar Orchestration
+            execute_sandbox = ExecuteInSandboxTool(sandbox_manager=sandbox_mgr)
 
             common_tools = [
                 board_rw, test_runner, diff,
                 surgical_edit, advanced_read, repo_map, structured_search,
-                linter, session_shell, create_file
+                linter, session_shell, create_file, execute_sandbox
             ]
 
             # DelegateTool — wired after SubagentManager is created below

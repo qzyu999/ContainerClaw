@@ -17,7 +17,7 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, Callable, Awaitable
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +46,8 @@ class Tool:
         """
         return {"type": "object", "properties": {}}
 
-    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+    async def execute(self, agent_id: str, params: dict, 
+                      publish_fn: Optional[Callable[[bytes], Awaitable[None]]] = None) -> ToolResult:
         raise NotImplementedError
 
 
@@ -74,13 +75,14 @@ class DiffTool(Tool):
             "required": ["path"]
         }
 
-    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+    async def execute(self, agent_id: str, params: dict,
+                      publish_fn: Optional[Callable[[bytes], Awaitable[None]]] = None) -> ToolResult:
         rel_path = params.get("path", "")
         command = f"git diff HEAD -- {rel_path}"
         
         if self.session_shell:
             # Route through the persistent shell to share environment/state
-            return await self.session_shell.execute(agent_id, {"command": command})
+            return await self.session_shell.execute(agent_id, {"command": command}, publish_fn=publish_fn)
             
         try:
             result = await asyncio.to_thread(
@@ -135,7 +137,8 @@ class TestRunnerTool(Tool):
             "required": ["args"]
         }
 
-    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+    async def execute(self, agent_id: str, params: dict,
+                      publish_fn: Optional[Callable[[bytes], Awaitable[None]]] = None) -> ToolResult:
         runner = params.get("runner", "pytest")
         args = params.get("args", "")
 
@@ -146,7 +149,7 @@ class TestRunnerTool(Tool):
 
         if self.session_shell:
             # Route through the persistent shell to share environment (virtualenvs, PATH, etc)
-            return await self.session_shell.execute(agent_id, {"command": command, "timeout": self.TIMEOUT})
+            return await self.session_shell.execute(agent_id, {"command": command, "timeout": self.TIMEOUT}, publish_fn=publish_fn)
 
         try:
             proc = await asyncio.create_subprocess_shell(
@@ -399,7 +402,8 @@ class BoardTool(Tool):
             "required": ["action"]
         }
 
-    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+    async def execute(self, agent_id: str, params: dict,
+                      publish_fn: Optional[Callable[[bytes], Awaitable[None]]] = None) -> ToolResult:
         action = params.get("action", "list")
 
         if action == "list":
@@ -490,7 +494,8 @@ class CreateFileTool(Tool):
             "required": ["path", "content"]
         }
 
-    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+    async def execute(self, agent_id: str, params: dict,
+                      publish_fn: Optional[Callable[[bytes], Awaitable[None]]] = None) -> ToolResult:
         path = Path(config.WORKSPACE_ROOT) / params.get("path", "")
         if not path.resolve().is_relative_to(Path(config.WORKSPACE_ROOT)):
             return ToolResult(success=False, output="", error="Path traversal denied.")
@@ -528,7 +533,8 @@ class SurgicalEditTool(Tool):
             "required": ["path", "old_str", "new_str"]
         }
 
-    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+    async def execute(self, agent_id: str, params: dict,
+                      publish_fn: Optional[Callable[[bytes], Awaitable[None]]] = None) -> ToolResult:
         path = Path(config.WORKSPACE_ROOT) / params.get("path", "")
         if not path.resolve().is_relative_to(Path(config.WORKSPACE_ROOT)):
             return ToolResult(success=False, output="", error="Path traversal denied.")
@@ -598,7 +604,8 @@ class AdvancedReadTool(Tool):
             "required": ["path", "start_line", "end_line"]
         }
 
-    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+    async def execute(self, agent_id: str, params: dict,
+                      publish_fn: Optional[Callable[[bytes], Awaitable[None]]] = None) -> ToolResult:
         path = Path(config.WORKSPACE_ROOT) / params.get("path", "")
         if not path.resolve().is_relative_to(Path(config.WORKSPACE_ROOT)):
             return ToolResult(success=False, output="", error="Path traversal denied.")
@@ -637,7 +644,8 @@ class RepoMapTool(Tool):
             "required": []
         }
 
-    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+    async def execute(self, agent_id: str, params: dict,
+                      publish_fn: Optional[Callable[[bytes], Awaitable[None]]] = None) -> ToolResult:
         return await asyncio.to_thread(self._build_map)
 
     def _build_map(self) -> ToolResult:
@@ -707,7 +715,8 @@ class StructuredSearchTool(Tool):
             "required": ["query"]
         }
 
-    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+    async def execute(self, agent_id: str, params: dict,
+                      publish_fn: Optional[Callable[[bytes], Awaitable[None]]] = None) -> ToolResult:
         query = params.get("query", "")
         if not query:
             return ToolResult(success=False, output="", error="Query cannot be empty.")
@@ -767,7 +776,8 @@ class LinterTool(Tool):
             "required": ["path"]
         }
 
-    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+    async def execute(self, agent_id: str, params: dict,
+                      publish_fn: Optional[Callable[[bytes], Awaitable[None]]] = None) -> ToolResult:
         rel_path = params.get("path", "")
         path = Path(config.WORKSPACE_ROOT) / rel_path
         if not path.resolve().is_relative_to(Path(config.WORKSPACE_ROOT)):
@@ -796,17 +806,14 @@ class SessionShellTool(Tool):
     name = "session_shell"
     description = "A persistent shell tool maintaining state (cd, export) across calls."
     
-    def __init__(self):
+    def __init__(self, sandbox_manager):
         super().__init__()
-        self.sessions: dict[str, asyncio.subprocess.Process] = {}
+        self.sandbox_manager = sandbox_manager
+        self.sessions: dict[str, Any] = {} # In remote mode, this might track container state or just be empty
 
     def cleanup(self):
-        """Close persistent background processes (e.g. when agent session is destroyed)."""
-        for agent_id, proc in list(self.sessions.items()):
-            try:
-                proc.kill()
-            except Exception:
-                pass
+        # In Container/Sidecar mode, cleanup is handled by the orchestrator
+        # or container removal.
         self.sessions.clear()
     
     DEFAULT_TIMEOUT = config.TOOL_TIMEOUTS.shell
@@ -821,63 +828,27 @@ class SessionShellTool(Tool):
             "required": ["command"]
         }
 
-    async def execute(self, agent_id: str, params: dict) -> ToolResult:
+    async def execute(self, agent_id: str, params: dict,
+                      publish_fn: Optional[Callable[[bytes], Awaitable[None]]] = None) -> ToolResult:
         command = params.get("command", "")
-        timeout = params.get("timeout", self.DEFAULT_TIMEOUT)
         if not command:
             return ToolResult(success=False, output="", error="No command provided.")
 
-        if agent_id not in self.sessions or self.sessions[agent_id].returncode is not None:
-            proc = await asyncio.create_subprocess_shell(
-                "/bin/bash",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=config.WORKSPACE_ROOT
-            )
-            self.sessions[agent_id] = proc
-            
-        proc = self.sessions[agent_id]
-        boundary = f"---CONCHSHELL-DONE-{uuid.uuid4()}---"
-        full_command = f"{command}\necho \"{boundary}\" $?\n"
+        # Logic: in Remote/Sidecar mode, state is maintained by the sidecar itself
+        # if we keep the same container ID. SandboxManager handles the routing.
         
-        try:
-            proc.stdin.write(full_command.encode())
-            await proc.stdin.drain()
-            
-            output_lines = []
-            return_code = -1
-            
-            while True:
-                # Per-line timeout to catch hangs; total command timeout handled by wait_for wrapper?
-                # Actually, simple per-line timeout is often enough to catch "dead" commands.
-                # If we want a total command timeout, we'd wrap the whole block.
-                line_bytes = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout)
-                if not line_bytes:
-                    if proc.returncode is None:
-                        await asyncio.sleep(0.1) # brief wait for OS buffer
-                    if proc.returncode is not None:
-                        return_code = proc.returncode
-                    break
-                line = line_bytes.decode(errors="replace").rstrip('\n\r')
-                if boundary in line:
-                    parts = line.split(boundary)
-                    if parts[0]:
-                        output_lines.append(parts[0])
-                    if len(parts) > 1 and parts[1].strip().lstrip('-').isdigit():
-                        return_code = int(parts[1].strip())
-                    break
-                output_lines.append(line)
-                
-            out_str = "\n".join(output_lines)
-            return ToolResult(success=(return_code == 0), output=out_str[:8192])
-            
-        except asyncio.TimeoutError:
-            proc.kill()
-            del self.sessions[agent_id]
-            return ToolResult(success=False, output=f"Command timed out after {timeout}s. Session killed.", error="Timeout")
-        except Exception as e:
-            return ToolResult(success=False, output="", error=str(e))
+        async def wrapped_publish(chunk: bytes):
+            if publish_fn:
+                await publish_fn(chunk)
+
+        exit_code, output = await self.sandbox_manager.execute(
+            command, agent_id, wrapped_publish
+        )
+        
+        return ToolResult(
+            success=(exit_code == 0),
+            output=f"Command exited with code {exit_code}. {len(output.splitlines())} lines of output streamed to telemetry."
+        )
 
 # ---------------------------------------------------------------------------
 # DelegateTool — Spawn parallel subagents
@@ -1015,7 +986,8 @@ class ToolDispatcher:
         return self.toolsets.get(agent_id, [])
 
     async def execute(
-        self, agent_id: str, tool_name: str, params: dict
+        self, agent_id: str, tool_name: str, params: dict,
+        publish_fn: Optional[Callable[[bytes], Awaitable[None]]] = None
     ) -> ToolResult:
         """Execute a tool call for an agent, enforcing authorization."""
         agent_tools = self._lookup.get(agent_id, {})
@@ -1028,6 +1000,55 @@ class ToolDispatcher:
         tool = agent_tools[tool_name]
 
         try:
-            return await tool.execute(agent_id, params)
+            return await tool.execute(agent_id, params, publish_fn=publish_fn)
         except Exception as e:
             return ToolResult(success=False, output="", error=f"Tool error: {e}")
+
+# ---------------------------------------------------------------------------
+# ExecuteInSandboxTool — Explicit Orchestration (Mode C)
+# ---------------------------------------------------------------------------
+
+class ExecuteInSandboxTool(Tool):
+    name = "execute_in_sandbox"
+    description = (
+        "Spins up an ephemeral container with the specified image, "
+        "runs a command, and returns the result. Use for tasks requiring "
+        "isolated environments (e.g.Node.js, Terraform, specialized Python)."
+    )
+
+    def __init__(self, sandbox_manager):
+        super().__init__()
+        self.sandbox_manager = sandbox_manager
+
+    def get_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "image": {
+                    "type": "string",
+                    "description": "Docker image to run (e.g. 'node:18', 'python:3.11')."
+                },
+                "command": {
+                    "type": "string",
+                    "description": "Shell command to execute."
+                }
+            },
+            "required": ["image", "command"]
+        }
+
+    async def execute(self, agent_id: str, params: dict,
+                      publish_fn: Optional[Callable[[bytes], Awaitable[None]]] = None) -> ToolResult:
+        image = params.get("image")
+        command = params.get("command")
+        
+        if not image or not command:
+            return ToolResult(success=False, output="", error="Image and command required.")
+
+        exit_code, output = await self.sandbox_manager.execute(
+            command, agent_id, publish_fn, image=image
+        )
+        
+        return ToolResult(
+            success=(exit_code == 0),
+            output=f"Command exited with code {exit_code}. {len(output.splitlines())} lines streamed to telemetry."
+        )

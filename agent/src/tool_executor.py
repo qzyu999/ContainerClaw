@@ -129,8 +129,20 @@ class ToolExecutor:
                 if tool_name == "delegate":
                     tool_args["_parent_event_id"] = tool_call_id
 
+                # Define async chunk publisher for real-time telemetry
+                async def publish_chunk(chunk: bytes):
+                    # For now, we publish as a transparent 'telemetry' event.
+                    # In production, this would go to a dedicated Fluss byte-stream topic.
+                    await self.publish(
+                        agent.agent_id, 
+                        chunk.decode(errors="replace"), 
+                        "telemetry",
+                        parent_event_id=tool_call_id,
+                        edge_type="SEQUENTIAL"
+                    )
+
                 result = await self.dispatcher.execute(
-                    agent.agent_id, tool_name, tool_args
+                    agent.agent_id, tool_name, tool_args, publish_fn=publish_chunk
                 )
 
                 # Circuit Breaker logic

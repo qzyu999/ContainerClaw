@@ -24,6 +24,7 @@ services:
       - HOME=/root
     volumes:
       - ${SWE_BENCH_WORKSPACE:-./workspace}:/workspace:rw
+      - /var/run/docker.sock:/var/run/docker.sock
     command: >
       sh -c "python src/main.py"
     # NOTE: We no longer run `pip install -e /workspace` here.
