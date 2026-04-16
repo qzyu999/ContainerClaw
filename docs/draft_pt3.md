@@ -1,6 +1,6 @@
 # ContainerClaw — Multi-Agent Collaboration via Apache Fluss
 
-> **Complementary to:** [draft.md](file:///Users/jaredyu/Desktop/open_source/containerclaw/docs/draft.md) and [draft_pt2.md](file:///Users/jaredyu/Desktop/open_source/containerclaw/docs/draft_pt2.md)  
+> **Complementary to:** [draft.md](file:///.../containerclaw/docs/draft.md) and [draft_pt2.md](file:///.../containerclaw/docs/draft_pt2.md)  
 > **Focus:** Multi-Agent Workflows, Shared Stream Architecture, and Agent-to-Agent Collaboration  
 > **Version:** 0.1.0-draft-pt3  
 

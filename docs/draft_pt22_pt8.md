@@ -331,7 +331,7 @@ These are the two bugs from pt7 that make the election's investment worthless.
 
 #### 5.1.1 Fix `session_shell` — Return Actual Output to Agents
 
-**Current code** ([tools.py:848-851](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/tools.py#L848-L851)):
+**Current code** ([tools.py:848-851](file:///.../containerclaw/agent/src/tools.py#L848-L851)):
 ```python
 return ToolResult(
     success=(exit_code == 0),
@@ -354,7 +354,7 @@ return ToolResult(
 
 #### 5.1.2 Fix `execute_ephemeral` — Mount the Shared Volume
 
-**Current code** ([sandbox.py:153-161](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/sandbox.py#L153-L161)):
+**Current code** ([sandbox.py:153-161](file:///.../containerclaw/agent/src/sandbox.py#L153-L161)):
 ```python
 container = await asyncio.to_thread(
     self.client.containers.run,
@@ -384,7 +384,7 @@ This is the keystone change that transforms ContainerClaw from "a script you run
 
 #### 5.2.1 Extend `CreateSession` to Accept Runtime Config
 
-**Change the gRPC protocol** ([agent.proto](file:///Users/jaredyu/Desktop/open_source/containerclaw/proto)):
+**Change the gRPC protocol** ([agent.proto](file:///.../containerclaw/proto)):
 ```protobuf
 message CreateSessionRequest {
   string title = 1;
@@ -413,7 +413,7 @@ def create_session():
 
 #### 5.2.2 Make `SandboxManager` Session-Scoped
 
-**Current construction** ([main.py:123](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/main.py#L123)):
+**Current construction** ([main.py:123](file:///.../containerclaw/agent/src/main.py#L123)):
 ```python
 sandbox_mgr = SandboxManager()  # reads from global config.CONFIG
 ```

@@ -1,6 +1,6 @@
 # ContainerClaw — Multi-Agent Collaboration: Architectural Rigor
 
-> **Complementary to:** [draft.md](file:///Users/jaredyu/Desktop/open_source/containerclaw/docs/draft.md), [draft_pt2.md](file:///Users/jaredyu/Desktop/open_source/containerclaw/docs/draft_pt2.md), and [draft_pt3.md](file:///Users/jaredyu/Desktop/open_source/containerclaw/docs/draft_pt3.md)  
+> **Complementary to:** [draft.md](file:///.../containerclaw/docs/draft.md), [draft_pt2.md](file:///.../containerclaw/docs/draft_pt2.md), and [draft_pt3.md](file:///.../containerclaw/docs/draft_pt3.md)  
 > **Focus:** Technical Defense, Shared Bus Architecture, and Agency Mechanics  
 > **Version:** 0.1.0-draft-pt4  
 

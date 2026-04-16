@@ -99,15 +99,15 @@ graph TD
 
 | File | Role | Status |
 |:---|:---|:---|
-| [`sandbox.py`](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/sandbox.py) | `SandboxManager` — 3-mode execution router | ✅ Implemented: `execute_local`, `execute_remote`, `execute_ephemeral` |
-| [`tools.py`](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/tools.py) | `SessionShellTool` + `ExecuteInSandboxTool` | ✅ Implemented, routes through `SandboxManager` |
-| [`tool_executor.py`](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/tool_executor.py) | Tool loop with circuit breaker | ✅ Implemented, publishes telemetry chunks to Fluss |
-| [`workspace_setup.py`](file:///Users/jaredyu/Desktop/open_source/containerclaw/scripts/swe_bench/workspace_setup.py) | SWE-bench sidecar provisioning | ✅ Implemented: `setup_sidecar()`, host seeding, `/testbed` symlink |
-| [`run.py`](file:///Users/jaredyu/Desktop/open_source/containerclaw/scripts/swe_bench/run.py) | SWE-bench CLI harness | ✅ Implemented: single + batch mode, prediction extraction |
-| [`claw.sh`](file:///Users/jaredyu/Desktop/open_source/containerclaw/claw.sh) | Lifecycle manager with `--bench` flag | ✅ Implemented: root escalation, Docker socket mount, compose overlay |
-| [`docker-compose.swebench.yml`](file:///Users/jaredyu/Desktop/open_source/containerclaw/docker-compose.swebench.yml) | SWE-bench compose overlay | ✅ Implemented: root user, Docker socket, workspace bind mount |
-| [`config.yaml`](file:///Users/jaredyu/Desktop/open_source/containerclaw/config.yaml) | Central config | ✅ Has `execution_mode`, `sidecar_config` — but **global**, not per-session |
-| [`config_loader.py`](file:///Users/jaredyu/Desktop/open_source/containerclaw/shared/config_loader.py) | Pydantic validation | ✅ Has `SidecarConfig` model |
+| [`sandbox.py`](file:///.../containerclaw/agent/src/sandbox.py) | `SandboxManager` — 3-mode execution router | ✅ Implemented: `execute_local`, `execute_remote`, `execute_ephemeral` |
+| [`tools.py`](file:///.../containerclaw/agent/src/tools.py) | `SessionShellTool` + `ExecuteInSandboxTool` | ✅ Implemented, routes through `SandboxManager` |
+| [`tool_executor.py`](file:///.../containerclaw/agent/src/tool_executor.py) | Tool loop with circuit breaker | ✅ Implemented, publishes telemetry chunks to Fluss |
+| [`workspace_setup.py`](file:///.../containerclaw/scripts/swe_bench/workspace_setup.py) | SWE-bench sidecar provisioning | ✅ Implemented: `setup_sidecar()`, host seeding, `/testbed` symlink |
+| [`run.py`](file:///.../containerclaw/scripts/swe_bench/run.py) | SWE-bench CLI harness | ✅ Implemented: single + batch mode, prediction extraction |
+| [`claw.sh`](file:///.../containerclaw/claw.sh) | Lifecycle manager with `--bench` flag | ✅ Implemented: root escalation, Docker socket mount, compose overlay |
+| [`docker-compose.swebench.yml`](file:///.../containerclaw/docker-compose.swebench.yml) | SWE-bench compose overlay | ✅ Implemented: root user, Docker socket, workspace bind mount |
+| [`config.yaml`](file:///.../containerclaw/config.yaml) | Central config | ✅ Has `execution_mode`, `sidecar_config` — but **global**, not per-session |
+| [`config_loader.py`](file:///.../containerclaw/shared/config_loader.py) | Pydantic validation | ✅ Has `SidecarConfig` model |
 
 ### 2.3 What Is Missing (Proposed but NOT Implemented)
 

@@ -1,6 +1,6 @@
 # ContainerClaw — Draft Pt.5: Full System Audit & Migration Roadmap
 
-> **Complementary to:** [draft.md](file:///Users/jaredyu/Desktop/open_source/containerclaw/docs/draft.md) through [draft_pt4.md](file:///Users/jaredyu/Desktop/open_source/containerclaw/docs/draft_pt4.md)  
+> **Complementary to:** [draft.md](file:///.../containerclaw/docs/draft.md) through [draft_pt4.md](file:///.../containerclaw/docs/draft_pt4.md)  
 > **Focus:** Docker topology deep-dive, inter-service wiring, gap analysis vs. working POC, and a rigorous migration plan  
 > **Version:** 0.1.0-draft-pt5  
 > **Date:** 2026-03-18  
@@ -403,7 +403,7 @@ These changes fix the fundamental event loop so the system can actually run mult
 
 #### Step 1.1: Align `moderator.py` with the Notebook's `StageModerator`
 
-**File:** [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py)
+**File:** [moderator.py](file:///.../containerclaw/agent/src/moderator.py)
 
 **Defense:** The notebook POC works. The Dockerized moderator deviates from it in 7+ ways. The safest migration strategy is to port the notebook's classes **wholesale**, adapting only the LLM call path (gateway vs. direct API).
 
@@ -422,7 +422,7 @@ Changes required:
 
 #### Step 1.2: Update `main.py` to Pass Through Autonomous Config
 
-**File:** [main.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/main.py)
+**File:** [main.py](file:///.../containerclaw/agent/src/main.py)
 
 Changes:
 1. Add `AUTONOMOUS_STEPS` env var (defaulting to `-1` for infinite)
@@ -431,7 +431,7 @@ Changes:
 
 #### Step 1.3: Fix Gateway URL Construction
 
-**File:** [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py)
+**File:** [moderator.py](file:///.../containerclaw/agent/src/moderator.py)
 
 Change `GeminiAgent.__init__`:
 ```python

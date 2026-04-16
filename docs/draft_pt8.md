@@ -1,6 +1,6 @@
 # ContainerClaw — Draft Pt.8: Tool Call Hallucination — Adopting Native Gemini Function Calling
 
-> **Complementary to:** [draft_pt5.md](file:///Users/jaredyu/Desktop/open_source/containerclaw/docs/draft_pt5.md), [draft_pt6.md](file:///Users/jaredyu/Desktop/open_source/containerclaw/docs/draft_pt6.md), [draft_pt7.md](file:///Users/jaredyu/Desktop/open_source/containerclaw/docs/draft_pt7.md)  
+> **Complementary to:** [draft_pt5.md](file:///.../containerclaw/docs/draft_pt5.md), [draft_pt6.md](file:///.../containerclaw/docs/draft_pt6.md), [draft_pt7.md](file:///.../containerclaw/docs/draft_pt7.md)  
 > **Focus:** Diagnosing why agents hallucinate tool calls as plain text instead of emitting structured `functionCall` parts, and a rigorous migration to Gemini's native function calling protocol  
 > **Version:** 0.1.0-draft-pt8  
 > **Date:** 2026-03-20  
@@ -108,7 +108,7 @@ The model behaves rationally given these constraints:
 
 ### 1.3 Evidence from the Code
 
-#### Source 1: `GeminiAgent._think_with_tools()` — [moderator.py:135–180](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py#L135-L180)
+#### Source 1: `GeminiAgent._think_with_tools()` — [moderator.py:135–180](file:///.../containerclaw/agent/src/moderator.py#L135-L180)
 
 ```python
 async def _think_with_tools(self, history, available_tools):
@@ -126,7 +126,7 @@ async def _think_with_tools(self, history, available_tools):
 
 **Problem:** The method correctly extracts `functionCall` parts from the response. But no `functionResponse` is ever sent back. The model's `functionCall` parts are discarded after extraction — they are never preserved in the conversation history for the next API call.
 
-#### Source 2: `GeminiAgent._format_history()` — [moderator.py:24–43](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py#L24-L43)
+#### Source 2: `GeminiAgent._format_history()` — [moderator.py:24–43](file:///.../containerclaw/agent/src/moderator.py#L24-L43)
 
 ```python
 def _format_history(self, raw_messages):
@@ -142,7 +142,7 @@ def _format_history(self, raw_messages):
 
 **Problem:** Every message is converted to a text-only part. There is **no code path** that produces `{"functionCall": {...}}` or `{"functionResponse": {...}}` parts. The Gemini API never receives the structured function calling protocol messages.
 
-#### Source 3: LLM Gateway — [llm-gateway/src/main.py:74–78](file:///Users/jaredyu/Desktop/open_source/containerclaw/llm-gateway/src/main.py#L74-L78)
+#### Source 3: LLM Gateway — [llm-gateway/src/main.py:74–78](file:///.../containerclaw/llm-gateway/src/main.py#L74-L78)
 
 ```python
 google_payload = {
@@ -155,7 +155,7 @@ google_payload = {
 
 **The gateway is actually correct** — it faithfully forwards the `tools` array to the Gemini API. The issue is upstream (agent doesn't send proper history) and downstream (agent doesn't process `functionCall` responses correctly).
 
-#### Source 4: Thinking Configuration — [llm-gateway/src/main.py:66–72](file:///Users/jaredyu/Desktop/open_source/containerclaw/llm-gateway/src/main.py#L66-L72)
+#### Source 4: Thinking Configuration — [llm-gateway/src/main.py:66–72](file:///.../containerclaw/llm-gateway/src/main.py#L66-L72)
 
 ```python
 if 'gemini-3' in model:
@@ -490,7 +490,7 @@ graph TB
 
 ---
 
-#### 4.1.1 [MODIFY] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — Add Per-Agent Turn Buffer
+#### 4.1.1 [MODIFY] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — Add Per-Agent Turn Buffer
 
 **New instance variable on `GeminiAgent.__init__()` (line 20):**
 
@@ -511,7 +511,7 @@ def __init__(self, agent_id, persona, api_key):
 
 ---
 
-#### 4.1.2 [MODIFY] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — Update `_call_gateway()` to support tool config
+#### 4.1.2 [MODIFY] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — Update `_call_gateway()` to support tool config
 
 **Current (lines 45–64):**
 ```python
@@ -553,7 +553,7 @@ async def _call_gateway(self, sys_instr, history, is_json=False,
 
 ---
 
-#### 4.1.3 [MODIFY] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — Rewrite `_think_with_tools()` with Proper Protocol
+#### 4.1.3 [MODIFY] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — Rewrite `_think_with_tools()` with Proper Protocol
 
 **Current (lines 135–180):** Sends tools, extracts `functionCall` parts, but never sends `functionResponse` back.
 
@@ -631,7 +631,7 @@ async def _think_with_tools(self, history, available_tools):
 ```
 
 **Defense:**
-- **`mode: "ANY"`** — Per the [Gemini function calling docs](file:///Users/jaredyu/Desktop/open_source/containerclaw/docs/gemini_funcion_call.md), `ANY` mode constrains the model to **always predict a function call** and guarantees function schema adherence. This eliminates the ambiguity where the model might choose to output text-formatted tool calls instead of structured `functionCall` parts.
+- **`mode: "ANY"`** — Per the [Gemini function calling docs](file:///.../containerclaw/docs/gemini_funcion_call.md), `ANY` mode constrains the model to **always predict a function call** and guarantees function schema adherence. This eliminates the ambiguity where the model might choose to output text-formatted tool calls instead of structured `functionCall` parts.
 - **`extra_turns=self._api_turns`** — This appends any prior `functionCall`/`functionResponse` turns from this tool execution cycle. On the first call, `_api_turns` is empty. On subsequent calls (after tool results are fed back), it contains the full structured exchange.
 - **`self._api_turns.append(model_turn)`** — The model's response content (including `thought_signature` on parts) is preserved verbatim. The Gemini 3 docs explicitly state: *"Always send the thought_signature back to the model inside its original Part"* and *"Always include the exact id from the function_call in your function_response."*
 - **`"id": fc.get("id", "")`** — Gemini 3 models always return a unique `id` with every `functionCall`. This must be included in the corresponding `functionResponse` so the model can map results to calls.
@@ -641,7 +641,7 @@ async def _think_with_tools(self, history, available_tools):
 
 ---
 
-#### 4.1.4 [NEW METHOD] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — `_send_function_responses()`
+#### 4.1.4 [NEW METHOD] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — `_send_function_responses()`
 
 **New method on `GeminiAgent`:**
 
@@ -741,7 +741,7 @@ async def _send_function_responses(self, history, function_responses,
 
 ---
 
-#### 4.1.5 [MODIFY] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — Restructure `_execute_with_tools()`
+#### 4.1.5 [MODIFY] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — Restructure `_execute_with_tools()`
 
 **Current (lines 397–470):** Calls `_think_with_tools()`, executes tools, publishes results as text, calls `_reflect()`. No `functionResponse` protocol.
 
@@ -873,7 +873,7 @@ async def _execute_with_tools(self, agent: GeminiAgent) -> str | None:
 
 ---
 
-#### 4.1.6 [MODIFY] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — Handle `ANY` mode and `[WAIT]`
+#### 4.1.6 [MODIFY] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — Handle `ANY` mode and `[WAIT]`
 
 With `mode: "ANY"` on the first `_think_with_tools()` call, the model **must** return a function call — it cannot return text (including `[WAIT]`). This requires adjusting the winner handling logic:
 
@@ -934,7 +934,7 @@ Our approach satisfies this because we never modify the model's response parts �
 
 ---
 
-#### 4.3.1 [MODIFY] [main.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/llm-gateway/src/main.py) — Forward `tool_config`
+#### 4.3.1 [MODIFY] [main.py](file:///.../containerclaw/llm-gateway/src/main.py) — Forward `tool_config`
 
 **Current (lines 74–78):**
 ```python
@@ -1024,13 +1024,13 @@ if data.get('tool_config'):
 
 | File | Phase | Change | Lines |
 |---|---|---|---|
-| [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) | 1 | Add `_api_turns` to `GeminiAgent.__init__()` | ~3 |
-| [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) | 1 | Update `_call_gateway()` with `extra_turns`, `tool_config` params | ~10 |
-| [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) | 1 | Rewrite `_think_with_tools()` with `ANY` mode + turn buffering | ~50 |
-| [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) | 1 | New `_send_function_responses()` method | ~55 |
-| [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) | 1 | Restructure `_execute_with_tools()` — multi-turn protocol + remove tool limits | ~65 |
-| [tools.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/tools.py) | 1 | Remove `MAX_TOOLS_PER_TURN`, `MAX_TOOLS_PER_CYCLE` constants + `cycle_counter` logic from `ToolDispatcher` | ~15 (removed) |
-| [main.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/llm-gateway/src/main.py) | 3 | Add `tool_config` passthrough | ~5 |
+| [moderator.py](file:///.../containerclaw/agent/src/moderator.py) | 1 | Add `_api_turns` to `GeminiAgent.__init__()` | ~3 |
+| [moderator.py](file:///.../containerclaw/agent/src/moderator.py) | 1 | Update `_call_gateway()` with `extra_turns`, `tool_config` params | ~10 |
+| [moderator.py](file:///.../containerclaw/agent/src/moderator.py) | 1 | Rewrite `_think_with_tools()` with `ANY` mode + turn buffering | ~50 |
+| [moderator.py](file:///.../containerclaw/agent/src/moderator.py) | 1 | New `_send_function_responses()` method | ~55 |
+| [moderator.py](file:///.../containerclaw/agent/src/moderator.py) | 1 | Restructure `_execute_with_tools()` — multi-turn protocol + remove tool limits | ~65 |
+| [tools.py](file:///.../containerclaw/agent/src/tools.py) | 1 | Remove `MAX_TOOLS_PER_TURN`, `MAX_TOOLS_PER_CYCLE` constants + `cycle_counter` logic from `ToolDispatcher` | ~15 (removed) |
+| [main.py](file:///.../containerclaw/llm-gateway/src/main.py) | 3 | Add `tool_config` passthrough | ~5 |
 
 **Total lines changed:** ~203 lines across 3 files.
 

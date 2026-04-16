@@ -1,6 +1,6 @@
 # ContainerClaw — Session Persistence & Lifecycle Management
 
-> **Complementary to:** [draft.md](file:///Users/jaredyu/Desktop/open_source/containerclaw/draft.md)  
+> **Complementary to:** [draft.md](file:///.../containerclaw/draft.md)  
 > **Focus:** State Persistence, Lifecycle Automation, and Resumability  
 > **Version:** 0.1.0-draft-pt2  
 

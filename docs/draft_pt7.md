@@ -1,6 +1,6 @@
 # ContainerClaw — Draft Pt.7: Eliminating `all_messages` — Full Fluss Migration
 
-> **Complementary to:** [draft_pt5.md](file:///Users/jaredyu/Desktop/open_source/containerclaw/docs/draft_pt5.md), [draft_pt6.md](file:///Users/jaredyu/Desktop/open_source/containerclaw/docs/draft_pt6.md)  
+> **Complementary to:** [draft_pt5.md](file:///.../containerclaw/docs/draft_pt5.md), [draft_pt6.md](file:///.../containerclaw/docs/draft_pt6.md)  
 > **Focus:** Architectural audit of the in-memory `all_messages` list, why it doesn't scale, and a rigorous migration plan to make Fluss the single source of truth  
 > **Version:** 0.1.0-draft-pt7  
 > **Date:** 2026-03-19  
@@ -9,7 +9,7 @@
 
 ## 0. Executive Summary
 
-The `StageModerator` in [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) maintains **two parallel representations of conversation history**:
+The `StageModerator` in [moderator.py](file:///.../containerclaw/agent/src/moderator.py) maintains **two parallel representations of conversation history**:
 
 1. **`self.all_messages`** — a Python `list[dict]` living in the agent process's heap memory
 2. **Fluss `containerclaw.chatroom`** — a durable, append-only log table in the Apache Fluss cluster
@@ -164,7 +164,7 @@ The `all_messages` list is the most critical scalability problem, but it is not 
 
 #### Weakness W-1: `event_queues` — In-Memory SSE Dispatch
 
-**File:** [main.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/main.py) lines 39, 108–112
+**File:** [main.py](file:///.../containerclaw/agent/src/main.py) lines 39, 108–112
 
 ```python
 self.event_queues = {}   # dict[str, queue.Queue]
@@ -204,7 +204,7 @@ graph LR
 
 #### Weakness W-2: `ProjectBoard` — JSON File Persistence
 
-**File:** [tools.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/tools.py) lines 286–340
+**File:** [tools.py](file:///.../containerclaw/agent/src/tools.py) lines 286–340
 
 ```python
 class ProjectBoard:
@@ -236,7 +236,7 @@ class ProjectBoard:
 > [!CAUTION]
 > After migrating `ProjectBoard` to Fluss (creating the `containerclaw.board_events` table and switching persistence), the **project board panel in the UI stopped populating**. This section documents the root cause and fix.
 
-**Root cause:** The UI's `fetchBoardData()` in [api.ts](file:///Users/jaredyu/Desktop/open_source/containerclaw/ui/src/api.ts) was still reading board data by fetching the old JSON file at `.conchshell/board.json` via the workspace file endpoint. But the migrated `ProjectBoard` only writes to Fluss when `board_table` is available — it no longer calls `_save()` to write `board.json`. The JSON file simply doesn't exist anymore.
+**Root cause:** The UI's `fetchBoardData()` in [api.ts](file:///.../containerclaw/ui/src/api.ts) was still reading board data by fetching the old JSON file at `.conchshell/board.json` via the workspace file endpoint. But the migrated `ProjectBoard` only writes to Fluss when `board_table` is available — it no longer calls `_save()` to write `board.json`. The JSON file simply doesn't exist anymore.
 
 ```mermaid
 graph LR
@@ -258,10 +258,10 @@ graph LR
 
 **Fix applied:**
 
-1. **Proto:** Added `GetBoard` RPC, `BoardItem` and `BoardResponse` messages to [agent.proto](file:///Users/jaredyu/Desktop/open_source/containerclaw/proto/agent.proto)
-2. **Agent:** Added `GetBoard` handler in [main.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/main.py) that reads from the in-memory `ProjectBoard.items` list
-3. **Bridge:** Added `/board/<session_id>` endpoint in [bridge.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/bridge/src/bridge.py) that proxies the gRPC call
-4. **UI:** Updated `fetchBoardData()` in [api.ts](file:///Users/jaredyu/Desktop/open_source/containerclaw/ui/src/api.ts) to call `/board/<session_id>` instead of reading the JSON file
+1. **Proto:** Added `GetBoard` RPC, `BoardItem` and `BoardResponse` messages to [agent.proto](file:///.../containerclaw/proto/agent.proto)
+2. **Agent:** Added `GetBoard` handler in [main.py](file:///.../containerclaw/agent/src/main.py) that reads from the in-memory `ProjectBoard.items` list
+3. **Bridge:** Added `/board/<session_id>` endpoint in [bridge.py](file:///.../containerclaw/bridge/src/bridge.py) that proxies the gRPC call
+4. **UI:** Updated `fetchBoardData()` in [api.ts](file:///.../containerclaw/ui/src/api.ts) to call `/board/<session_id>` instead of reading the JSON file
 
 **How the board updates — lifecycle clarification:**
 
@@ -300,7 +300,7 @@ sequenceDiagram
 
 #### Weakness W-3: `emit_cb` / `_bridge_to_ui` — Dual Event Dispatch
 
-**File:** [main.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/main.py) lines 99–106, [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) (18 callsites)
+**File:** [main.py](file:///.../containerclaw/agent/src/main.py) lines 99–106, [moderator.py](file:///.../containerclaw/agent/src/moderator.py) (18 callsites)
 
 ```python
 def _bridge_to_ui(self, actor_id, content, e_type):
@@ -325,7 +325,7 @@ def _bridge_to_ui(self, actor_id, content, e_type):
 
 #### Weakness W-4: `history_keys` — Unbounded Deduplication Set
 
-**File:** [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) line 205
+**File:** [moderator.py](file:///.../containerclaw/agent/src/moderator.py) line 205
 
 ```python
 self.history_keys = set()  # {"{ts}-{actor_id}", ...}
@@ -345,7 +345,7 @@ self.history_keys = set()  # {"{ts}-{actor_id}", ...}
 
 #### Weakness W-5: `ToolDispatcher.cycle_counter` — Ephemeral Rate Limit
 
-**File:** [tools.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/tools.py) lines 461, 475, 488
+**File:** [tools.py](file:///.../containerclaw/agent/src/tools.py) lines 461, 475, 488
 
 ```python
 self.cycle_counter = 0
@@ -503,7 +503,7 @@ graph LR
 
 ---
 
-#### 3.1.1 [MODIFY] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — Nudge Messages
+#### 3.1.1 [MODIFY] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — Nudge Messages
 
 **Current (line 304):**
 ```python
@@ -536,7 +536,7 @@ This is a transitional pattern — in Phase 3, we replace the read side entirely
 
 ---
 
-#### 3.1.2 [MODIFY] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — Tool Results
+#### 3.1.2 [MODIFY] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — Tool Results
 
 **Current (lines 378–386):**
 ```python
@@ -581,7 +581,7 @@ self.all_messages.append({"actor_id": "Moderator", "content": tool_result_conten
 
 ---
 
-#### 3.1.3 [MODIFY] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — Poll Loop Moderator Echoes
+#### 3.1.3 [MODIFY] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — Poll Loop Moderator Echoes
 
 **Current (lines 255–258):**
 ```python
@@ -657,7 +657,7 @@ For non-tool messages (Human, Agent responses, Election summaries, Nudges), thes
 
 ---
 
-#### 3.2.2 [MODIFY] [main.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/main.py) — Table Creation Schema
+#### 3.2.2 [MODIFY] [main.py](file:///.../containerclaw/agent/src/main.py) — Table Creation Schema
 
 **Current (lines 325–330):**
 ```python
@@ -686,7 +686,7 @@ schema = pa.schema([
 
 ---
 
-#### 3.2.3 [MODIFY] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — Writer Schema + `publish()`
+#### 3.2.3 [MODIFY] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — Writer Schema + `publish()`
 
 **Current `pa_schema` (lines 207–212):**
 ```python
@@ -751,7 +751,7 @@ async def publish(self, actor_id, content, m_type="output",
 
 ---
 
-#### 3.2.4 [MODIFY] [main.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/main.py) — Update Schema Column Count Check
+#### 3.2.4 [MODIFY] [main.py](file:///.../containerclaw/agent/src/main.py) — Update Schema Column Count Check
 
 **Current (lines 362–365):**
 ```python
@@ -775,7 +775,7 @@ if column_count < 7:
 
 ---
 
-#### 3.2.1 [MODIFY] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — Add `_replay_history()` method
+#### 3.2.1 [MODIFY] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — Add `_replay_history()` method
 
 **New method on `StageModerator`:**
 ```python
@@ -829,7 +829,7 @@ async def run(self, autonomous_steps=0):
 
 ---
 
-#### 3.2.2 [MODIFY] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — Track Last Offset for Efficient Resume
+#### 3.2.2 [MODIFY] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — Track Last Offset for Efficient Resume
 
 To avoid the "double read" caveat above, track the highest offset seen during replay:
 
@@ -862,7 +862,7 @@ scanner.subscribe(bucket_id=0, start_offset=self.last_replayed_offset)
 
 ---
 
-#### 3.3.1 [MODIFY] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — Unified Context Accessor
+#### 3.3.1 [MODIFY] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — Unified Context Accessor
 
 **New method:**
 ```python
@@ -900,7 +900,7 @@ def _get_context_window(self, size: int | None = None) -> list[dict]:
 
 ---
 
-#### 3.3.2 [MODIFY] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — Remove Truncation Guard
+#### 3.3.2 [MODIFY] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — Remove Truncation Guard
 
 **Current (lines 261–262):**
 ```python
@@ -978,7 +978,7 @@ The read at line 390 happens **immediately** after the append at line 378 and pu
 
 ---
 
-#### 3.4.2 [MODIFY] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — Interleaved Poll in Tool Loop
+#### 3.4.2 [MODIFY] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — Interleaved Poll in Tool Loop
 
 **Current `_execute_with_tools()` structure:**
 ```
@@ -1071,7 +1071,7 @@ async def _poll_once(self):
 
 ---
 
-#### 3.4.3 [MODIFY] [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) — Promote Scanner to Instance Variable
+#### 3.4.3 [MODIFY] [moderator.py](file:///.../containerclaw/agent/src/moderator.py) — Promote Scanner to Instance Variable
 
 **Current (line 220 in `run()`):**
 ```python
@@ -1173,12 +1173,12 @@ graph TD
 
 | File | Phase | Change | Lines |
 |---|---|---|---|
-| [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) | 1 | Add `await self.publish()` for nudge (line 304) and tool results (line 378–388) | ~10 |
-| [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) | 1.5 | Expand `pa_schema` to 7 columns, add kwargs to `publish()` | ~15 |
-| [main.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/main.py) | 1.5 | Expand table creation schema to 7 columns, update column count check | ~15 |
-| [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) | 2 | Add `_replay_history()` method, call in `run()` before main loop | ~25 |
-| [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) | 3 | Add `_get_context_window()`, update 6 callsites, revise truncation guard | ~15 |
-| [moderator.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/agent/src/moderator.py) | 4 | Add `_poll_once()`, restructure `_execute_with_tools()`, promote scanner to instance var, remove transitional appends | ~40 |
+| [moderator.py](file:///.../containerclaw/agent/src/moderator.py) | 1 | Add `await self.publish()` for nudge (line 304) and tool results (line 378–388) | ~10 |
+| [moderator.py](file:///.../containerclaw/agent/src/moderator.py) | 1.5 | Expand `pa_schema` to 7 columns, add kwargs to `publish()` | ~15 |
+| [main.py](file:///.../containerclaw/agent/src/main.py) | 1.5 | Expand table creation schema to 7 columns, update column count check | ~15 |
+| [moderator.py](file:///.../containerclaw/agent/src/moderator.py) | 2 | Add `_replay_history()` method, call in `run()` before main loop | ~25 |
+| [moderator.py](file:///.../containerclaw/agent/src/moderator.py) | 3 | Add `_get_context_window()`, update 6 callsites, revise truncation guard | ~15 |
+| [moderator.py](file:///.../containerclaw/agent/src/moderator.py) | 4 | Add `_poll_once()`, restructure `_execute_with_tools()`, promote scanner to instance var, remove transitional appends | ~40 |
 
 **Total lines changed:** ~120 lines across 5 phases, primarily in `moderator.py` with schema changes in `main.py`.
 

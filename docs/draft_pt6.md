@@ -1,6 +1,6 @@
 # ContainerClaw — Draft Pt.6: ConchShell, Workspace Explorer & SWE-bench Integration
 
-> **Complementary to:** [draft.md](file:///Users/jaredyu/Desktop/open_source/containerclaw/docs/draft.md) through [draft_pt5.md](file:///Users/jaredyu/Desktop/open_source/containerclaw/docs/draft_pt5.md)  
+> **Complementary to:** [draft.md](file:///.../containerclaw/docs/draft.md) through [draft_pt5.md](file:///.../containerclaw/docs/draft_pt5.md)  
 > **Focus:** Two feature pillars (ConchShell agent terminals + Workspace Explorer IDE tab) plus a SWE-bench benchmarking harness that validates the entire MAS pipeline  
 > **Version:** 0.1.0-draft-pt6  
 > **Date:** 2026-03-18  
