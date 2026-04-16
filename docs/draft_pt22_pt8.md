@@ -327,7 +327,48 @@ All changes preserve the 5-agent election. The election is the constant. What ch
 
 ### Phase 1: Fix the Broken Feedback Loop (Effort: 1 hour, Impact: Critical)
 
-These are the two bugs from pt7 that make the election's investment worthless.
+These are the two bugs from pt7 that make the election's investment worthless. Before describing them, we document the tool execution architecture so the nature of the bug is precise.
+
+#### 5.1.0 Architecture: The OpenAI Tool-Calling Loop
+
+The `ToolExecutor` ([tool_executor.py](file:///.../containerclaw/agent/src/tool_executor.py)) orchestrates a multi-step conversation loop bounded by `MAX_TOOL_ROUNDS`. When an agent "thinks" (via `_think_with_tools`), it can emit a structured `tool_call` instead of (or alongside) text. The executor pauses the LLM, runs the tool locally via the `ToolDispatcher`, and feeds the execution result back to the LLM as a new `tool`-role message (via `_send_function_responses`), so the agent can evaluate the result before generating its final text answer or chaining another tool call.
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ToolExecutor.execute_with_tools() — One Agent Turn                     │
+│                                                                        │
+│  Round 0: agent._think_with_tools(shared_context, tools)               │
+│           → (text?, [tool_call_1, tool_call_2, ...])                   │
+│                                                                        │
+│  For each tool_call:                                                   │
+│    1. Publish tool call to Fluss (telemetry)                           │
+│    2. ToolDispatcher.execute(tool_name, args) → ToolResult             │
+│    3. Publish result summary to Fluss (telemetry, ≤500 chars)          │
+│    4. Accumulate raw result with Adaptive Verbosity limit:             │
+│       • Read-heavy tools (repo_map, structured_search, advanced_read): │
+│         up to 8,000 chars of raw output                                │
+│       • Other tools: up to 2,000 chars of raw output                   │
+│                                                                        │
+│  Round 1..N: agent._send_function_responses(accumulated_results)       │
+│              → (text?, [more_tool_calls?])                             │
+│              Loop until: text-only response OR MAX_TOOL_ROUNDS hit     │
+│                                                                        │
+│  Circuit Breaker: 3 consecutive failures → halt execution              │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**The `_api_turns` Scratchpad:** `agent._api_turns` ([agent.py:33](file:///.../containerclaw/agent/src/agent.py#L33)) acts as a short-term, per-turn memory buffer. It temporarily stores the intermediate tool calls (assistant messages with `tool_calls`) and tool results (`tool`-role messages) during this loop. This allows the LLM to remember its chain of thought (e.g., "I searched a file, here is the result, now I will edit it") without permanently polluting the main shared conversation history. It is cleared at the start and end of each turn ([tool_executor.py:61](file:///.../containerclaw/agent/src/tool_executor.py#L61), [tool_executor.py:229](file:///.../containerclaw/agent/src/tool_executor.py#L229)).
+
+**Correcting the Tool Visibility Misconception:** An earlier draft (pt7) assumed that agents only see summarized tool results. This conflates two distinct output paths:
+
+| Path | Audience | Limit | Purpose |
+|:---|:---|:---|:---|
+| **Telemetry (Fluss/UI)** | Human observer | 500 chars ([tool_executor.py:165](file:///.../containerclaw/agent/src/tool_executor.py#L165)) | Prevent flooding the logs and UI |
+| **LLM Context (Adaptive Verbosity)** | Agent (via `_api_turns`) | 2,000–8,000 chars ([tool_executor.py:196-202](file:///.../containerclaw/agent/src/tool_executor.py#L196-L202)) | Agent reasons about raw tool output |
+
+The agents **do** receive the raw, detailed output. `ToolExecutor` implements "Adaptive Verbosity" ([tool_executor.py:196-202](file:///.../containerclaw/agent/src/tool_executor.py#L196-L202)), passing up to 8,000 characters of raw output for read-heavy tools (`repo_map`, `structured_search`, `advanced_read`) and 2,000 characters for other tools directly into the LLM's payload via `_api_turns`. The 500-char telemetry summary is a separate path for human observability only.
+
+**However, this architecture only works when the tool's `ToolResult.output` contains the actual output.** The two bugs below break the pipeline *before* the Adaptive Verbosity layer ever sees the data.
 
 #### 5.1.1 Fix `session_shell` — Return Actual Output to Agents
 
@@ -339,7 +380,7 @@ return ToolResult(
 )
 ```
 
-**Problem:** The 5-agent election just spent 5 LLM calls to select the best agent for this task. That agent runs a test. The result is "15 lines streamed to telemetry." The agent has no idea whether the test passed or failed. The ENTIRE election investment was wasted because the winning agent cannot reason about the result.
+**Problem:** The raw command output is available in the local `output` variable, but `session_shell` discards it and returns only a summary string. The Adaptive Verbosity layer in `tool_executor.py` then faithfully passes this *summary* ("15 lines streamed to telemetry") to the LLM — not the actual command output. The agent has no idea whether the test passed or failed. The same bug exists in `execute_in_sandbox` ([tools.py:1051-1053](file:///.../containerclaw/agent/src/tools.py#L1051-L1053)).
 
 **Fix:**
 ```python
@@ -350,7 +391,7 @@ return ToolResult(
 )
 ```
 
-**Defense (Information-Theoretic):** The election protocol produces a selection with $O(5 \cdot T_{llm})$ latency. If the selected agent receives zero bits of information from its action, the selection's entropy is wasted. The `output_limit_chars` bound (8192 chars) is the minimum viable information to amortize the election cost. The parallel Fluss telemetry stream is preserved for the human's observability — this fix only affects what the agent sees in its tool result, not what Fluss records.
+**Defense (Information-Theoretic):** The election protocol produces a selection with $O(5 \cdot T_{llm})$ latency. If the selected agent receives zero bits of information from its action, the selection's entropy is wasted. With this fix, `session_shell` passes the raw output through `ToolResult.output`, where the Adaptive Verbosity layer (`tool_executor.py:196-202`) will truncate it to the appropriate per-tool limit (2,000 chars for execution tools) before feeding it to the LLM. The `output_limit_chars` bound in the tool itself (8,192 chars) provides a generous first-pass cap; the AV layer provides the final, context-aware truncation. The parallel Fluss telemetry stream is preserved for the human's observability — this fix only affects what the agent sees in its tool result, not what Fluss records.
 
 #### 5.1.2 Fix `execute_ephemeral` — Mount the Shared Volume
 
@@ -629,31 +670,52 @@ The 5-agent election still runs for every SWE-bench instance. The hypothesis is 
 
 These changes make the tool execution experience smooth for agents within the deliberation loop.
 
-#### 5.5.1 Structured Tool Output with Telemetry Separation
+#### 5.5.1 Refine Adaptive Verbosity for Execution Tools
 
-**Current problem:** The `tool_executor.py` publishes both real-time telemetry chunks AND the tool result to the same Fluss stream. The agent sees the truncated result in its function response. But the truncation in `tool_executor.py:198-202` is aggressive (2000 chars for most tools) and the agent loses critical information.
-
-**Fix:** Implement a two-tier output strategy:
+**Current state:** The Adaptive Verbosity mechanism in `tool_executor.py:196-202` already implements a two-tier output strategy:
 
 ```python
-# tool_executor.py — per-tool output policy (new)
-TOOL_OUTPUT_POLICY = {
-    # Read-heavy tools: agent needs the full output to reason
-    "advanced_read": {"agent_limit": 8000, "telemetry": True},
-    "repo_map": {"agent_limit": 8000, "telemetry": True},
-    "structured_search": {"agent_limit": 8000, "telemetry": True},
-    # Execution tools: agent needs results, but bulk goes to telemetry
-    "session_shell": {"agent_limit": 4000, "telemetry": True},
-    "test_runner": {"agent_limit": 4000, "telemetry": True},
-    # Write tools: agent just needs confirmation
-    "surgical_edit": {"agent_limit": 1000, "telemetry": False},
-    "create_file": {"agent_limit": 1000, "telemetry": False},
-}
+# tool_executor.py — EXISTING Adaptive Verbosity (lines 196-202)
+read_tools = ["repo_map", "structured_search", "advanced_read"]
+limit = 8000 if tool_name in read_tools else 2000
+
+output = result.output
+if len(output) > limit:
+    output = output[:limit] + "\n\n[TRUNCATED: Result too large for context window. ...]"
 ```
 
-**Defense:** The election invested 5 LLM calls to select the best agent. That agent then runs `test_runner` and receives 2000 chars of a 50,000-char test output. The critical failure assertion is on line 47,000. The agent cannot see it. The next election cycle starts, another 5 LLM calls are spent, and the new winner makes the same blind guess. This is a systemic waste loop.
+This is separate from the telemetry summary path (line 165: `result_summary = result.output[:500]`), which only affects what appears in the Fluss/UI stream. The agents already receive up to 8,000 chars for read-heavy tools and 2,000 chars for execution tools via `_api_turns`.
 
-By giving execution tools a 4000-char limit (with intelligent tail-truncation: keep the last N lines where assertions live), we ensure the election's investment translates into actionable reasoning.
+**Remaining gap:** Once Phase 1 fixes `session_shell` and `execute_in_sandbox` to return raw output (§5.1.1, §5.1.2), the 2,000-char default limit may be insufficient for execution tools where the critical failure information (e.g., assertion errors, stack traces) appears at the *tail* of the output.
+
+**Refinement:**
+```python
+# tool_executor.py — Enhanced Adaptive Verbosity
+READ_TOOLS = {"repo_map", "structured_search", "advanced_read"}
+EXEC_TOOLS = {"session_shell", "execute_in_sandbox", "test_runner"}
+
+if tool_name in READ_TOOLS:
+    limit = 8000
+elif tool_name in EXEC_TOOLS:
+    limit = 4000  # Raised from 2000: execution output is high-value
+else:
+    limit = 2000
+
+# Tail-biased truncation for execution tools: keep last N lines
+# where assertions and error messages typically live
+if tool_name in EXEC_TOOLS and len(output) > limit:
+    tail_budget = limit * 3 // 4  # 75% tail, 25% head
+    head_budget = limit - tail_budget
+    output = (
+        output[:head_budget]
+        + "\n\n[... TRUNCATED ...]\n\n"
+        + output[-tail_budget:]
+    )
+elif len(output) > limit:
+    output = output[:limit] + "\n\n[TRUNCATED: ...]"
+```
+
+**Defense:** The Adaptive Verbosity architecture is sound — the core design of per-tool limits feeding into `_api_turns` is correct. This refinement addresses a specific gap: for test output, the head of `stdout` is typically boilerplate (`===== test session starts =====`), while the actionable information (failed assertions, stack traces) appears at the tail. Tail-biased truncation ensures the 4,000-char budget captures the information the agent needs to reason about failures. This is an enhancement to the existing mechanism, not a replacement.
 
 ---
 
