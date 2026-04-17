@@ -847,7 +847,8 @@ class SessionShellTool(Tool):
         
         return ToolResult(
             success=(exit_code == 0),
-            output=f"Command exited with code {exit_code}. {len(output.splitlines())} lines of output streamed to telemetry."
+            output=output[:config.TOOLS.output_limit_chars] if output else f"Command exited with code {exit_code}. No output.",
+            error=f"Exit code: {exit_code}" if exit_code != 0 else None,
         )
 
 # ---------------------------------------------------------------------------
@@ -1050,5 +1051,6 @@ class ExecuteInSandboxTool(Tool):
         
         return ToolResult(
             success=(exit_code == 0),
-            output=f"Command exited with code {exit_code}. {len(output.splitlines())} lines streamed to telemetry."
+            output=output[:config.TOOLS.output_limit_chars] if output else f"Command exited with code {exit_code}. No output.",
+            error=f"Exit code: {exit_code}" if exit_code != 0 else None,
         )

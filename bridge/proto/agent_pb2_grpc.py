@@ -5,7 +5,7 @@ import warnings
 
 import agent_pb2 as agent__pb2
 
-GRPC_GENERATED_VERSION = '1.78.0'
+GRPC_GENERATED_VERSION = '1.80.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -64,6 +64,21 @@ class AgentServiceStub(object):
                 request_serializer=agent__pb2.ActivityRequest.SerializeToString,
                 response_deserializer=agent__pb2.HistoryResponse.FromString,
                 _registered_method=True)
+        self.GetBoard = channel.unary_unary(
+                '/containerclaw.AgentService/GetBoard',
+                request_serializer=agent__pb2.ActivityRequest.SerializeToString,
+                response_deserializer=agent__pb2.BoardResponse.FromString,
+                _registered_method=True)
+        self.ListSessions = channel.unary_unary(
+                '/containerclaw.AgentService/ListSessions',
+                request_serializer=agent__pb2.Empty.SerializeToString,
+                response_deserializer=agent__pb2.SessionListResponse.FromString,
+                _registered_method=True)
+        self.CreateSession = channel.unary_unary(
+                '/containerclaw.AgentService/CreateSession',
+                request_serializer=agent__pb2.CreateSessionRequest.SerializeToString,
+                response_deserializer=agent__pb2.SessionEntry.FromString,
+                _registered_method=True)
 
 
 class AgentServiceServicer(object):
@@ -111,6 +126,26 @@ class AgentServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetBoard(self, request, context):
+        """Get project board items (W-2: Fluss-backed)
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def ListSessions(self, request, context):
+        """Phase 13: Session Management
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def CreateSession(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_AgentServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -143,6 +178,21 @@ def add_AgentServiceServicer_to_server(servicer, server):
                     servicer.GetHistory,
                     request_deserializer=agent__pb2.ActivityRequest.FromString,
                     response_serializer=agent__pb2.HistoryResponse.SerializeToString,
+            ),
+            'GetBoard': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetBoard,
+                    request_deserializer=agent__pb2.ActivityRequest.FromString,
+                    response_serializer=agent__pb2.BoardResponse.SerializeToString,
+            ),
+            'ListSessions': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListSessions,
+                    request_deserializer=agent__pb2.Empty.FromString,
+                    response_serializer=agent__pb2.SessionListResponse.SerializeToString,
+            ),
+            'CreateSession': grpc.unary_unary_rpc_method_handler(
+                    servicer.CreateSession,
+                    request_deserializer=agent__pb2.CreateSessionRequest.FromString,
+                    response_serializer=agent__pb2.SessionEntry.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -307,6 +357,87 @@ class AgentService(object):
             '/containerclaw.AgentService/GetHistory',
             agent__pb2.ActivityRequest.SerializeToString,
             agent__pb2.HistoryResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetBoard(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/containerclaw.AgentService/GetBoard',
+            agent__pb2.ActivityRequest.SerializeToString,
+            agent__pb2.BoardResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListSessions(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/containerclaw.AgentService/ListSessions',
+            agent__pb2.Empty.SerializeToString,
+            agent__pb2.SessionListResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CreateSession(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/containerclaw.AgentService/CreateSession',
+            agent__pb2.CreateSessionRequest.SerializeToString,
+            agent__pb2.SessionEntry.FromString,
             options,
             channel_credentials,
             insecure,

@@ -14,15 +14,28 @@ class SandboxManager:
     - Native: Local execution.
     - Implicit Proxy: Proxies to a static sidecar (SWE-bench).
     - Explicit Orchestrator: Dynamic ephemeral containers.
+
+    Supports per-session configuration via layered defaults:
+    - Session-specific overrides (if provided)
+    - Instance config (config.yaml)
+    - Code defaults (native mode, /workspace)
     """
 
-    def __init__(self):
-        """Initialize SandboxManager based on central config.yaml."""
-        self.mode = config.CONFIG.execution_mode
-        self.sidecar_config = config.CONFIG.sidecar_config
+    def __init__(self, mode: str = None, default_target: str = None,
+                 network: str = None, workspace_root: str = None):
+        """Initialize SandboxManager with layered defaults.
+
+        Args:
+            mode: Execution mode override ("native", "implicit_proxy", "explicit_orchestrator").
+            default_target: Target container ID/name for implicit_proxy mode.
+            network: Docker network name for sidecar/ephemeral containers.
+            workspace_root: Workspace root path for this session.
+        """
+        self.mode = mode or config.CONFIG.execution_mode
+        self.default_target = default_target or config.CONFIG.sidecar_config.default_target_id
+        self.network = network or config.CONFIG.sidecar_config.network
+        self.workspace_root = workspace_root or config.WORKSPACE_ROOT
         self._client = None
-        self.default_target = self.sidecar_config.default_target_id
-        self.network = self.sidecar_config.network
 
     @property
     def client(self):
@@ -72,7 +85,7 @@ class SandboxManager:
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            cwd=config.WORKSPACE_ROOT
+            cwd=self.workspace_root
         )
 
         output_accumulator = []
@@ -100,7 +113,7 @@ class SandboxManager:
             exec_log = self.client.api.exec_create(
                 container=container_id,
                 cmd=["/bin/sh", "-c", command],
-                workdir=config.WORKSPACE_ROOT,
+                workdir=self.workspace_root,
                 tty=False
             )
             
@@ -157,7 +170,8 @@ class SandboxManager:
             detach=True,
             network_mode=self.network,
             mem_limit="512m",
-            command="sleep infinity" # Keep it alive for exec
+            command="sleep infinity",  # Keep it alive for exec
+            volumes={self.workspace_root: {"bind": self.workspace_root, "mode": "rw"}},
         )
         
         try:

@@ -199,11 +199,41 @@ class StageModerator:
 
     # ── Main Orchestration Loop ────────────────────────────────────
 
+    def _build_session_context(self) -> str:
+        """Build a session context block for agent system prompts.
+
+        This gives every agent full situational awareness about the
+        current session's environment. Cost: ~80-120 tokens per prompt.
+        """
+        sandbox_mgr = getattr(self, 'sandbox_mgr', None)
+        if not sandbox_mgr:
+            return ""
+
+        mode_desc = {
+            "native": "local subprocess on the host machine",
+            "implicit_proxy": f"Docker sidecar container ({sandbox_mgr.default_target})",
+            "explicit_orchestrator": "dynamically provisioned Docker containers",
+        }
+        return (
+            f"## Session Context\n"
+            f"- **Session:** {self.session_id[:8]}\n"
+            f"- **Runtime:** {mode_desc.get(sandbox_mgr.mode, 'unknown')}\n"
+            f"- **Workspace:** {sandbox_mgr.workspace_root}\n"
+            f"- **Crew:** {self.roster_str}\n"
+        )
+
     async def run(self, autonomous_steps=0):
         """Main moderator loop: poll → elect → execute → repeat."""
         self.base_budget = autonomous_steps
         self.current_steps = 0
         self._last_human_event_id = ""  # Captured from incoming batches for backbone linking
+
+        # ── Inject Session Context into Agent Prompts ──
+        session_context = self._build_session_context()
+        if session_context:
+            for agent in self.agents:
+                agent.session_context = session_context
+            print(f"📋 [Moderator] Session context injected into {len(self.agents)} agents.")
 
         # Initialize FlussPublisher with immediate memory callback
         self.publisher = FlussPublisher(

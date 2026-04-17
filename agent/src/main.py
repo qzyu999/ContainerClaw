@@ -74,6 +74,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         self.moderators = {}  # session_id -> StageModerator
         self.reconcilers = {}  # session_id -> ReconciliationController
         self._init_locks = {}  # session_id -> asyncio.Lock (prevents double init)
+        self._session_configs = {}  # session_id -> {runtime_image, execution_mode}
 
     async def _get_moderator(self, session_id: str) -> StageModerator:
         """Get or create a moderator for a session. Fully async, no bridging."""
@@ -88,10 +89,24 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             # Double-check after acquiring lock
             if session_id in self.moderators:
                 return self.moderators[session_id]
-            return await self._init_moderator(session_id)
+            # Pull per-session config if set during CreateSession
+            scfg = self._session_configs.get(session_id, {})
+            return await self._init_moderator(
+                session_id,
+                runtime_image=scfg.get("runtime_image", ""),
+                execution_mode=scfg.get("execution_mode", ""),
+            )
 
-    async def _init_moderator(self, session_id: str) -> StageModerator:
-        """Initialize a new session moderator. Runs on the event loop."""
+    async def _init_moderator(self, session_id: str,
+                               runtime_image: str = "",
+                               execution_mode: str = "") -> StageModerator:
+        """Initialize a new session moderator. Runs on the event loop.
+
+        Args:
+            session_id: Unique session identifier.
+            runtime_image: Per-session runtime image override (e.g. "python:3.11").
+            execution_mode: Per-session execution mode override.
+        """
         print(f"🧠 [Agent] Initializing new session context: {session_id}")
 
         # Build agents from config.yaml roster
@@ -120,7 +135,48 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         await board.initialize()
 
         if conchshell_enabled:
-            sandbox_mgr = SandboxManager()
+            # ── Session-Scoped SandboxManager (Layered Defaults) ──
+            # Session overrides → config.yaml → code defaults
+            session_exec_mode = execution_mode or cfg.execution_mode
+            session_runtime = runtime_image or cfg.sidecar_config.default_target_id
+
+            sandbox_mgr = SandboxManager(
+                mode=session_exec_mode,
+                default_target=session_runtime,
+                network=cfg.sidecar_config.network,
+            )
+
+            # ── Auto-Provision Sidecar (Phase 2.3) ──
+            # If implicit_proxy targets an image (not a running container), provision it
+            if session_exec_mode == "implicit_proxy" and session_runtime:
+                try:
+                    sandbox_mgr.client.containers.get(session_runtime)
+                    # Already running — use as-is (static sidecar mode)
+                    print(f"🐳 [Agent] Using existing sidecar: {session_runtime}")
+                except Exception:
+                    # Not a running container — might be an image, try to provision
+                    try:
+                        import docker
+                        sidecar_name = f"claw-sidecar-{session_id[:8]}"
+                        print(f"🐳 [Agent] Provisioning sidecar: {session_runtime} as {sidecar_name}")
+                        container = await asyncio.to_thread(
+                            sandbox_mgr.client.containers.run,
+                            session_runtime,
+                            name=sidecar_name,
+                            detach=True,
+                            network_mode=sandbox_mgr.network,
+                            mem_limit="512m",
+                            command="sleep infinity",
+                            volumes={sandbox_mgr.workspace_root: {
+                                "bind": sandbox_mgr.workspace_root, "mode": "rw"
+                            }},
+                        )
+                        sandbox_mgr.default_target = container.id
+                        print(f"✅ [Agent] Sidecar provisioned: {container.id[:12]}")
+                    except Exception as e:
+                        print(f"⚠️ [Agent] Sidecar provisioning failed, falling back to native: {e}")
+                        sandbox_mgr.mode = "native"
+
             session_shell = SessionShellTool(sandbox_manager=sandbox_mgr)
             test_runner = TestRunnerTool(session_shell=session_shell)
             diff = DiffTool(session_shell=session_shell)
@@ -158,6 +214,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             tool_dispatcher = ToolDispatcher(toolsets)
             print(f"🐚 [ConchShell] Tool dispatcher initialized for session {session_id}.")
         else:
+            sandbox_mgr = None
             print("🐚 [ConchShell] Disabled — agents will use text-only mode.")
 
         moderator = StageModerator(
@@ -168,6 +225,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             fluss_client=self.fluss
         )
         moderator.board = board
+        moderator.sandbox_mgr = sandbox_mgr  # Expose for session context building
 
         # Wire SubagentManager after moderator (needs publisher from moderator.run)
         if conchshell_enabled:
@@ -472,7 +530,17 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         """Create a new session via FlussClient. Direct await — no bridging."""
         session_id = str(uuid.uuid4())
         title = request.title or f"Chat {session_id[:8]}"
+        runtime_image = getattr(request, 'runtime_image', '') or ''
+        execution_mode = getattr(request, 'execution_mode', '') or ''
         print(f"🆕 [Agent] Creating session: {title} ({session_id})")
+        if runtime_image or execution_mode:
+            print(f"    Runtime: {runtime_image or '(default)'}, Mode: {execution_mode or '(default)'}")
+
+        # Store per-session config for deferred moderator init
+        self._session_configs[session_id] = {
+            "runtime_image": runtime_image,
+            "execution_mode": execution_mode,
+        }
 
         try:
             result = await self.fluss.create_session(session_id, title)
