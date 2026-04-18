@@ -146,36 +146,23 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 network=cfg.sidecar_config.network,
             )
 
-            # ── Auto-Provision Sidecar (Phase 2.3) ──
-            # If implicit_proxy targets an image (not a running container), provision it
-            if session_exec_mode == "implicit_proxy" and session_runtime:
+            # ── Execution Mode Validation ──
+            # The agent never provisions containers itself (no DinD).
+            # Sidecars are provisioned by the orchestration layer
+            # (docker-compose / k8s) and referenced by name/ID.
+            if session_exec_mode == "implicit_proxy":
+                # Validate the target sidecar exists (if Docker is accessible)
                 try:
                     sandbox_mgr.client.containers.get(session_runtime)
-                    # Already running — use as-is (static sidecar mode)
-                    print(f"🐳 [Agent] Using existing sidecar: {session_runtime}")
-                except Exception:
-                    # Not a running container — might be an image, try to provision
-                    try:
-                        import docker
-                        sidecar_name = f"claw-sidecar-{session_id[:8]}"
-                        print(f"🐳 [Agent] Provisioning sidecar: {session_runtime} as {sidecar_name}")
-                        container = await asyncio.to_thread(
-                            sandbox_mgr.client.containers.run,
-                            session_runtime,
-                            name=sidecar_name,
-                            detach=True,
-                            network_mode=sandbox_mgr.network,
-                            mem_limit="512m",
-                            command="sleep infinity",
-                            volumes={sandbox_mgr.workspace_root: {
-                                "bind": sandbox_mgr.workspace_root, "mode": "rw"
-                            }},
-                        )
-                        sandbox_mgr.default_target = container.id
-                        print(f"✅ [Agent] Sidecar provisioned: {container.id[:12]}")
-                    except Exception as e:
-                        print(f"⚠️ [Agent] Sidecar provisioning failed, falling back to native: {e}")
-                        sandbox_mgr.mode = "native"
+                    print(f"🐳 [Agent] Sidecar validated: {session_runtime}")
+                except Exception as e:
+                    print(f"⚠️ [Agent] Sidecar '{session_runtime}' not reachable: {e}")
+                    print(f"    Falling back to native mode for this session.")
+                    sandbox_mgr.mode = "native"
+            elif session_exec_mode == "explicit_orchestrator":
+                print(f"🐳 [Agent] Explicit orchestrator mode — ephemeral containers on demand.")
+            else:
+                print(f"🐳 [Agent] Native execution mode for session {session_id[:8]}.")
 
             session_shell = SessionShellTool(sandbox_manager=sandbox_mgr)
             test_runner = TestRunnerTool(session_shell=session_shell)

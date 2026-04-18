@@ -487,31 +487,32 @@ class SandboxManager:
 
 **Defense (Layered Defaults):** Notice the `or` chain. If the session doesn't specify a mode, it falls back to global config. If global config doesn't specify one, the Pydantic model defaults to `"native"`. This implements the Config Mental Model from §3.3: Layer 2 overrides Layer 1 overrides Layer 0. The user never needs to know about the lower layers unless they want to change them.
 
-#### 5.2.3 Auto-Provision the Sidecar on Session Creation
+#### 5.2.3 Validate Sidecar at Session Creation (No DinD)
 
-**Current flow:** `run.py` externally calls `workspace_setup.setup_sidecar()` before creating a session. The agent service has no knowledge of sidecar lifecycle.
+**Architectural decision:** The agent **never** provisions containers itself. Docker-in-Docker (DinD) is unstable, requires privileged access, and violates the container security model (`cap_drop: ALL`, `read_only: true`, `no-new-privileges`). Mounting the Docker socket would give the agent root-equivalent access to the host.
 
-**New flow:** The agent service provisions the sidecar internally when `execution_mode == "implicit_proxy"`:
+**Provisioning responsibility by mode:**
+
+| Mode | Who provisions? | Agent's job |
+|:---|:---|:---|
+| `native` | Nobody | Run subprocess locally |
+| `implicit_proxy` | docker-compose / k8s | Validate target exists, `exec` into it |
+| `explicit_orchestrator` | External orchestrator API | Request container via API call |
+
+**New flow:** The agent validates the sidecar exists at session creation and falls back to native if unreachable:
 
 ```python
-# main.py — _init_moderator (new sidecar provisioning block)
-if session_exec_mode == "implicit_proxy" and session_runtime:
-    # Is the target a running container name (static) or an image to pull?
+# main.py — _init_moderator (validation-only, no provisioning)
+if session_exec_mode == "implicit_proxy":
     try:
         sandbox_mgr.client.containers.get(session_runtime)
-        # Already running — use it directly (static sidecar mode)
-    except docker.errors.NotFound:
-        # Not a running container — treat as an image, provision it
-        sidecar_id = await asyncio.to_thread(
-            self._provision_sidecar,
-            image=session_runtime,
-            workspace_path=session_workspace_path,
-            network=config.CONFIG.sidecar_config.network,
-        )
-        sandbox_mgr.default_target = sidecar_id
+        print(f"🐳 [Agent] Sidecar validated: {session_runtime}")
+    except Exception as e:
+        print(f"⚠️ [Agent] Sidecar '{session_runtime}' not reachable: {e}")
+        sandbox_mgr.mode = "native"  # Graceful fallback
 ```
 
-**Defense:** This closes the gap between "the user clicks New Session" and "the sidecar is ready." The provisioning is transparent: the user writes `runtime_image: python:3.11`, and the framework handles `docker pull`, container creation, volume mounting, network attachment, and health verification. The user never runs a setup script.
+**Defense:** The provisioning gap is closed at the orchestration layer: `docker-compose.swebench.yml` defines the sidecar service, `run.py` sets up the workspace before creating a session, and the agent simply validates what the orchestrator has already done. For the personal dev persona, `native` mode is the default — no Docker needed at all.
 
 #### 5.2.4 Inject Session Context into Agent Prompts
 
