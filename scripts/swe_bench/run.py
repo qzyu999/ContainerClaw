@@ -135,16 +135,26 @@ def _wait_for_reconciler_boot(session_id: str, max_wait: int = 60) -> bool:
     return False
 
 
-def submit_task(problem_statement: str) -> str:
+def submit_task(
+    problem_statement: str,
+    instance_id: str = "",
+    image_name: str = "",
+) -> str:
     """Submit the problem statement to ContainerClaw via the bridge.
     Returns the generated session_id if successful, or empty string on failure.
     """
     import requests
 
-    # 1. Initialize a new session
+    # 1. Initialize a new session with runtime config
+    title = f"SWE-bench: {instance_id}" if instance_id else "SWE-Bench Run"
+    session_payload = {"title": title}
+    if image_name:
+        session_payload["runtime_image"] = image_name
+        session_payload["execution_mode"] = "implicit_proxy"
+
     print(f"🔌 Initializing session to boot agent components...")
     try:
-        sess_resp = requests.post(f"{BRIDGE_URL}/sessions/new", json={"title": "SWE-Bench Run"}, timeout=60)
+        sess_resp = requests.post(f"{BRIDGE_URL}/sessions/new", json=session_payload, timeout=60)
         sess_resp.raise_for_status()
         session_id = sess_resp.json().get("session", {}).get("session_id", "")
         if not session_id:
@@ -354,7 +364,12 @@ def run_single(instance_id: str, args) -> dict:
 
         # 4. Submit task
         problem_statement = instance.get("problem_statement", "")
-        session_id = submit_task(problem_statement)
+        image_name = f"ghcr.io/epoch-research/swe-bench.eval.x86_64.{instance_id}"
+        session_id = submit_task(
+            problem_statement,
+            instance_id=instance_id,
+            image_name=image_name,
+        )
         if not session_id:
             error = "Task submission failed"
             return _make_result(instance_id, "", 0, time.time() - start_time, error)
