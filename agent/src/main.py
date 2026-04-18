@@ -149,14 +149,34 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             # ── Execution Mode Validation ──
             # The agent never provisions containers itself (no DinD).
             # Sidecars are provisioned by the orchestration layer
-            # (docker-compose / k8s) and referenced by name/ID.
+            # (docker-compose / k8s) and referenced by container name/ID.
             if session_exec_mode == "implicit_proxy":
-                # Validate the target sidecar exists (if Docker is accessible)
+                # Check Docker accessibility before attempting validation.
+                # The agent container intentionally has NO Docker socket mount
+                # (cap_drop: ALL, read_only, no-new-privileges).
+                # Docker access is only available in SWE-bench overrides.
+                docker_available = False
                 try:
-                    sandbox_mgr.client.containers.get(session_runtime)
-                    print(f"🐳 [Agent] Sidecar validated: {session_runtime}")
-                except Exception as e:
-                    print(f"⚠️ [Agent] Sidecar '{session_runtime}' not reachable: {e}")
+                    sandbox_mgr.client  # Triggers lazy connection + ping()
+                    docker_available = True
+                except RuntimeError:
+                    pass
+
+                if not docker_available:
+                    print(f"⚠️ [Agent] Docker not available — implicit_proxy mode requires")
+                    print(f"    a pre-provisioned sidecar (docker-compose/k8s).")
+                    print(f"    Falling back to native mode for this session.")
+                    sandbox_mgr.mode = "native"
+                elif session_runtime:
+                    try:
+                        sandbox_mgr.client.containers.get(session_runtime)
+                        print(f"🐳 [Agent] Sidecar validated: {session_runtime}")
+                    except Exception as e:
+                        print(f"⚠️ [Agent] Sidecar '{session_runtime}' not reachable: {e}")
+                        print(f"    Falling back to native mode for this session.")
+                        sandbox_mgr.mode = "native"
+                else:
+                    print(f"⚠️ [Agent] implicit_proxy mode but no target specified.")
                     print(f"    Falling back to native mode for this session.")
                     sandbox_mgr.mode = "native"
             elif session_exec_mode == "explicit_orchestrator":

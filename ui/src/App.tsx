@@ -17,12 +17,10 @@ import AnchorView from './components/AnchorView';
 type TabId = 'chatroom' | 'explorer' | 'dag' | 'metrics' | 'snorkel' | 'anchor';
 
 const RUNTIME_OPTIONS = [
-  { value: 'native', label: '⚡ Native (local)', mode: '' },
-  { value: 'python:3.12-slim', label: '🐍 Python 3.12', mode: 'implicit_proxy' },
-  { value: 'python:3.11-slim', label: '🐍 Python 3.11', mode: 'implicit_proxy' },
-  { value: 'node:20-slim', label: '🟢 Node.js 20', mode: 'implicit_proxy' },
-  { value: 'rust:1.79-slim', label: '🦀 Rust 1.79', mode: 'implicit_proxy' },
-  { value: 'custom', label: '📦 Custom image...', mode: 'implicit_proxy' },
+  { value: 'native', label: '⚡ Native (local)', mode: '', requiresDocker: false },
+  { value: 'claw-sidecar-python', label: '🐍 Python 3.12', mode: 'implicit_proxy', requiresDocker: true },
+  { value: 'claw-sidecar-node', label: '🟢 Node.js 20', mode: 'implicit_proxy', requiresDocker: true },
+  { value: 'custom', label: '📦 Custom sidecar...', mode: 'implicit_proxy', requiresDocker: true },
 ];
 
 interface SessionMeta {
@@ -449,6 +447,15 @@ export default function App() {
                   placeholder="e.g. ghcr.io/my-org/my-image:latest"
                   style={{ marginTop: '8px' }}
                 />
+              )}
+              {RUNTIME_OPTIONS.find(r => r.value === selectedRuntime)?.requiresDocker && (
+                <div className="docker-hint">
+                  <Container size={12} />
+                  <span>
+                    Requires a running sidecar container on the Docker network.
+                    Without one, falls back to native mode.
+                  </span>
+                </div>
               )}
 
               {anchorTemplates.length > 0 && (

@@ -1,0 +1,68 @@
+# docker-compose.sidecar.yml
+# Override for testing implicit_proxy execution mode with pre-provisioned sidecars.
+#
+# How it works:
+#   - Adds Docker socket mount to claw-agent (required for docker exec)
+#   - Starts sidecar containers on the internal network
+#   - Each sidecar shares the /workspace volume with the agent
+#   - Sessions using implicit_proxy mode target these by container name
+#
+# Sidecar reuse model:
+#   - One sidecar per runtime, shared across ALL sessions
+#   - Each session's tools run `docker exec -i <sidecar-name> <command>`
+#   - Isolation comes from workspace subdirectories, not containers
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.sidecar.yml up -d
+#
+# To clean up:
+#   docker compose -f docker-compose.yml -f docker-compose.sidecar.yml down
+
+services:
+  # ── Agent Override: Mount Docker socket for exec access ──
+  # Docker socket is owned by root inside the container (macOS Docker Desktop),
+  # so we must run as root to access it. This is the same pattern as --bench.
+  claw-agent:
+    user: root
+    read_only: false
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - CONCHSHELL_ENABLED=true
+      - HOME=/root
+
+  # ── Pre-provisioned Sidecar: Python 3.12 ──
+  claw-sidecar-python:
+    image: python:3.12-slim
+    container_name: claw-sidecar-python
+    command: ["sleep", "infinity"]
+    networks:
+      - internal
+    volumes:
+      - ${PROJECT_DIR:-.}/workspace:/workspace:rw
+    tmpfs:
+      - /tmp:size=256M
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    restart: unless-stopped
+
+  # ── Pre-provisioned Sidecar: Node.js 20 ──
+  claw-sidecar-node:
+    image: node:20-slim
+    container_name: claw-sidecar-node
+    command: ["sleep", "infinity"]
+    networks:
+      - internal
+    volumes:
+      - ${PROJECT_DIR:-.}/workspace:/workspace:rw
+    tmpfs:
+      - /tmp:size=256M
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1G
+    restart: unless-stopped
