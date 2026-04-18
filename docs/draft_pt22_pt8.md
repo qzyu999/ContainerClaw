@@ -906,3 +906,184 @@ The election is the constant. The execution substrate is the variable. By fixing
 > 7. SWE-bench `run.py` migration to session API (2-3 hrs)
 > 8. Sidecar health monitoring + UI status indicators (2-3 hrs)
 > 9. Session resume with sidecar re-provisioning (2-3 hrs)
+
+---
+
+- Validation
+
+# Phases 3 & 4: UI Session Dialog + SWE-bench Session API
+
+## Background
+
+Phases 1, 2, and 5 established the backend: session-scoped `SandboxManager`, per-session proto fields, adaptive verbosity. Now we wire these into the UI (Phase 3) and the SWE-bench harness (Phase 4).
+
+## User Review Required
+
+> [!IMPORTANT]
+> Phase 3.3 (Persistent Sessions with Resume) is **deferred** — it requires sidecar lifecycle management that conflicts with the no-DinD decision. The session chat history already persists via Fluss replay; only sidecar state is lost on restart.
+
+> [!WARNING]  
+> Phase 4 changes `run.py`'s `submit_task()` to pass `runtime_image` and `execution_mode`. This means the SWE-bench harness will **require** the updated bridge/agent containers. Old containers will ignore the new fields (proto3 forward-compat), so it's safe to deploy incrementally.
+
+---
+
+## Proposed Changes
+
+### Phase 3: UI Session Creation Dialog
+
+#### [MODIFY] [api.ts](file:///Users/jaredyu/Desktop/open_source/containerclaw/ui/src/api.ts)
+
+Update `createSession()` to accept `runtime_image` and `execution_mode`:
+
+```typescript
+export const createSession = async (
+  title?: string,
+  runtime_image?: string,
+  execution_mode?: string
+): Promise<Session | null> => {
+  const resp = await fetch(`${BRIDGE_URL}/sessions/new`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, runtime_image, execution_mode }),
+  });
+  // ...
+};
+```
+
+---
+
+#### [MODIFY] [App.tsx](file:///Users/jaredyu/Desktop/open_source/containerclaw/ui/src/App.tsx)
+
+Replace the current `handleNewSession()` (which creates with a plain name) with a modal dialog:
+
+**New Session Dialog** — opens on `+ New` button click:
+- **Name** text input (pre-filled with `"Chat N"`)
+- **Runtime** selector: `Native (default)`, `Python 3.11`, `Node.js 20`, `Rust 1.79`, `Custom image...`
+- **Directive** selector: populated from `fetchAnchorTemplates()` (already wired)
+- **Create** button sends `createSession(name, runtime_image, execution_mode)` + auto-applies selected anchor template
+
+**Session list** — extend each `session-item` to show the runtime badge:
+```
+● Fix auth bug
+  ⚡ native │ 3 min ago
+```
+
+This requires storing runtime info on the `Session` type. Since the proto `SessionEntry` doesn't currently include runtime, we'll store it client-side in a `Map<string, {runtime, mode}>` keyed by session_id.
+
+---
+
+### Phase 4: SWE-bench Session API
+
+#### [MODIFY] [run.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/scripts/swe_bench/run.py)
+
+Update `submit_task()` to pass `runtime_image` and `execution_mode` when creating the session:
+
+```python
+# line 147 — currently:
+sess_resp = requests.post(f"{BRIDGE_URL}/sessions/new", json={"title": "SWE-Bench Run"}, timeout=60)
+
+# becomes:
+sess_resp = requests.post(f"{BRIDGE_URL}/sessions/new", json={
+    "title": f"SWE-bench: {instance_id}",
+    "runtime_image": swe_bench_image or "",
+    "execution_mode": "implicit_proxy",
+}, timeout=60)
+```
+
+`submit_task()` signature gains an `instance_id` and optional `image_name` parameter. `run_single()` passes these through.
+
+> [!NOTE]
+> This is purely additive — the old behavior (empty `runtime_image` = use config.yaml default) still works for non-SWE-bench sessions.
+
+---
+
+## Testing Guide: All Execution Modes
+
+### Mode 1: Native (default — no Docker needed)
+
+```bash
+# 1. Ensure config.yaml has:
+#    execution_mode: native
+# 2. Start normally
+bash claw.sh up
+
+# 3. Open localhost:3000, create a session, ask:
+#    "Run echo hello world using session_shell"
+# 4. Expected log:
+#    🐳 [Agent] Native execution mode for session XXXXXXXX.
+# 5. Verify the agent receives actual "hello world" output (Phase 1 fix)
+```
+
+### Mode 2: Implicit Proxy (pre-provisioned sidecar)
+
+```bash
+# 1. Start a sidecar manually on the same Docker network:
+docker run -d --name test-sidecar \
+  --network containerclaw_internal \
+  -v $(pwd)/workspace:/workspace:rw \
+  python:3.12-slim \
+  sleep infinity
+
+# 2. Set config.yaml:
+#    execution_mode: implicit_proxy
+#    sidecar:
+#      default_target_id: test-sidecar
+#      network: containerclaw_internal
+
+# 3. Rebuild & restart agent:
+docker compose build claw-agent && docker compose up -d claw-agent
+
+# 4. Create a session, ask:
+#    "Run python3 --version using session_shell"
+# 5. Expected log:
+#    🐳 [Agent] Sidecar validated: test-sidecar
+# 6. Output should show Python version from the sidecar container
+
+# 7. Cleanup:
+docker rm -f test-sidecar
+```
+
+### Mode 3: Explicit Orchestrator (ephemeral containers)
+
+```bash
+# 1. Set config.yaml:
+#    execution_mode: explicit_orchestrator
+# 2. Requires Docker socket mounted to the agent container
+#    (add to docker-compose.yml volumes):
+#      - /var/run/docker.sock:/var/run/docker.sock:ro
+# 3. Ask:
+#    "Execute 'python3 -c \"print(42)\"' in a python:3.12-slim sandbox"
+#    (uses execute_in_sandbox tool)
+# 4. Expected: Agent spins up ephemeral container, runs command, gets output
+
+# ⚠️ NOTE: This mode requires Docker socket access and is only
+# recommended for controlled environments (CI/CD, SWE-bench).
+# Do NOT use in production/multi-tenant setups.
+```
+
+### Mode 4: Per-Session Override via API (Phase 2 validation)
+
+```bash
+# Test that per-session runtime works via the bridge API:
+curl -X POST http://localhost:5001/sessions/new \
+  -H 'Content-Type: application/json' \
+  -d '{"title": "Python Test", "runtime_image": "test-sidecar", "execution_mode": "implicit_proxy"}'
+
+# Expected agent log:
+#   🆕 [Agent] Creating session: Python Test (XXXXXXXX)
+#       Runtime: test-sidecar, Mode: implicit_proxy
+#   🐳 [Agent] Sidecar validated: test-sidecar
+```
+
+---
+
+## Verification Plan
+
+### Automated Tests
+- `py_compile` on all modified Python files
+- `npm run build` for UI (TypeScript type checking)
+
+### Manual Verification
+- Phase 3: Open `localhost:3000`, click `+ New`, verify the dialog renders with runtime/directive pickers
+- Phase 4: Run `python run.py --instance django__django-11133 --skip-docker --keep-alive` and verify the session is created with `execution_mode: implicit_proxy` in logs
+- Sidecar modes: Follow the testing guide above for each mode
