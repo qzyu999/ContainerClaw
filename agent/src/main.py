@@ -22,6 +22,7 @@ import grpc.aio
 
 import config
 from fluss_client import FlussClient
+from shared.spine_loader import load_spine
 from moderator import StageModerator
 from agent import LLMAgent
 from tools import (
@@ -107,16 +108,18 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             runtime_image: Per-session runtime image override (e.g. "python:3.11").
             execution_mode: Per-session execution mode override.
         """
-        print(f"🧠 [Agent] Initializing new session context: {session_id}")
+        print(f"🧠 [Agent] Initializing new session context: {session_id} - START")
 
         # Build agents from config.yaml roster
         cfg = config.CONFIG
-        from shared.spine_loader import load_spine
+        print("🧠 [Agent] Config loaded. Agents count:", len(cfg.agents))
         
         agents = []
         for agent_cfg in cfg.agents:
+            print(f"🧠 [Agent] Loading spine for {agent_cfg.name}...")
             # ── Loading SELF.md (Spine) Sectional Parsing ──
             spine_content = load_spine(agent_cfg.name)
+            print(f"🧠 [Agent] Spine for {agent_cfg.name} loaded. Length: {len(spine_content)}")
 
             agents.append(LLMAgent(
                 agent_id=agent_cfg.name,
@@ -125,6 +128,8 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 model=agent_cfg.model or cfg.default_model,
                 spine=spine_content
             ))
+            print(f"🧠 [Agent] LLMAgent {agent_cfg.name} constructed.")
+            
         print(f"🤖 [Agent] Roster: {[a.agent_id for a in agents]} (Spine Loaded: {bool(spine_content)})")
 
         # ── ConchShell: Per-agent tool authorization ──
