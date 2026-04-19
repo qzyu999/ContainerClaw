@@ -171,7 +171,7 @@ def setup_local_workspace(instance: dict, workspace_dir: str = "./workspace",
         if result.returncode == 0:
             # Fast path: direct commit fetch worked
             _retry_subprocess(["git", "checkout", "FETCH_HEAD"],
-                            capture_output=True, cwd=str(workspace), timeout=30)
+                            capture_output=True, cwd=str(workspace), timeout=120)
             print(f"✅ Checked out {base_commit[:12]} (targeted fetch)")
         else:
             # Fallback: some servers don't allow fetching arbitrary SHAs.
@@ -188,7 +188,7 @@ def setup_local_workspace(instance: dict, workspace_dir: str = "./workspace",
 
             result = _retry_subprocess(
                 ["git", "checkout", base_commit],
-                capture_output=True, text=True, cwd=str(workspace), timeout=30,
+                capture_output=True, text=True, cwd=str(workspace), timeout=120,
             )
             if result.returncode != 0:
                 print(f"❌ Checkout failed: {result.stderr}")
@@ -243,13 +243,13 @@ def extract_patch(workspace_dir: str = "./workspace") -> str:
     # Stage everything — this is what makes new files visible to diff
     subprocess.run(
         ["git", "add", "-A"],
-        capture_output=True, cwd=str(workspace), timeout=30,
+        capture_output=True, cwd=str(workspace), timeout=60,
     )
 
     # Diff staged changes against HEAD
     result = subprocess.run(
         ["git", "diff", "--cached", "HEAD"],
-        capture_output=True, text=True, cwd=str(workspace), timeout=30,
+        capture_output=True, text=True, cwd=str(workspace), timeout=60,
     )
     patch = result.stdout
 

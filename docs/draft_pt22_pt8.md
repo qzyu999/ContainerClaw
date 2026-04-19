@@ -1087,3 +1087,15 @@ curl -X POST http://localhost:5001/sessions/new \
 - Phase 3: Open `localhost:3000`, click `+ New`, verify the dialog renders with runtime/directive pickers
 - Phase 4: Run `python run.py --instance django__django-11133 --skip-docker --keep-alive` and verify the session is created with `execution_mode: implicit_proxy` in logs
 - Sidecar modes: Follow the testing guide above for each mode
+- Phase 6 (Traces): Run a trace and inspect the output `conversation.json` to verify agent reasoning is fully preserved and duplicates are purged.
+
+---
+
+## Phase 6: Trace Telemetry Cleanups (Bonus)
+
+During testing of `SWE-bench` execution, it was found that the agent conversations in the `traces/.../conversation.json` were truncated (missing the agent reasoning) and heavily bloated with duplicate tool output.
+
+To fix this:
+1. **Deduplication in `GetHistory`**: The Fluss Reconciler scanner was reading identical events already emitted via the Publisher callback loop. We added an in-memory dedup using `(actor_id, content)` since the chat schemas lack explicit UUIDs.
+2. **Telemetry Filter**: Filtered out raw stdout buffer chunks (used mainly for Snorkel visualizer streaming) from `GetHistory` so they don't pollute the trace.
+3. **Persist Chain-of-Thought**: `tool_executor.py` was previously discarding intermediate LLM reasoning (kept only in an ephemeral `agent._api_turns` state) unless it was perfectly matched with a tool call block. This change ensures intermediate reasoning is always emitted as a `thought` event so the agent's chain-of-thought is persistently archived.

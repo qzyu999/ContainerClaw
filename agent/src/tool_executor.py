@@ -88,21 +88,21 @@ class ToolExecutor:
                     shared_context, function_responses, available_tools
                 )
 
-            # FIX 1: Use latest text (avoid snowballing since thoughts are already published)
+            # Always capture the latest LLM text as the candidate final response
             if text and text.strip():
                 cleaned_text = text.strip()
                 final_text = cleaned_text
                 
-                # FIX 2: Publish intermediate thoughts immediately 
-                # so the UI updates while the agent is chaining tools
-                if fn_calls:
-                    current_parent = await self.publish(
-                        agent.agent_id,
-                        cleaned_text,
-                        "thought",
-                        parent_event_id=current_parent,
-                        edge_type="SEQUENTIAL",
-                    )
+                # Publish agent reasoning as a 'thought' event so it persists
+                # in Fluss traces. Without this, chain-of-thought is only stored
+                # in the ephemeral _api_turns buffer and never archived.
+                current_parent = await self.publish(
+                    agent.agent_id,
+                    cleaned_text,
+                    "thought",
+                    parent_event_id=current_parent,
+                    edge_type="SEQUENTIAL",
+                )
 
             if not fn_calls:
                 # Model chose text response — done with tools

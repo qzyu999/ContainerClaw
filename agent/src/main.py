@@ -504,30 +504,54 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             await context.abort(grpc.StatusCode.INTERNAL, str(e))
 
     async def GetHistory(self, request, context):
-        """Fetch chat history — from memory if moderator active, else from Fluss."""
+        """Fetch chat history — from memory if moderator active, else from Fluss.
+
+        Applies two filters:
+        1. Deduplication by (actor_id, content) — the reconciler's scanner can
+           re-add events that the publisher callback already inserted, because
+           the chatroom schema lacks an event_id column (dedup keys diverge).
+        2. Telemetry exclusion — raw stdout byte-chunks are for Snorkel's
+           real-time streaming, not conversation history.
+        """
         session_id = request.session_id
         if session_id in self.moderators:
             moderator = self.moderators[session_id]
-            events = [
-                agent_pb2.ActivityEvent(
+            seen = set()
+            events = []
+            for msg in moderator.context.all_messages:
+                m_type = msg.get("type", "output")
+                if m_type == "telemetry":
+                    continue
+                dedup_key = (msg.get("actor_id", ""), msg.get("content", ""))
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+                events.append(agent_pb2.ActivityEvent(
                     timestamp=ms_to_iso(msg["ts"]),
-                    type=msg.get("type", "output"),
+                    type=m_type,
                     content=msg.get("content", ""),
                     actor_id=msg.get("actor_id", ""),
-                ) for msg in moderator.context.all_messages
-            ]
+                ))
             return agent_pb2.HistoryResponse(events=events)
 
         try:
             raw_events = await self.fluss.fetch_history(session_id)
-            events = [
-                agent_pb2.ActivityEvent(
+            seen = set()
+            events = []
+            for e in raw_events:
+                e_type = e["type"]
+                if e_type == "telemetry":
+                    continue
+                dedup_key = (e["actor_id"], e["content"])
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+                events.append(agent_pb2.ActivityEvent(
                     timestamp=ms_to_iso(e["ts"]),
-                    type=e["type"],
+                    type=e_type,
                     content=e["content"],
                     actor_id=e["actor_id"],
-                ) for e in raw_events
-            ]
+                ))
             return agent_pb2.HistoryResponse(events=events)
         except Exception as e:
             print(f"❌ [Agent] GetHistory Error: {e}")
