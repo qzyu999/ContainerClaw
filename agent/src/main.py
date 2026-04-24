@@ -108,18 +108,15 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             runtime_image: Per-session runtime image override (e.g. "python:3.11").
             execution_mode: Per-session execution mode override.
         """
-        print(f"🧠 [Agent] Initializing new session context: {session_id} - START")
+        print(f"🧠 [Agent] Initializing session: {session_id}")
 
         # Build agents from config.yaml roster
         cfg = config.CONFIG
-        print("🧠 [Agent] Config loaded. Agents count:", len(cfg.agents))
         
         agents = []
         for agent_cfg in cfg.agents:
-            print(f"🧠 [Agent] Loading spine for {agent_cfg.name}...")
             # ── Loading SELF.md (Spine) Sectional Parsing ──
             spine_content = load_spine(agent_cfg.name)
-            print(f"🧠 [Agent] Spine for {agent_cfg.name} loaded. Length: {len(spine_content)}")
 
             agents.append(LLMAgent(
                 agent_id=agent_cfg.name,
@@ -128,8 +125,6 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 model=agent_cfg.model or cfg.default_model,
                 spine=spine_content
             ))
-            print(f"🧠 [Agent] LLMAgent {agent_cfg.name} constructed.")
-            
         print(f"🤖 [Agent] Roster: {[a.agent_id for a in agents]} (Spine Loaded: {bool(spine_content)})")
 
         # ── ConchShell: Per-agent tool authorization ──
@@ -143,7 +138,10 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             # ── Session-Scoped SandboxManager (Layered Defaults) ──
             # Session overrides → config.yaml → code defaults
             session_exec_mode = execution_mode or cfg.execution_mode
-            session_runtime = runtime_image or cfg.sidecar_config.default_target_id
+            # runtime_image is the Docker *image* (e.g. ghcr.io/...),
+            # default_target_id is the container *name* (e.g. "swe-sidecar").
+            # For implicit_proxy, we always look up by container name.
+            session_runtime = cfg.sidecar_config.default_target_id
 
             sandbox_mgr = SandboxManager(
                 mode=session_exec_mode,

@@ -207,9 +207,7 @@ class ProjectBoard:
 
     async def initialize(self):
         """Async initialization: Replay board_events log to rebuild self.items."""
-        print("📋 [ProjectBoard] initialize called")
         if not self.board_table:
-            print("📋 [ProjectBoard] no board_table, returning")
             return
             
         try:
@@ -218,15 +216,9 @@ class ProjectBoard:
                 {b: 0 for b in range(DEFAULT_BUCKET_COUNT)}
             )
             
-            print("📋 [ProjectBoard] Subscribed to buckets")
-            
             while True:
-                print("📋 [ProjectBoard] polling...")
-                import asyncio
-                future = asyncio.ensure_future(scanner._async_poll_batches(500))
-                batches = await asyncio.shield(future)
+                batches = await scanner._async_poll_batches(500)
                 if not batches:
-                    print("📋 [ProjectBoard] empty batches, breaking")
                     break
                 # Unwrap Fluss RecordBatch → pyarrow RecordBatch
                 batches = [b.batch for b in batches]
