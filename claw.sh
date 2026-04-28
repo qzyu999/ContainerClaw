@@ -59,6 +59,20 @@ if [ -n "$TELEMETRY_PROFILE" ]; then
   echo "📊 Telemetry enabled (Fluss-native pipeline)"
 fi
 
+# Pre-evaluate MLX status to conditionally include MLX sidecar compose file
+PYTHON_BIN="python3"
+if [ -f ".venv/bin/python3" ]; then
+  PYTHON_BIN=".venv/bin/python3"
+fi
+eval $(CLAW_CONFIG_PATH=config.yaml $PYTHON_BIN scripts/get_llm_info.py 2>/dev/null)
+if [ "$LLM_SERVER_ENABLED" = "true" ]; then
+  ARCH=$(uname -m)
+  OS=$(uname -s)
+  if [ "$OS" = "Darwin" ] && [ "$ARCH" = "arm64" ]; then
+    COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.mlx.yml"
+  fi
+fi
+
 # For teardown commands (down/clean/restart), always activate ALL profiles
 # so docker compose can see and stop every container, even profiled ones.
 ALL_PROFILES="--profile telemetry"
@@ -107,7 +121,6 @@ case $COMMAND in
     mkdir -p workspace .zk_data/data .zk_data/datalog .fluss_data .claw_state
 
     # MLX Server (Host-side)
-    eval $(CLAW_CONFIG_PATH=config.yaml $PYTHON_BIN scripts/get_llm_info.py)
     if [ "$LLM_SERVER_ENABLED" = "true" ]; then
       ARCH=$(uname -m)
       OS=$(uname -s)

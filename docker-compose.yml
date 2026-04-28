@@ -241,16 +241,7 @@ services:
       - internal
     depends_on:
       - flink-jobmanager
-  # --- MLX Unified Logging Sidecar ---
-  mlx-logs:
-    image: alpine:3.20
-    container_name: mlx-logs
-    command: [ "/bin/sh", "-c", "touch /state/mlx.log && tail -f /state/mlx.log" ]
-    networks:
-      - internal
-    volumes:
-      - ${PROJECT_DIR:-.}/.claw_state:/state:rw
-    restart: unless-stopped
+
 
 networks:
   frontend:
