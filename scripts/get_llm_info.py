@@ -16,6 +16,7 @@ def main():
         print(f'LLM_SERVER_ENABLED="{str(server.enabled).lower()}"')
         print(f'LLM_SERVER_PORT="{server.port}"')
         print(f'LLM_SERVER_HOST="{server.host}"')
+        print(f'SIDECAR_TARGET_ID="{config.sidecar_config.default_target_id}"')
         
         model_path = server.model
         args = [

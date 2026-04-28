@@ -77,6 +77,15 @@ fi
 # so docker compose can see and stop every container, even profiled ones.
 ALL_PROFILES="--profile telemetry"
 
+# Similarly, always include ALL possible compose overrides during teardown
+# so docker compose has the full context to remove sidecars/overlays perfectly.
+TEARDOWN_COMPOSE_FILES="-f docker-compose.yml"
+for override in docker-compose.swebench.yml docker-compose.sidecar.yml docker-compose.mlx.yml; do
+  if [ -f "$override" ]; then
+    TEARDOWN_COMPOSE_FILES="$TEARDOWN_COMPOSE_FILES -f $override"
+  fi
+done
+
 stop_mlx() {
   if [ -f ".claw_state/mlx.pid" ]; then
     MLX_PID=$(cat .claw_state/mlx.pid)
@@ -90,6 +99,22 @@ stop_mlx() {
       fi
     fi
     rm -f .claw_state/mlx.pid
+  fi
+}
+
+stop_dynamic_containers() {
+  # These containers are spawned dynamically via Python Docker API
+  # and lack Compose labels, so `docker compose down` ignores them.
+  TARGET=${SIDECAR_TARGET_ID:-swe-sidecar}
+  if docker ps -a --format '{{.Names}}' | grep -q "^${TARGET}$"; then
+    echo "Stopping dynamic sidecar: $TARGET"
+    docker rm -f "$TARGET" >/dev/null 2>&1 || true
+  fi
+
+  # Stop any ephemeral orchestrator sandboxes
+  if docker ps -a --format '{{.Names}}' | grep -q "^sandbox-"; then
+    echo "Stopping ephemeral sandboxes..."
+    docker ps -a --format '{{.Names}}' | grep "^sandbox-" | xargs -r docker rm -f >/dev/null 2>&1 || true
   fi
 }
 
@@ -167,9 +192,10 @@ case $COMMAND in
     ;;
   down)
     echo "Gracefully stopping ContainerClaw session: $SESSION_ID"
-    $DOCKER_COMPOSE $COMPOSE_FILES $ALL_PROFILES stop claw-agent 2>/dev/null
-    $DOCKER_COMPOSE $COMPOSE_FILES $ALL_PROFILES down --remove-orphans
+    $DOCKER_COMPOSE $TEARDOWN_COMPOSE_FILES $ALL_PROFILES stop claw-agent 2>/dev/null
+    $DOCKER_COMPOSE $TEARDOWN_COMPOSE_FILES $ALL_PROFILES down --remove-orphans
     stop_mlx
+    stop_dynamic_containers
     ;;
   purge)
     echo "Purging state for session: $SESSION_ID"
@@ -186,15 +212,17 @@ case $COMMAND in
     ;;
   restart)
     echo "Restarting ContainerClaw session: $SESSION_ID"
-    $DOCKER_COMPOSE $COMPOSE_FILES $ALL_PROFILES down --remove-orphans
+    $DOCKER_COMPOSE $TEARDOWN_COMPOSE_FILES $ALL_PROFILES down --remove-orphans
     stop_mlx
+    stop_dynamic_containers
     $0 up $SESSION_ID $PROFILE_FLAG
     ;;
   clean)
     echo "Deep cleaning ContainerClaw environment..."
-    # Use ALL_PROFILES to guarantee every profiled container is stopped
-    $DOCKER_COMPOSE $COMPOSE_FILES $ALL_PROFILES down -v --remove-orphans
+    # Use ALL_PROFILES and TEARDOWN_COMPOSE_FILES to guarantee everything is stopped
+    $DOCKER_COMPOSE $TEARDOWN_COMPOSE_FILES $ALL_PROFILES down -v --remove-orphans
     stop_mlx
+    stop_dynamic_containers
     rm -rf .fluss_data .zk_data .claw_state/mlx.log .claw_state/mlx.pid
     docker network prune -f
     ;;
