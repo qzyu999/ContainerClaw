@@ -26,6 +26,17 @@ while [[ $# -gt 0 ]]; do
       echo "🧪 SWE-bench mode enabled (root user, writable fs, docker-overlay)"
       shift
       ;;
+    --sidecar)
+      # Sidecar mode: load sidecar overlay (Docker socket + sidecar containers)
+      # Docker socket requires root access on macOS Docker Desktop
+      export CLAW_USER="root"
+      export CLAW_READ_ONLY="false"
+      export CLAW_HOME="/root"
+      export CONCHSHELL_ENABLED="true"
+      COMPOSE_FILES="$COMPOSE_FILES -f docker-compose.sidecar.yml"
+      echo "🐳 Sidecar mode enabled (Python 3.12 + Node.js 20 sidecars)"
+      shift
+      ;;
     *)
       SESSION_ID=$1
       shift
@@ -191,7 +202,7 @@ case $COMMAND in
     echo "Workspace cleared."
     ;;
   *)
-    echo "Usage: $0 {up|down|purge|status|restart|clean|logs|clear-workspace} [session_id] [--telemetry]"
+    echo "Usage: $0 {up|down|purge|status|restart|clean|logs|clear-workspace} [session_id] [--telemetry] [--sidecar] [--bench]"
     exit 1
     ;;
 esac

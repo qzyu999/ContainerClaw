@@ -33,6 +33,11 @@ message Empty {}
 
 message CreateSessionRequest {
   string title = 1;
+  // Optional runtime override. If empty, uses config.yaml default.
+  string runtime_image = 2;
+  // Optional execution mode override. If empty, uses config.yaml default.
+  // Values: "native" | "implicit_proxy" | "explicit_orchestrator"
+  string execution_mode = 3;
 }
 
 message SessionListResponse {

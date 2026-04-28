@@ -75,9 +75,15 @@ def create_session():
     """Create a new session via the agent."""
     data = request.json or {}
     title = data.get("title", "")
+    runtime_image = data.get("runtime_image", "")
+    execution_mode = data.get("execution_mode", "")
     try:
         stub = get_grpc_stub()
-        s = stub.CreateSession(agent_pb2.CreateSessionRequest(title=title))
+        s = stub.CreateSession(agent_pb2.CreateSessionRequest(
+            title=title,
+            runtime_image=runtime_image,
+            execution_mode=execution_mode,
+        ))
         return {
             "status": "ok",
             "session": {

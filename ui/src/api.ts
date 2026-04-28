@@ -143,12 +143,16 @@ export const fetchSessions = async (): Promise<Session[]> => {
   }
 };
 
-export const createSession = async (title?: string): Promise<Session | null> => {
+export const createSession = async (
+  title?: string,
+  runtime_image?: string,
+  execution_mode?: string
+): Promise<Session | null> => {
   try {
     const resp = await fetch(`${BRIDGE_URL}/sessions/new`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title }),
+      body: JSON.stringify({ title, runtime_image, execution_mode }),
     });
     const data = await resp.json();
     if (data.status === 'ok') return data.session;

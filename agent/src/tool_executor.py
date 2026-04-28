@@ -88,21 +88,21 @@ class ToolExecutor:
                     shared_context, function_responses, available_tools
                 )
 
-            # FIX 1: Use latest text (avoid snowballing since thoughts are already published)
+            # Always capture the latest LLM text as the candidate final response
             if text and text.strip():
                 cleaned_text = text.strip()
                 final_text = cleaned_text
                 
-                # FIX 2: Publish intermediate thoughts immediately 
-                # so the UI updates while the agent is chaining tools
-                if fn_calls:
-                    current_parent = await self.publish(
-                        agent.agent_id,
-                        cleaned_text,
-                        "thought",
-                        parent_event_id=current_parent,
-                        edge_type="SEQUENTIAL",
-                    )
+                # Publish agent reasoning as a 'thought' event so it persists
+                # in Fluss traces. Without this, chain-of-thought is only stored
+                # in the ephemeral _api_turns buffer and never archived.
+                current_parent = await self.publish(
+                    agent.agent_id,
+                    cleaned_text,
+                    "thought",
+                    parent_event_id=current_parent,
+                    edge_type="SEQUENTIAL",
+                )
 
             if not fn_calls:
                 # Model chose text response — done with tools
@@ -193,12 +193,29 @@ class ToolExecutor:
                 current_parent = tool_result_id
 
                 # Accumulate results for functionResponse construction
-                # Adaptive Verbosity: allow more context for read-heavy tools
-                read_tools = ["repo_map", "structured_search", "advanced_read"]
-                limit = 8000 if tool_name in read_tools else 2000
+                # Adaptive Verbosity: per-tool-class context limits
+                READ_TOOLS = {"repo_map", "structured_search", "advanced_read"}
+                EXEC_TOOLS = {"session_shell", "execute_in_sandbox", "test_runner"}
+
+                if tool_name in READ_TOOLS:
+                    limit = 8000
+                elif tool_name in EXEC_TOOLS:
+                    limit = 4000  # Raised: execution output is high-value
+                else:
+                    limit = 2000
 
                 output = result.output
-                if len(output) > limit:
+                # Tail-biased truncation for execution tools:
+                # keep last 75% where assertions and errors live
+                if tool_name in EXEC_TOOLS and len(output) > limit:
+                    tail_budget = limit * 3 // 4
+                    head_budget = limit - tail_budget
+                    output = (
+                        output[:head_budget]
+                        + "\n\n[... TRUNCATED ...]\n\n"
+                        + output[-tail_budget:]
+                    )
+                elif len(output) > limit:
                     output = output[:limit] + "\n\n[TRUNCATED: Result too large for context window. Narrow your search or use pagination.]"
 
                 last_round_results.append({

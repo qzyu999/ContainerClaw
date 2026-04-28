@@ -24,37 +24,49 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0b\x61gent.proto\x12\rcontainerclaw\"?\n\x0fHistoryResponse\x12,\n\x06\x65vents\x18\x01 \x03(\x0b\x32\x1c.containerclaw.ActivityEvent\"1\n\x0bTaskRequest\x12\x0e\n\x06prompt\x18\x01 \x01(\t\x12\x12\n\nsession_id\x18\x02 \x01(\t\"/\n\nTaskStatus\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"%\n\x0f\x41\x63tivityRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\"g\n\rActivityEvent\x12\x11\n\ttimestamp\x18\x01 \x01(\t\x12\x0c\n\x04type\x18\x02 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x03 \x01(\t\x12\x12\n\nrisk_score\x18\x04 \x01(\x02\x12\x10\n\x08\x61\x63tor_id\x18\x05 \x01(\t\"&\n\x10WorkspaceRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\"<\n\x11WorkspaceResponse\x12\'\n\x05\x66iles\x18\x01 \x03(\x0b\x32\x18.containerclaw.FileEntry\"X\n\tFileEntry\x12\x0c\n\x04path\x18\x01 \x01(\t\x12\x14\n\x0cis_directory\x18\x02 \x01(\x08\x12\x12\n\nsize_bytes\x18\x03 \x01(\x03\x12\x13\n\x0bmodified_at\x18\x04 \x01(\t\"/\n\x0b\x46ileRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0c\n\x04path\x18\x02 \x01(\t\"?\n\x0c\x46ileResponse\x12\x0f\n\x07\x63ontent\x18\x01 \x01(\t\x12\x10\n\x08language\x18\x02 \x01(\t\x12\x0c\n\x04path\x18\x03 \x01(\t\"/\n\x0b\x44iffRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0c\n\x04path\x18\x02 \x01(\t\"E\n\x0c\x44iffResponse\x12\x10\n\x08original\x18\x01 \x01(\t\x12\x10\n\x08modified\x18\x02 \x01(\t\x12\x11\n\tdiff_text\x18\x03 \x01(\t2\xd2\x03\n\x0c\x41gentService\x12\x44\n\x0b\x45xecuteTask\x12\x1a.containerclaw.TaskRequest\x1a\x19.containerclaw.TaskStatus\x12P\n\x0eStreamActivity\x12\x1e.containerclaw.ActivityRequest\x1a\x1c.containerclaw.ActivityEvent0\x01\x12R\n\rListWorkspace\x12\x1f.containerclaw.WorkspaceRequest\x1a .containerclaw.WorkspaceResponse\x12\x43\n\x08ReadFile\x12\x1a.containerclaw.FileRequest\x1a\x1b.containerclaw.FileResponse\x12\x43\n\x08\x44iffFile\x12\x1a.containerclaw.DiffRequest\x1a\x1b.containerclaw.DiffResponse\x12L\n\nGetHistory\x12\x1e.containerclaw.ActivityRequest\x1a\x1e.containerclaw.HistoryResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0b\x61gent.proto\x12\rcontainerclaw\"\x07\n\x05\x45mpty\"T\n\x14\x43reateSessionRequest\x12\r\n\x05title\x18\x01 \x01(\t\x12\x15\n\rruntime_image\x18\x02 \x01(\t\x12\x16\n\x0e\x65xecution_mode\x18\x03 \x01(\t\"D\n\x13SessionListResponse\x12-\n\x08sessions\x18\x01 \x03(\x0b\x32\x1b.containerclaw.SessionEntry\"]\n\x0cSessionEntry\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\r\n\x05title\x18\x02 \x01(\t\x12\x12\n\ncreated_at\x18\x03 \x01(\x03\x12\x16\n\x0elast_active_at\x18\x04 \x01(\x03\"?\n\x0fHistoryResponse\x12,\n\x06\x65vents\x18\x01 \x03(\x0b\x32\x1c.containerclaw.ActivityEvent\"1\n\x0bTaskRequest\x12\x0e\n\x06prompt\x18\x01 \x01(\t\x12\x12\n\nsession_id\x18\x02 \x01(\t\"/\n\nTaskStatus\x12\x10\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"%\n\x0f\x41\x63tivityRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\"g\n\rActivityEvent\x12\x11\n\ttimestamp\x18\x01 \x01(\t\x12\x0c\n\x04type\x18\x02 \x01(\t\x12\x0f\n\x07\x63ontent\x18\x03 \x01(\t\x12\x12\n\nrisk_score\x18\x04 \x01(\x02\x12\x10\n\x08\x61\x63tor_id\x18\x05 \x01(\t\"&\n\x10WorkspaceRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\"<\n\x11WorkspaceResponse\x12\'\n\x05\x66iles\x18\x01 \x03(\x0b\x32\x18.containerclaw.FileEntry\"X\n\tFileEntry\x12\x0c\n\x04path\x18\x01 \x01(\t\x12\x14\n\x0cis_directory\x18\x02 \x01(\x08\x12\x12\n\nsize_bytes\x18\x03 \x01(\x03\x12\x13\n\x0bmodified_at\x18\x04 \x01(\t\"/\n\x0b\x46ileRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0c\n\x04path\x18\x02 \x01(\t\"?\n\x0c\x46ileResponse\x12\x0f\n\x07\x63ontent\x18\x01 \x01(\t\x12\x10\n\x08language\x18\x02 \x01(\t\x12\x0c\n\x04path\x18\x03 \x01(\t\"/\n\x0b\x44iffRequest\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0c\n\x04path\x18\x02 \x01(\t\"E\n\x0c\x44iffResponse\x12\x10\n\x08original\x18\x01 \x01(\t\x12\x10\n\x08modified\x18\x02 \x01(\t\x12\x11\n\tdiff_text\x18\x03 \x01(\t\"\x82\x01\n\tBoardItem\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04type\x18\x02 \x01(\t\x12\r\n\x05title\x18\x03 \x01(\t\x12\x13\n\x0b\x64\x65scription\x18\x04 \x01(\t\x12\x0e\n\x06status\x18\x05 \x01(\t\x12\x13\n\x0b\x61ssigned_to\x18\x06 \x01(\t\x12\x12\n\ncreated_at\x18\x07 \x01(\x01\"8\n\rBoardResponse\x12\'\n\x05items\x18\x01 \x03(\x0b\x32\x18.containerclaw.BoardItem2\xb9\x05\n\x0c\x41gentService\x12\x44\n\x0b\x45xecuteTask\x12\x1a.containerclaw.TaskRequest\x1a\x19.containerclaw.TaskStatus\x12P\n\x0eStreamActivity\x12\x1e.containerclaw.ActivityRequest\x1a\x1c.containerclaw.ActivityEvent0\x01\x12R\n\rListWorkspace\x12\x1f.containerclaw.WorkspaceRequest\x1a .containerclaw.WorkspaceResponse\x12\x43\n\x08ReadFile\x12\x1a.containerclaw.FileRequest\x1a\x1b.containerclaw.FileResponse\x12\x43\n\x08\x44iffFile\x12\x1a.containerclaw.DiffRequest\x1a\x1b.containerclaw.DiffResponse\x12L\n\nGetHistory\x12\x1e.containerclaw.ActivityRequest\x1a\x1e.containerclaw.HistoryResponse\x12H\n\x08GetBoard\x12\x1e.containerclaw.ActivityRequest\x1a\x1c.containerclaw.BoardResponse\x12H\n\x0cListSessions\x12\x14.containerclaw.Empty\x1a\".containerclaw.SessionListResponse\x12Q\n\rCreateSession\x12#.containerclaw.CreateSessionRequest\x1a\x1b.containerclaw.SessionEntryb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'agent_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_HISTORYRESPONSE']._serialized_start=30
-  _globals['_HISTORYRESPONSE']._serialized_end=93
-  _globals['_TASKREQUEST']._serialized_start=95
-  _globals['_TASKREQUEST']._serialized_end=144
-  _globals['_TASKSTATUS']._serialized_start=146
-  _globals['_TASKSTATUS']._serialized_end=193
-  _globals['_ACTIVITYREQUEST']._serialized_start=195
-  _globals['_ACTIVITYREQUEST']._serialized_end=232
-  _globals['_ACTIVITYEVENT']._serialized_start=234
-  _globals['_ACTIVITYEVENT']._serialized_end=337
-  _globals['_WORKSPACEREQUEST']._serialized_start=339
-  _globals['_WORKSPACEREQUEST']._serialized_end=377
-  _globals['_WORKSPACERESPONSE']._serialized_start=379
-  _globals['_WORKSPACERESPONSE']._serialized_end=439
-  _globals['_FILEENTRY']._serialized_start=441
-  _globals['_FILEENTRY']._serialized_end=529
-  _globals['_FILEREQUEST']._serialized_start=531
-  _globals['_FILEREQUEST']._serialized_end=578
-  _globals['_FILERESPONSE']._serialized_start=580
-  _globals['_FILERESPONSE']._serialized_end=643
-  _globals['_DIFFREQUEST']._serialized_start=645
-  _globals['_DIFFREQUEST']._serialized_end=692
-  _globals['_DIFFRESPONSE']._serialized_start=694
-  _globals['_DIFFRESPONSE']._serialized_end=763
-  _globals['_AGENTSERVICE']._serialized_start=766
-  _globals['_AGENTSERVICE']._serialized_end=1232
+  _globals['_EMPTY']._serialized_start=30
+  _globals['_EMPTY']._serialized_end=37
+  _globals['_CREATESESSIONREQUEST']._serialized_start=39
+  _globals['_CREATESESSIONREQUEST']._serialized_end=123
+  _globals['_SESSIONLISTRESPONSE']._serialized_start=125
+  _globals['_SESSIONLISTRESPONSE']._serialized_end=193
+  _globals['_SESSIONENTRY']._serialized_start=195
+  _globals['_SESSIONENTRY']._serialized_end=288
+  _globals['_HISTORYRESPONSE']._serialized_start=290
+  _globals['_HISTORYRESPONSE']._serialized_end=353
+  _globals['_TASKREQUEST']._serialized_start=355
+  _globals['_TASKREQUEST']._serialized_end=404
+  _globals['_TASKSTATUS']._serialized_start=406
+  _globals['_TASKSTATUS']._serialized_end=453
+  _globals['_ACTIVITYREQUEST']._serialized_start=455
+  _globals['_ACTIVITYREQUEST']._serialized_end=492
+  _globals['_ACTIVITYEVENT']._serialized_start=494
+  _globals['_ACTIVITYEVENT']._serialized_end=597
+  _globals['_WORKSPACEREQUEST']._serialized_start=599
+  _globals['_WORKSPACEREQUEST']._serialized_end=637
+  _globals['_WORKSPACERESPONSE']._serialized_start=639
+  _globals['_WORKSPACERESPONSE']._serialized_end=699
+  _globals['_FILEENTRY']._serialized_start=701
+  _globals['_FILEENTRY']._serialized_end=789
+  _globals['_FILEREQUEST']._serialized_start=791
+  _globals['_FILEREQUEST']._serialized_end=838
+  _globals['_FILERESPONSE']._serialized_start=840
+  _globals['_FILERESPONSE']._serialized_end=903
+  _globals['_DIFFREQUEST']._serialized_start=905
+  _globals['_DIFFREQUEST']._serialized_end=952
+  _globals['_DIFFRESPONSE']._serialized_start=954
+  _globals['_DIFFRESPONSE']._serialized_end=1023
+  _globals['_BOARDITEM']._serialized_start=1026
+  _globals['_BOARDITEM']._serialized_end=1156
+  _globals['_BOARDRESPONSE']._serialized_start=1158
+  _globals['_BOARDRESPONSE']._serialized_end=1214
+  _globals['_AGENTSERVICE']._serialized_start=1217
+  _globals['_AGENTSERVICE']._serialized_end=1914
 # @@protoc_insertion_point(module_scope)

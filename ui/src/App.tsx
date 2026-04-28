@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { Box, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare, ChevronLeft, ChevronRight, User, Plus, GitBranch, BarChart3, Loader2, Waves, Anchor } from 'lucide-react';
+import { Box, Terminal as TerminalIcon, ShieldCheck, HardDrive, FolderOpen, MessageSquare, ChevronLeft, ChevronRight, User, Plus, GitBranch, BarChart3, Loader2, Waves, Anchor, Container, Settings, X } from 'lucide-react';
 
-import { streamEvents, fetchWorkspace, fetchHistory, fetchSessions, createSession } from './api';
+import { streamEvents, fetchWorkspace, fetchHistory, fetchSessions, createSession, setAnchor, fetchAnchorTemplates } from './api';
 import type { ActivityEvent, Session } from './api';
 import ChatroomView from './components/ChatroomView';
 import ExplorerView from './components/ExplorerView';
@@ -16,6 +16,18 @@ import AnchorView from './components/AnchorView';
 
 type TabId = 'chatroom' | 'explorer' | 'dag' | 'metrics' | 'snorkel' | 'anchor';
 
+const RUNTIME_OPTIONS = [
+  { value: 'native', label: '⚡ Native (local)', mode: '', requiresDocker: false },
+  { value: 'claw-sidecar-python', label: '🐍 Python 3.12', mode: 'implicit_proxy', requiresDocker: true },
+  { value: 'claw-sidecar-node', label: '🟢 Node.js 20', mode: 'implicit_proxy', requiresDocker: true },
+  { value: 'custom', label: '📦 Custom sidecar...', mode: 'implicit_proxy', requiresDocker: true },
+];
+
+interface SessionMeta {
+  runtime: string;
+  mode: string;
+}
+
 export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -29,6 +41,17 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [isInitializing, setIsInitializing] = useState(false);
+
+  // Session creation dialog state
+  const [showNewSessionDialog, setShowNewSessionDialog] = useState(false);
+  const [newSessionName, setNewSessionName] = useState('');
+  const [selectedRuntime, setSelectedRuntime] = useState('native');
+  const [customImage, setCustomImage] = useState('');
+  const [selectedDirective, setSelectedDirective] = useState('');
+  const [anchorTemplates, setAnchorTemplates] = useState<{ label: string; text: string; default: boolean }[]>([]);
+
+  // Client-side runtime metadata (not stored in backend yet)
+  const [sessionMeta, setSessionMeta] = useState<Map<string, SessionMeta>>(new Map());
 
   useEffect(() => {
     let mounted = true;
@@ -101,13 +124,47 @@ export default function App() {
     }
   };
 
-  const handleNewSession = async () => {
-    const name = `Chat ${sessions.length + 1}`;
-    const newSess = await createSession(name);
+  const openNewSessionDialog = async () => {
+    setNewSessionName(`Chat ${sessions.length + 1}`);
+    setSelectedRuntime('native');
+    setCustomImage('');
+    setSelectedDirective('');
+    // Load anchor templates for directive picker
+    const templates = await fetchAnchorTemplates();
+    setAnchorTemplates(templates);
+    if (templates.length > 0) {
+      const defaultTpl = templates.find(t => t.default);
+      setSelectedDirective(defaultTpl ? defaultTpl.text : templates[0].text);
+    }
+    setShowNewSessionDialog(true);
+  };
+
+  const handleCreateSession = async () => {
+    const runtimeOpt = RUNTIME_OPTIONS.find(r => r.value === selectedRuntime);
+    const runtimeImage = selectedRuntime === 'native' ? '' :
+                         selectedRuntime === 'custom' ? customImage :
+                         selectedRuntime;
+    const executionMode = runtimeOpt?.mode || '';
+
+    const newSess = await createSession(newSessionName, runtimeImage, executionMode);
     if (newSess) {
       setSessions([newSess, ...sessions]);
       setActiveSessionId(newSess.session_id);
+      // Store runtime metadata client-side
+      setSessionMeta(prev => {
+        const next = new Map(prev);
+        next.set(newSess.session_id, {
+          runtime: selectedRuntime === 'custom' ? customImage : (runtimeOpt?.label || 'native'),
+          mode: executionMode || 'native',
+        });
+        return next;
+      });
+      // Auto-apply selected directive as anchor
+      if (selectedDirective) {
+        await setAnchor(newSess.session_id, selectedDirective);
+      }
     }
+    setShowNewSessionDialog(false);
   };
 
   const riskColor = risk > 0.7 ? '#ef4444' : risk > 0.3 ? '#f59e0b' : '#4ade80';
@@ -184,24 +241,33 @@ export default function App() {
           <div className="session-nav">
             <div className="session-nav-header">
               <h3>Sessions</h3>
-              <button className="btn-new-session" onClick={handleNewSession}>
+              <button className="btn-new-session" onClick={openNewSessionDialog}>
                 <Plus size={12} />
                 New
               </button>
             </div>
             <div className="session-list">
-              {sessions.map(s => (
-                <div 
-                  key={s.session_id} 
-                  className={`session-item ${activeSessionId === s.session_id ? 'active' : ''}`}
-                  onClick={() => setActiveSessionId(s.session_id)}
-                >
-                  <span className="session-item-title">{s.title}</span>
-                  <span className="session-item-meta">
-                    {new Date(s.created_at).toLocaleDateString()}
-                  </span>
-                </div>
-              ))}
+              {sessions.map(s => {
+                const meta = sessionMeta.get(s.session_id);
+                return (
+                  <div 
+                    key={s.session_id} 
+                    className={`session-item ${activeSessionId === s.session_id ? 'active' : ''}`}
+                    onClick={() => setActiveSessionId(s.session_id)}
+                  >
+                    <span className="session-item-title">{s.title}</span>
+                    <span className="session-item-meta">
+                      {meta ? (
+                        <span className="session-runtime-badge">{meta.runtime}</span>
+                      ) : (
+                        <span className="session-runtime-badge">⚡ Native</span>
+                      )}
+                      {' │ '}
+                      {new Date(s.created_at).toLocaleDateString()}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -331,6 +397,103 @@ export default function App() {
         collapsed={conchShellCollapsed}
         onToggle={() => setConchShellCollapsed(!conchShellCollapsed)}
       />
+
+      {/* New Session Dialog */}
+      {showNewSessionDialog && (
+        <div className="modal-overlay" onClick={() => setShowNewSessionDialog(false)}>
+          <div className="modal-dialog" onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2><Container size={20} /> New Studio</h2>
+              <button className="modal-close" onClick={() => setShowNewSessionDialog(false)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="modal-body">
+              <label className="modal-label">Name</label>
+              <input
+                className="modal-input"
+                value={newSessionName}
+                onChange={e => setNewSessionName(e.target.value)}
+                placeholder="Session name..."
+                autoFocus
+              />
+
+              <label className="modal-label" style={{ marginTop: '16px' }}>
+                <Settings size={14} /> Runtime
+              </label>
+              <div className="runtime-picker">
+                {RUNTIME_OPTIONS.map(opt => (
+                  <label
+                    key={opt.value}
+                    className={`runtime-option ${selectedRuntime === opt.value ? 'selected' : ''}`}
+                  >
+                    <input
+                      type="radio"
+                      name="runtime"
+                      value={opt.value}
+                      checked={selectedRuntime === opt.value}
+                      onChange={() => setSelectedRuntime(opt.value)}
+                    />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
+              {selectedRuntime === 'custom' && (
+                <input
+                  className="modal-input"
+                  value={customImage}
+                  onChange={e => setCustomImage(e.target.value)}
+                  placeholder="e.g. ghcr.io/my-org/my-image:latest"
+                  style={{ marginTop: '8px' }}
+                />
+              )}
+              {RUNTIME_OPTIONS.find(r => r.value === selectedRuntime)?.requiresDocker && (
+                <div className="docker-hint">
+                  <Container size={12} />
+                  <span>
+                    Requires a running sidecar container on the Docker network.
+                    Without one, falls back to native mode.
+                  </span>
+                </div>
+              )}
+
+              {anchorTemplates.length > 0 && (
+                <>
+                  <label className="modal-label" style={{ marginTop: '16px' }}>
+                    <Anchor size={14} /> Directive
+                  </label>
+                  <div className="directive-picker">
+                    {anchorTemplates.map((tpl, i) => (
+                      <label
+                        key={i}
+                        className={`directive-option ${selectedDirective === tpl.text ? 'selected' : ''}`}
+                      >
+                        <input
+                          type="radio"
+                          name="directive"
+                          checked={selectedDirective === tpl.text}
+                          onChange={() => setSelectedDirective(tpl.text)}
+                        />
+                        {tpl.label}
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="modal-footer">
+              <button className="modal-btn-cancel" onClick={() => setShowNewSessionDialog(false)}>
+                Cancel
+              </button>
+              <button className="modal-btn-create" onClick={handleCreateSession}>
+                Create Studio
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

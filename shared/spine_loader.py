@@ -34,8 +34,8 @@ def parse_spine(content: str, agent_name: str) -> str:
     # Regex to find top-level headers (beginning of line, # followed by name)
     # capturing everything until the next top-level header or total EOF
     def extract_section(tag: str) -> Optional[str]:
-        pattern = rf"(?mi)^#\s+{re.escape(tag)}\s*$(.*?)(?m:^#\s+|$)"
-        match = re.search(pattern, content, re.DOTALL)
+        pattern = rf"^#\s+{re.escape(tag)}\s*\n(.*?)(?=^#\s|\Z)"
+        match = re.search(pattern, content, re.MULTILINE | re.DOTALL | re.IGNORECASE)
         if match:
             return match.group(1).strip()
         return None

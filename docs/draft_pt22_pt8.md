@@ -327,7 +327,48 @@ All changes preserve the 5-agent election. The election is the constant. What ch
 
 ### Phase 1: Fix the Broken Feedback Loop (Effort: 1 hour, Impact: Critical)
 
-These are the two bugs from pt7 that make the election's investment worthless.
+These are the two bugs from pt7 that make the election's investment worthless. Before describing them, we document the tool execution architecture so the nature of the bug is precise.
+
+#### 5.1.0 Architecture: The OpenAI Tool-Calling Loop
+
+The `ToolExecutor` ([tool_executor.py](file:///.../containerclaw/agent/src/tool_executor.py)) orchestrates a multi-step conversation loop bounded by `MAX_TOOL_ROUNDS`. When an agent "thinks" (via `_think_with_tools`), it can emit a structured `tool_call` instead of (or alongside) text. The executor pauses the LLM, runs the tool locally via the `ToolDispatcher`, and feeds the execution result back to the LLM as a new `tool`-role message (via `_send_function_responses`), so the agent can evaluate the result before generating its final text answer or chaining another tool call.
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ToolExecutor.execute_with_tools() — One Agent Turn                     │
+│                                                                        │
+│  Round 0: agent._think_with_tools(shared_context, tools)               │
+│           → (text?, [tool_call_1, tool_call_2, ...])                   │
+│                                                                        │
+│  For each tool_call:                                                   │
+│    1. Publish tool call to Fluss (telemetry)                           │
+│    2. ToolDispatcher.execute(tool_name, args) → ToolResult             │
+│    3. Publish result summary to Fluss (telemetry, ≤500 chars)          │
+│    4. Accumulate raw result with Adaptive Verbosity limit:             │
+│       • Read-heavy tools (repo_map, structured_search, advanced_read): │
+│         up to 8,000 chars of raw output                                │
+│       • Other tools: up to 2,000 chars of raw output                   │
+│                                                                        │
+│  Round 1..N: agent._send_function_responses(accumulated_results)       │
+│              → (text?, [more_tool_calls?])                             │
+│              Loop until: text-only response OR MAX_TOOL_ROUNDS hit     │
+│                                                                        │
+│  Circuit Breaker: 3 consecutive failures → halt execution              │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+**The `_api_turns` Scratchpad:** `agent._api_turns` ([agent.py:33](file:///.../containerclaw/agent/src/agent.py#L33)) acts as a short-term, per-turn memory buffer. It temporarily stores the intermediate tool calls (assistant messages with `tool_calls`) and tool results (`tool`-role messages) during this loop. This allows the LLM to remember its chain of thought (e.g., "I searched a file, here is the result, now I will edit it") without permanently polluting the main shared conversation history. It is cleared at the start and end of each turn ([tool_executor.py:61](file:///.../containerclaw/agent/src/tool_executor.py#L61), [tool_executor.py:229](file:///.../containerclaw/agent/src/tool_executor.py#L229)).
+
+**Correcting the Tool Visibility Misconception:** An earlier draft (pt7) assumed that agents only see summarized tool results. This conflates two distinct output paths:
+
+| Path | Audience | Limit | Purpose |
+|:---|:---|:---|:---|
+| **Telemetry (Fluss/UI)** | Human observer | 500 chars ([tool_executor.py:165](file:///.../containerclaw/agent/src/tool_executor.py#L165)) | Prevent flooding the logs and UI |
+| **LLM Context (Adaptive Verbosity)** | Agent (via `_api_turns`) | 2,000–8,000 chars ([tool_executor.py:196-202](file:///.../containerclaw/agent/src/tool_executor.py#L196-L202)) | Agent reasons about raw tool output |
+
+The agents **do** receive the raw, detailed output. `ToolExecutor` implements "Adaptive Verbosity" ([tool_executor.py:196-202](file:///.../containerclaw/agent/src/tool_executor.py#L196-L202)), passing up to 8,000 characters of raw output for read-heavy tools (`repo_map`, `structured_search`, `advanced_read`) and 2,000 characters for other tools directly into the LLM's payload via `_api_turns`. The 500-char telemetry summary is a separate path for human observability only.
+
+**However, this architecture only works when the tool's `ToolResult.output` contains the actual output.** The two bugs below break the pipeline *before* the Adaptive Verbosity layer ever sees the data.
 
 #### 5.1.1 Fix `session_shell` — Return Actual Output to Agents
 
@@ -339,7 +380,7 @@ return ToolResult(
 )
 ```
 
-**Problem:** The 5-agent election just spent 5 LLM calls to select the best agent for this task. That agent runs a test. The result is "15 lines streamed to telemetry." The agent has no idea whether the test passed or failed. The ENTIRE election investment was wasted because the winning agent cannot reason about the result.
+**Problem:** The raw command output is available in the local `output` variable, but `session_shell` discards it and returns only a summary string. The Adaptive Verbosity layer in `tool_executor.py` then faithfully passes this *summary* ("15 lines streamed to telemetry") to the LLM — not the actual command output. The agent has no idea whether the test passed or failed. The same bug exists in `execute_in_sandbox` ([tools.py:1051-1053](file:///.../containerclaw/agent/src/tools.py#L1051-L1053)).
 
 **Fix:**
 ```python
@@ -350,7 +391,7 @@ return ToolResult(
 )
 ```
 
-**Defense (Information-Theoretic):** The election protocol produces a selection with $O(5 \cdot T_{llm})$ latency. If the selected agent receives zero bits of information from its action, the selection's entropy is wasted. The `output_limit_chars` bound (8192 chars) is the minimum viable information to amortize the election cost. The parallel Fluss telemetry stream is preserved for the human's observability — this fix only affects what the agent sees in its tool result, not what Fluss records.
+**Defense (Information-Theoretic):** The election protocol produces a selection with $O(5 \cdot T_{llm})$ latency. If the selected agent receives zero bits of information from its action, the selection's entropy is wasted. With this fix, `session_shell` passes the raw output through `ToolResult.output`, where the Adaptive Verbosity layer (`tool_executor.py:196-202`) will truncate it to the appropriate per-tool limit (2,000 chars for execution tools) before feeding it to the LLM. The `output_limit_chars` bound in the tool itself (8,192 chars) provides a generous first-pass cap; the AV layer provides the final, context-aware truncation. The parallel Fluss telemetry stream is preserved for the human's observability — this fix only affects what the agent sees in its tool result, not what Fluss records.
 
 #### 5.1.2 Fix `execute_ephemeral` — Mount the Shared Volume
 
@@ -446,31 +487,32 @@ class SandboxManager:
 
 **Defense (Layered Defaults):** Notice the `or` chain. If the session doesn't specify a mode, it falls back to global config. If global config doesn't specify one, the Pydantic model defaults to `"native"`. This implements the Config Mental Model from §3.3: Layer 2 overrides Layer 1 overrides Layer 0. The user never needs to know about the lower layers unless they want to change them.
 
-#### 5.2.3 Auto-Provision the Sidecar on Session Creation
+#### 5.2.3 Validate Sidecar at Session Creation (No DinD)
 
-**Current flow:** `run.py` externally calls `workspace_setup.setup_sidecar()` before creating a session. The agent service has no knowledge of sidecar lifecycle.
+**Architectural decision:** The agent **never** provisions containers itself. Docker-in-Docker (DinD) is unstable, requires privileged access, and violates the container security model (`cap_drop: ALL`, `read_only: true`, `no-new-privileges`). Mounting the Docker socket would give the agent root-equivalent access to the host.
 
-**New flow:** The agent service provisions the sidecar internally when `execution_mode == "implicit_proxy"`:
+**Provisioning responsibility by mode:**
+
+| Mode | Who provisions? | Agent's job |
+|:---|:---|:---|
+| `native` | Nobody | Run subprocess locally |
+| `implicit_proxy` | docker-compose / k8s | Validate target exists, `exec` into it |
+| `explicit_orchestrator` | External orchestrator API | Request container via API call |
+
+**New flow:** The agent validates the sidecar exists at session creation and falls back to native if unreachable:
 
 ```python
-# main.py — _init_moderator (new sidecar provisioning block)
-if session_exec_mode == "implicit_proxy" and session_runtime:
-    # Is the target a running container name (static) or an image to pull?
+# main.py — _init_moderator (validation-only, no provisioning)
+if session_exec_mode == "implicit_proxy":
     try:
         sandbox_mgr.client.containers.get(session_runtime)
-        # Already running — use it directly (static sidecar mode)
-    except docker.errors.NotFound:
-        # Not a running container — treat as an image, provision it
-        sidecar_id = await asyncio.to_thread(
-            self._provision_sidecar,
-            image=session_runtime,
-            workspace_path=session_workspace_path,
-            network=config.CONFIG.sidecar_config.network,
-        )
-        sandbox_mgr.default_target = sidecar_id
+        print(f"🐳 [Agent] Sidecar validated: {session_runtime}")
+    except Exception as e:
+        print(f"⚠️ [Agent] Sidecar '{session_runtime}' not reachable: {e}")
+        sandbox_mgr.mode = "native"  # Graceful fallback
 ```
 
-**Defense:** This closes the gap between "the user clicks New Session" and "the sidecar is ready." The provisioning is transparent: the user writes `runtime_image: python:3.11`, and the framework handles `docker pull`, container creation, volume mounting, network attachment, and health verification. The user never runs a setup script.
+**Defense:** The provisioning gap is closed at the orchestration layer: `docker-compose.swebench.yml` defines the sidecar service, `run.py` sets up the workspace before creating a session, and the agent simply validates what the orchestrator has already done. For the personal dev persona, `native` mode is the default — no Docker needed at all.
 
 #### 5.2.4 Inject Session Context into Agent Prompts
 
@@ -629,31 +671,52 @@ The 5-agent election still runs for every SWE-bench instance. The hypothesis is 
 
 These changes make the tool execution experience smooth for agents within the deliberation loop.
 
-#### 5.5.1 Structured Tool Output with Telemetry Separation
+#### 5.5.1 Refine Adaptive Verbosity for Execution Tools
 
-**Current problem:** The `tool_executor.py` publishes both real-time telemetry chunks AND the tool result to the same Fluss stream. The agent sees the truncated result in its function response. But the truncation in `tool_executor.py:198-202` is aggressive (2000 chars for most tools) and the agent loses critical information.
-
-**Fix:** Implement a two-tier output strategy:
+**Current state:** The Adaptive Verbosity mechanism in `tool_executor.py:196-202` already implements a two-tier output strategy:
 
 ```python
-# tool_executor.py — per-tool output policy (new)
-TOOL_OUTPUT_POLICY = {
-    # Read-heavy tools: agent needs the full output to reason
-    "advanced_read": {"agent_limit": 8000, "telemetry": True},
-    "repo_map": {"agent_limit": 8000, "telemetry": True},
-    "structured_search": {"agent_limit": 8000, "telemetry": True},
-    # Execution tools: agent needs results, but bulk goes to telemetry
-    "session_shell": {"agent_limit": 4000, "telemetry": True},
-    "test_runner": {"agent_limit": 4000, "telemetry": True},
-    # Write tools: agent just needs confirmation
-    "surgical_edit": {"agent_limit": 1000, "telemetry": False},
-    "create_file": {"agent_limit": 1000, "telemetry": False},
-}
+# tool_executor.py — EXISTING Adaptive Verbosity (lines 196-202)
+read_tools = ["repo_map", "structured_search", "advanced_read"]
+limit = 8000 if tool_name in read_tools else 2000
+
+output = result.output
+if len(output) > limit:
+    output = output[:limit] + "\n\n[TRUNCATED: Result too large for context window. ...]"
 ```
 
-**Defense:** The election invested 5 LLM calls to select the best agent. That agent then runs `test_runner` and receives 2000 chars of a 50,000-char test output. The critical failure assertion is on line 47,000. The agent cannot see it. The next election cycle starts, another 5 LLM calls are spent, and the new winner makes the same blind guess. This is a systemic waste loop.
+This is separate from the telemetry summary path (line 165: `result_summary = result.output[:500]`), which only affects what appears in the Fluss/UI stream. The agents already receive up to 8,000 chars for read-heavy tools and 2,000 chars for execution tools via `_api_turns`.
 
-By giving execution tools a 4000-char limit (with intelligent tail-truncation: keep the last N lines where assertions live), we ensure the election's investment translates into actionable reasoning.
+**Remaining gap:** Once Phase 1 fixes `session_shell` and `execute_in_sandbox` to return raw output (§5.1.1, §5.1.2), the 2,000-char default limit may be insufficient for execution tools where the critical failure information (e.g., assertion errors, stack traces) appears at the *tail* of the output.
+
+**Refinement:**
+```python
+# tool_executor.py — Enhanced Adaptive Verbosity
+READ_TOOLS = {"repo_map", "structured_search", "advanced_read"}
+EXEC_TOOLS = {"session_shell", "execute_in_sandbox", "test_runner"}
+
+if tool_name in READ_TOOLS:
+    limit = 8000
+elif tool_name in EXEC_TOOLS:
+    limit = 4000  # Raised from 2000: execution output is high-value
+else:
+    limit = 2000
+
+# Tail-biased truncation for execution tools: keep last N lines
+# where assertions and error messages typically live
+if tool_name in EXEC_TOOLS and len(output) > limit:
+    tail_budget = limit * 3 // 4  # 75% tail, 25% head
+    head_budget = limit - tail_budget
+    output = (
+        output[:head_budget]
+        + "\n\n[... TRUNCATED ...]\n\n"
+        + output[-tail_budget:]
+    )
+elif len(output) > limit:
+    output = output[:limit] + "\n\n[TRUNCATED: ...]"
+```
+
+**Defense:** The Adaptive Verbosity architecture is sound — the core design of per-tool limits feeding into `_api_turns` is correct. This refinement addresses a specific gap: for test output, the head of `stdout` is typically boilerplate (`===== test session starts =====`), while the actionable information (failed assertions, stack traces) appears at the tail. Tail-biased truncation ensures the 4,000-char budget captures the information the agent needs to reason about failures. This is an enhancement to the existing mechanism, not a replacement.
 
 ---
 
@@ -844,46 +907,195 @@ The election is the constant. The execution substrate is the variable. By fixing
 > 8. Sidecar health monitoring + UI status indicators (2-3 hrs)
 > 9. Session resume with sidecar re-provisioning (2-3 hrs)
 
--------
+---
 
-create a /.../containerclaw/docs/draft_pt22_pt7.md for the following:
+- Validation
 
-can you analyze 
+# Phases 3 & 4: UI Session Dialog + SWE-bench Session API
 
-draft_pt22.md
-, 
+## Background
 
-draft_pt22_pt2.md
-, 
+Phases 1, 2, and 5 established the backend: session-scoped `SandboxManager`, per-session proto fields, adaptive verbosity. Now we wire these into the UI (Phase 3) and the SWE-bench harness (Phase 4).
 
-draft_pt22_pt3.md
-, 
+## User Review Required
 
-draft_pt22_pt3_continuum.md
-, 
+> [!IMPORTANT]
+> Phase 3.3 (Persistent Sessions with Resume) is **deferred** — it requires sidecar lifecycle management that conflicts with the no-DinD decision. The session chat history already persists via Fluss replay; only sidecar state is lost on restart.
 
-draft_pt22_pt4.md
-, 
+> [!WARNING]  
+> Phase 4 changes `run.py`'s `submit_task()` to pass `runtime_image` and `execution_mode`. This means the SWE-bench harness will **require** the updated bridge/agent containers. Old containers will ignore the new fields (proto3 forward-compat), so it's safe to deploy incrementally.
 
-draft_pt22_pt5.md
-, and 
+---
 
-draft_pt22_pt6.md
-along with the latest changes as of 067ae58101810343a0644c55c083ac8f291cff2e? I am not sure the implementation is good, as i am still not clear on the best product direction/focus/description for this - it started with having the SWE-bench properly have the issue-specific container running for proper session_shell/test_runner tool calls - but it expanded into not just that but thinking how this sidecar pattern can be added for personal and enterprise use cases (thinking of containerclaw as sth that needs to fit to enterprise needs like k8s - while also being relevant to individual users like OpenClaw and Hermes Agent)
+## Proposed Changes
 
-can you do a full analysis of the situation, outline what currently exists - what is the best most ideal direction to move towards - and what are the steps to go there. I feel like currently both the agent-centric and human-centric UI/UX are not smooth at all.
+### Phase 3: UI Session Creation Dialog
 
-Explain it rigorously s.t. the entire process can be derived given the context - basing on system design / architectural review (add mermaid diagrams) - where all code changes need to be thoroughly and exhaustively defended. Start from first principles, and use the speed of light as the limiting factor rather than certain suboptimal design choices.
+#### [MODIFY] [api.ts](file:///Users/jaredyu/Desktop/open_source/containerclaw/ui/src/api.ts)
 
--------
+Update `createSession()` to accept `runtime_image` and `execution_mode`:
 
-can you create a /.../containerclaw/docs/draft_pt22_pt8.md as a follow-up. the response is that the 5-agent voting mechanism is a hypothesis that multiagent collaboration and personalities with voting leads to empowering latent intelligence within LLMs along with an evolutionary-algorithm-like process via voting, therefore we need to keep it for the current product - however it's still critical to fix the current core problem of product A, B, and C as mentioned in 
+```typescript
+export const createSession = async (
+  title?: string,
+  runtime_image?: string,
+  execution_mode?: string
+): Promise<Session | null> => {
+  const resp = await fetch(`${BRIDGE_URL}/sessions/new`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title, runtime_image, execution_mode }),
+  });
+  // ...
+};
+```
 
-draft_pt22_pt7.md
-. reanalyze, go back to the drawing board and draft a plan again in the same fashion that respects these business requirements - while still going for the same ideal of being suited for personal (e.g., openclaw, hermes agent)/enterprise (e.g., openhands, devin) use-cases
+---
 
-Explain it rigorously s.t. the entire process can be derived given the context - basing on system design / architectural review (add mermaid diagrams) - where all code changes need to be thoroughly and exhaustively defended. Start from first principles, and use the speed of light as the limiting factor rather than certain suboptimal design choices.
+#### [MODIFY] [App.tsx](file:///Users/jaredyu/Desktop/open_source/containerclaw/ui/src/App.tsx)
 
------
+Replace the current `handleNewSession()` (which creates with a plain name) with a modal dialog:
 
-I would also like to see some product-minded thinking that examines how the config can flow easily from init and through various sessions - the app is still largely me running it once and tearing it down - it has not yet evolved into a smooth UX (either human or agent)-friendly app - I would like the final design to be intuitive and explainable to both humans and agents - not just some layered piece of software that seems to work from the outside
+**New Session Dialog** — opens on `+ New` button click:
+- **Name** text input (pre-filled with `"Chat N"`)
+- **Runtime** selector: `Native (default)`, `Python 3.11`, `Node.js 20`, `Rust 1.79`, `Custom image...`
+- **Directive** selector: populated from `fetchAnchorTemplates()` (already wired)
+- **Create** button sends `createSession(name, runtime_image, execution_mode)` + auto-applies selected anchor template
+
+**Session list** — extend each `session-item` to show the runtime badge:
+```
+● Fix auth bug
+  ⚡ native │ 3 min ago
+```
+
+This requires storing runtime info on the `Session` type. Since the proto `SessionEntry` doesn't currently include runtime, we'll store it client-side in a `Map<string, {runtime, mode}>` keyed by session_id.
+
+---
+
+### Phase 4: SWE-bench Session API
+
+#### [MODIFY] [run.py](file:///Users/jaredyu/Desktop/open_source/containerclaw/scripts/swe_bench/run.py)
+
+Update `submit_task()` to pass `runtime_image` and `execution_mode` when creating the session:
+
+```python
+# line 147 — currently:
+sess_resp = requests.post(f"{BRIDGE_URL}/sessions/new", json={"title": "SWE-Bench Run"}, timeout=60)
+
+# becomes:
+sess_resp = requests.post(f"{BRIDGE_URL}/sessions/new", json={
+    "title": f"SWE-bench: {instance_id}",
+    "runtime_image": swe_bench_image or "",
+    "execution_mode": "implicit_proxy",
+}, timeout=60)
+```
+
+`submit_task()` signature gains an `instance_id` and optional `image_name` parameter. `run_single()` passes these through.
+
+> [!NOTE]
+> This is purely additive — the old behavior (empty `runtime_image` = use config.yaml default) still works for non-SWE-bench sessions.
+
+---
+
+## Testing Guide: All Execution Modes
+
+### Mode 1: Native (default — no Docker needed)
+
+```bash
+# 1. Ensure config.yaml has:
+#    execution_mode: native
+# 2. Start normally
+bash claw.sh up
+
+# 3. Open localhost:3000, create a session, ask:
+#    "Run echo hello world using session_shell"
+# 4. Expected log:
+#    🐳 [Agent] Native execution mode for session XXXXXXXX.
+# 5. Verify the agent receives actual "hello world" output (Phase 1 fix)
+```
+
+### Mode 2: Implicit Proxy (pre-provisioned sidecar)
+
+```bash
+# 1. Start a sidecar manually on the same Docker network:
+docker run -d --name test-sidecar \
+  --network containerclaw_internal \
+  -v $(pwd)/workspace:/workspace:rw \
+  python:3.12-slim \
+  sleep infinity
+
+# 2. Set config.yaml:
+#    execution_mode: implicit_proxy
+#    sidecar:
+#      default_target_id: test-sidecar
+#      network: containerclaw_internal
+
+# 3. Rebuild & restart agent:
+docker compose build claw-agent && docker compose up -d claw-agent
+
+# 4. Create a session, ask:
+#    "Run python3 --version using session_shell"
+# 5. Expected log:
+#    🐳 [Agent] Sidecar validated: test-sidecar
+# 6. Output should show Python version from the sidecar container
+
+# 7. Cleanup:
+docker rm -f test-sidecar
+```
+
+### Mode 3: Explicit Orchestrator (ephemeral containers)
+
+```bash
+# 1. Set config.yaml:
+#    execution_mode: explicit_orchestrator
+# 2. Requires Docker socket mounted to the agent container
+#    (add to docker-compose.yml volumes):
+#      - /var/run/docker.sock:/var/run/docker.sock:ro
+# 3. Ask:
+#    "Execute 'python3 -c \"print(42)\"' in a python:3.12-slim sandbox"
+#    (uses execute_in_sandbox tool)
+# 4. Expected: Agent spins up ephemeral container, runs command, gets output
+
+# ⚠️ NOTE: This mode requires Docker socket access and is only
+# recommended for controlled environments (CI/CD, SWE-bench).
+# Do NOT use in production/multi-tenant setups.
+```
+
+### Mode 4: Per-Session Override via API (Phase 2 validation)
+
+```bash
+# Test that per-session runtime works via the bridge API:
+curl -X POST http://localhost:5001/sessions/new \
+  -H 'Content-Type: application/json' \
+  -d '{"title": "Python Test", "runtime_image": "test-sidecar", "execution_mode": "implicit_proxy"}'
+
+# Expected agent log:
+#   🆕 [Agent] Creating session: Python Test (XXXXXXXX)
+#       Runtime: test-sidecar, Mode: implicit_proxy
+#   🐳 [Agent] Sidecar validated: test-sidecar
+```
+
+---
+
+## Verification Plan
+
+### Automated Tests
+- `py_compile` on all modified Python files
+- `npm run build` for UI (TypeScript type checking)
+
+### Manual Verification
+- Phase 3: Open `localhost:3000`, click `+ New`, verify the dialog renders with runtime/directive pickers
+- Phase 4: Run `python run.py --instance django__django-11133 --skip-docker --keep-alive` and verify the session is created with `execution_mode: implicit_proxy` in logs
+- Sidecar modes: Follow the testing guide above for each mode
+- Phase 6 (Traces): Run a trace and inspect the output `conversation.json` to verify agent reasoning is fully preserved and duplicates are purged.
+
+---
+
+## Phase 6: Trace Telemetry Cleanups (Bonus)
+
+During testing of `SWE-bench` execution, it was found that the agent conversations in the `traces/.../conversation.json` were truncated (missing the agent reasoning) and heavily bloated with duplicate tool output.
+
+To fix this:
+1. **Deduplication in `GetHistory`**: The Fluss Reconciler scanner was reading identical events already emitted via the Publisher callback loop. We added an in-memory dedup using `(actor_id, content)` since the chat schemas lack explicit UUIDs.
+2. **Telemetry Filter**: Filtered out raw stdout buffer chunks (used mainly for Snorkel visualizer streaming) from `GetHistory` so they don't pollute the trace.
+3. **Persist Chain-of-Thought**: `tool_executor.py` was previously discarding intermediate LLM reasoning (kept only in an ephemeral `agent._api_turns` state) unless it was perfectly matched with a tool call block. This change ensures intermediate reasoning is always emitted as a `thought` event so the agent's chain-of-thought is persistently archived.

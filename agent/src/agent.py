@@ -29,6 +29,7 @@ class LLMAgent:
         self.spine = spine
         self.anchor_text = ""
         self.roster_str = ""
+        self.session_context = ""  # Injected per-session context block
         self.gateway_url = f"{config.LLM_GATEWAY_URL}/v1/chat/completions"
         self._api_turns = []  # Structured turns for multi-turn tool calling
 
@@ -97,6 +98,10 @@ class LLMAgent:
         from shared.context_builder import ContextBuilder
 
         sys_instr_with_spine = (self.spine + "\n\n" + sys_instr) if hasattr(self, 'spine') and self.spine else sys_instr
+        # Inject session context between spine and instruction
+        session_ctx = getattr(self, 'session_context', "")
+        if session_ctx:
+            sys_instr_with_spine = sys_instr_with_spine + "\n\n" + session_ctx
         anchor_text = getattr(self, 'anchor_text', "")
 
         messages = ContextBuilder.build_payload(

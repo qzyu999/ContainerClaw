@@ -22,6 +22,7 @@ import grpc.aio
 
 import config
 from fluss_client import FlussClient
+from shared.spine_loader import load_spine
 from moderator import StageModerator
 from agent import LLMAgent
 from tools import (
@@ -74,6 +75,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         self.moderators = {}  # session_id -> StageModerator
         self.reconcilers = {}  # session_id -> ReconciliationController
         self._init_locks = {}  # session_id -> asyncio.Lock (prevents double init)
+        self._session_configs = {}  # session_id -> {runtime_image, execution_mode}
 
     async def _get_moderator(self, session_id: str) -> StageModerator:
         """Get or create a moderator for a session. Fully async, no bridging."""
@@ -88,15 +90,28 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             # Double-check after acquiring lock
             if session_id in self.moderators:
                 return self.moderators[session_id]
-            return await self._init_moderator(session_id)
+            # Pull per-session config if set during CreateSession
+            scfg = self._session_configs.get(session_id, {})
+            return await self._init_moderator(
+                session_id,
+                runtime_image=scfg.get("runtime_image", ""),
+                execution_mode=scfg.get("execution_mode", ""),
+            )
 
-    async def _init_moderator(self, session_id: str) -> StageModerator:
-        """Initialize a new session moderator. Runs on the event loop."""
-        print(f"🧠 [Agent] Initializing new session context: {session_id}")
+    async def _init_moderator(self, session_id: str,
+                               runtime_image: str = "",
+                               execution_mode: str = "") -> StageModerator:
+        """Initialize a new session moderator. Runs on the event loop.
+
+        Args:
+            session_id: Unique session identifier.
+            runtime_image: Per-session runtime image override (e.g. "python:3.11").
+            execution_mode: Per-session execution mode override.
+        """
+        print(f"🧠 [Agent] Initializing session: {session_id}")
 
         # Build agents from config.yaml roster
         cfg = config.CONFIG
-        from shared.spine_loader import load_spine
         
         agents = []
         for agent_cfg in cfg.agents:
@@ -120,7 +135,58 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         await board.initialize()
 
         if conchshell_enabled:
-            sandbox_mgr = SandboxManager()
+            # ── Session-Scoped SandboxManager (Layered Defaults) ──
+            # Session overrides → config.yaml → code defaults
+            session_exec_mode = execution_mode or cfg.execution_mode
+            # runtime_image is the Docker *image* (e.g. ghcr.io/...),
+            # default_target_id is the container *name* (e.g. "swe-sidecar").
+            # For implicit_proxy, we always look up by container name.
+            session_runtime = cfg.sidecar_config.default_target_id
+
+            sandbox_mgr = SandboxManager(
+                mode=session_exec_mode,
+                default_target=session_runtime,
+                network=cfg.sidecar_config.network,
+            )
+
+            # ── Execution Mode Validation ──
+            # The agent never provisions containers itself (no DinD).
+            # Sidecars are provisioned by the orchestration layer
+            # (docker-compose / k8s) and referenced by container name/ID.
+            if session_exec_mode == "implicit_proxy":
+                # Check Docker accessibility before attempting validation.
+                # The agent container intentionally has NO Docker socket mount
+                # (cap_drop: ALL, read_only, no-new-privileges).
+                # Docker access is only available in SWE-bench overrides.
+                docker_available = False
+                try:
+                    sandbox_mgr.client  # Triggers lazy connection + ping()
+                    docker_available = True
+                except RuntimeError:
+                    pass
+
+                if not docker_available:
+                    print(f"⚠️ [Agent] Docker not available — implicit_proxy mode requires")
+                    print(f"    a pre-provisioned sidecar (docker-compose/k8s).")
+                    print(f"    Falling back to native mode for this session.")
+                    sandbox_mgr.mode = "native"
+                elif session_runtime:
+                    try:
+                        sandbox_mgr.client.containers.get(session_runtime)
+                        print(f"🐳 [Agent] Sidecar validated: {session_runtime}")
+                    except Exception as e:
+                        print(f"⚠️ [Agent] Sidecar '{session_runtime}' not reachable: {e}")
+                        print(f"    Falling back to native mode for this session.")
+                        sandbox_mgr.mode = "native"
+                else:
+                    print(f"⚠️ [Agent] implicit_proxy mode but no target specified.")
+                    print(f"    Falling back to native mode for this session.")
+                    sandbox_mgr.mode = "native"
+            elif session_exec_mode == "explicit_orchestrator":
+                print(f"🐳 [Agent] Explicit orchestrator mode — ephemeral containers on demand.")
+            else:
+                print(f"🐳 [Agent] Native execution mode for session {session_id[:8]}.")
+
             session_shell = SessionShellTool(sandbox_manager=sandbox_mgr)
             test_runner = TestRunnerTool(session_shell=session_shell)
             diff = DiffTool(session_shell=session_shell)
@@ -158,6 +224,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             tool_dispatcher = ToolDispatcher(toolsets)
             print(f"🐚 [ConchShell] Tool dispatcher initialized for session {session_id}.")
         else:
+            sandbox_mgr = None
             print("🐚 [ConchShell] Disabled — agents will use text-only mode.")
 
         moderator = StageModerator(
@@ -168,6 +235,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             fluss_client=self.fluss
         )
         moderator.board = board
+        moderator.sandbox_mgr = sandbox_mgr  # Expose for session context building
 
         # Wire SubagentManager after moderator (needs publisher from moderator.run)
         if conchshell_enabled:
@@ -439,30 +507,54 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             await context.abort(grpc.StatusCode.INTERNAL, str(e))
 
     async def GetHistory(self, request, context):
-        """Fetch chat history — from memory if moderator active, else from Fluss."""
+        """Fetch chat history — from memory if moderator active, else from Fluss.
+
+        Applies two filters:
+        1. Deduplication by (actor_id, content) — the reconciler's scanner can
+           re-add events that the publisher callback already inserted, because
+           the chatroom schema lacks an event_id column (dedup keys diverge).
+        2. Telemetry exclusion — raw stdout byte-chunks are for Snorkel's
+           real-time streaming, not conversation history.
+        """
         session_id = request.session_id
         if session_id in self.moderators:
             moderator = self.moderators[session_id]
-            events = [
-                agent_pb2.ActivityEvent(
+            seen = set()
+            events = []
+            for msg in moderator.context.all_messages:
+                m_type = msg.get("type", "output")
+                if m_type == "telemetry":
+                    continue
+                dedup_key = (msg.get("actor_id", ""), msg.get("content", ""))
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+                events.append(agent_pb2.ActivityEvent(
                     timestamp=ms_to_iso(msg["ts"]),
-                    type=msg.get("type", "output"),
+                    type=m_type,
                     content=msg.get("content", ""),
                     actor_id=msg.get("actor_id", ""),
-                ) for msg in moderator.context.all_messages
-            ]
+                ))
             return agent_pb2.HistoryResponse(events=events)
 
         try:
             raw_events = await self.fluss.fetch_history(session_id)
-            events = [
-                agent_pb2.ActivityEvent(
+            seen = set()
+            events = []
+            for e in raw_events:
+                e_type = e["type"]
+                if e_type == "telemetry":
+                    continue
+                dedup_key = (e["actor_id"], e["content"])
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+                events.append(agent_pb2.ActivityEvent(
                     timestamp=ms_to_iso(e["ts"]),
-                    type=e["type"],
+                    type=e_type,
                     content=e["content"],
                     actor_id=e["actor_id"],
-                ) for e in raw_events
-            ]
+                ))
             return agent_pb2.HistoryResponse(events=events)
         except Exception as e:
             print(f"❌ [Agent] GetHistory Error: {e}")
@@ -472,7 +564,17 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         """Create a new session via FlussClient. Direct await — no bridging."""
         session_id = str(uuid.uuid4())
         title = request.title or f"Chat {session_id[:8]}"
+        runtime_image = getattr(request, 'runtime_image', '') or ''
+        execution_mode = getattr(request, 'execution_mode', '') or ''
         print(f"🆕 [Agent] Creating session: {title} ({session_id})")
+        if runtime_image or execution_mode:
+            print(f"    Runtime: {runtime_image or '(default)'}, Mode: {execution_mode or '(default)'}")
+
+        # Store per-session config for deferred moderator init
+        self._session_configs[session_id] = {
+            "runtime_image": runtime_image,
+            "execution_mode": execution_mode,
+        }
 
         try:
             result = await self.fluss.create_session(session_id, title)
