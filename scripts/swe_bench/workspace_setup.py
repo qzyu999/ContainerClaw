@@ -52,21 +52,35 @@ def setup_workspace(instance: dict, workspace_dir: str = "./workspace",
         # over the sidecar's internal codebase, leaving the Agent blind.
         setup_local_workspace(instance, workspace_dir, install_deps=False)
         
-        sidecar_id = setup_sidecar(instance)
+        sidecar_id = setup_sidecar(instance, workspace_dir)
         print(f"🚀 Sidecar ready: {sidecar_id}")
         
-        # Link the sidecar's expected evaluation directory to our shared workspace
-        # This resolves pathing issues inside the sidecar during evaluate.py runs
+        # Create /testbed → /workspace symlink inside the sidecar.
+        # Many SWE-bench scripts have /testbed hardcoded. The symlink
+        # redirects their I/O to the shared volume at /workspace.
+        # We must also remove any existing /testbed (from the image layer)
+        # before creating the symlink.
         client = docker.from_env()
+        target = config.CONFIG.sidecar_config.default_target_id
         try:
-            client.api.exec_create(container=config.CONFIG.sidecar_config.default_target_id, cmd=["ln", "-s", "/workspace", "/testbed"])
-        except Exception:
-            pass
+            # Remove the baked-in /testbed directory (image layer)
+            exec_id = client.api.exec_create(
+                container=target,
+                cmd=["sh", "-c", "rm -rf /testbed && ln -s /workspace /testbed"],
+            )
+            client.api.exec_start(exec_id=exec_id['Id'])
+            print(f"🔗 Created /testbed → /workspace symlink in sidecar")
+        except Exception as e:
+            print(f"⚠️  Symlink creation failed (non-fatal): {e}")
 
         return Path(workspace_dir)
 
-def setup_sidecar(instance: dict) -> str:
-    """Provisions a Docker sidecar container for the SWE-bench instance."""
+def setup_sidecar(instance: dict, workspace_dir: str = "./workspace") -> str:
+    """Provisions a Docker sidecar container for the SWE-bench instance.
+
+    Bind-mounts the host workspace into /workspace so that the agent's
+    exec_create(workdir="/workspace") can find the shared volume.
+    """
     client = docker.from_env()
     repo = instance["repo"].replace("/", "__")
     instance_id = instance["instance_id"]
@@ -78,7 +92,11 @@ def setup_sidecar(instance: dict) -> str:
     container_name = config.CONFIG.sidecar_config.default_target_id
     network_name = config.CONFIG.sidecar_config.network
 
+    # Resolve absolute host path for the bind mount
+    host_workspace = str(Path(workspace_dir).resolve())
+
     print(f"🐳 Provisioning sidecar: {container_name} (Image: {image_name})")
+    print(f"   Host workspace: {host_workspace} → /workspace")
 
     # 0. Ensure network exists
     _ensure_network(client, network_name)
@@ -106,14 +124,18 @@ def setup_sidecar(instance: dict) -> str:
             else:
                 print(f"❌ Pull failed after {max_pull_retries} attempts: {e}. Attempting to run from local cache...")
 
-    # 3. Start container
+    # 3. Start container WITH the shared workspace bind mount.
+    # This is the critical fix: without this mount, /workspace doesn't exist
+    # inside the sidecar, causing OCI runtime errors when sandbox.py tries
+    # to exec with workdir=/workspace.
     container = client.containers.run(
         image=image_name,
         name=container_name,
         detach=True,
         network=network_name,
         restart_policy={"Name": "always"},
-        command="sleep infinity"
+        command="sleep infinity",
+        volumes={host_workspace: {"bind": "/workspace", "mode": "rw"}},
     )
 
     return container.id
