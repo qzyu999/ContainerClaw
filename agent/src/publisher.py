@@ -10,8 +10,8 @@ only the Fluss network flush is deferred.
 import asyncio
 import time
 import uuid
-import pyarrow as pa
 
+import pyarrow as pa
 from schemas import CHATROOM_SCHEMA
 
 

@@ -14,8 +14,8 @@ and never blocks.
 
 import asyncio
 import time
-import pyarrow as pa
 
+import pyarrow as pa
 from schemas import AGENT_STATUS_SCHEMA
 
 

@@ -6,7 +6,7 @@ moderator loop doesn't need inline command parsing. New commands
 can be registered without modifying _handle_single_message().
 """
 
-from typing import Callable, Awaitable
+from typing import Awaitable, Callable
 
 
 class CommandDispatcher:

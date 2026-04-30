@@ -1,11 +1,12 @@
 import asyncio
-import docker
-import uuid
 import os
 import subprocess
-from typing import AsyncGenerator, Optional, Callable, Awaitable
+import uuid
+from typing import AsyncGenerator, Awaitable, Callable, Optional
 
 import config
+import docker
+
 
 class SandboxManager:
     """Manages execution environments (Local, Remote Sidecar, Ephemeral Sandboxes).

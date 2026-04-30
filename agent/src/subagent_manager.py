@@ -23,11 +23,12 @@ import uuid
 from dataclasses import dataclass, field
 
 import config
-from agent import LLMAgent
 from agent_context import AgentContext
 from fluss_client import FlussClient
 from tool_executor import ToolExecutor
 from tools import Tool, ToolDispatcher, ToolResult
+
+from agent import LLMAgent
 
 
 @dataclass

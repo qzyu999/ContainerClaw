@@ -5,20 +5,24 @@ Each agent receives a scoped ToolSet based on their role. The ToolDispatcher
 routes tool calls to the correct implementation and enforces rate limits.
 """
 
+import ast
 import asyncio
 import json
+import os
 import subprocess
 import time
-import pyarrow as pa
-import config
-from schemas import BOARD_EVENTS_SCHEMA, BOARD_COMMENT_EVENTS_SCHEMA, DEFAULT_BUCKET_COUNT
-import ast
-import os
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional, Callable, Awaitable
+from typing import Any, Awaitable, Callable, Optional
 
+import config
+import pyarrow as pa
+from schemas import (
+    BOARD_COMMENT_EVENTS_SCHEMA,
+    BOARD_EVENTS_SCHEMA,
+    DEFAULT_BUCKET_COUNT,
+)
 
 # ---------------------------------------------------------------------------
 # Core Abstractions

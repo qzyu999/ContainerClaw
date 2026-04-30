@@ -11,9 +11,17 @@ Translation covers:
 - Response: candidates → choices (text + tool_calls)
 """
 
-import httpx
 import asyncio
-from tenacity import retry, wait_exponential, wait_random, stop_after_attempt, retry_if_result
+
+import httpx
+from tenacity import (
+    retry,
+    retry_if_result,
+    stop_after_attempt,
+    wait_exponential,
+    wait_random,
+)
+
 
 def is_transient_error(exception):
     if isinstance(exception, httpx.HTTPStatusError):

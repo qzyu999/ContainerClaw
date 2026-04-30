@@ -11,37 +11,44 @@ Architecture (post-Surgery 2):
   offloaded to worker threads via asyncio.to_thread.
 """
 
+import asyncio
 import os
 import time
-import asyncio
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
-
-import grpc
-import grpc.aio
-
-import config
-from fluss_client import FlussClient
-from shared.spine_loader import load_spine
-from moderator import StageModerator
-from agent import LLMAgent
-from tools import (
-    ToolDispatcher, ProjectBoard, DelegateTool,
-    DiffTool, TestRunnerTool, BoardTool,
-    SurgicalEditTool, AdvancedReadTool, RepoMapTool,
-    StructuredSearchTool, LinterTool, SessionShellTool,
-    CreateFileTool, ExecuteInSandboxTool,
-)
-from sandbox import SandboxManager
-from subagent_manager import SubagentManager
-from reconciler import ReconciliationController
-from heartbeat import HeartbeatEmitter
 
 # Generated gRPC stubs
 import agent_pb2
 import agent_pb2_grpc
+import config
+import grpc
+import grpc.aio
+from fluss_client import FlussClient
+from heartbeat import HeartbeatEmitter
+from moderator import StageModerator
+from reconciler import ReconciliationController
+from sandbox import SandboxManager
+from subagent_manager import SubagentManager
+from tools import (
+    AdvancedReadTool,
+    BoardTool,
+    CreateFileTool,
+    DelegateTool,
+    DiffTool,
+    ExecuteInSandboxTool,
+    LinterTool,
+    ProjectBoard,
+    RepoMapTool,
+    SessionShellTool,
+    StructuredSearchTool,
+    SurgicalEditTool,
+    TestRunnerTool,
+    ToolDispatcher,
+)
 
-from datetime import datetime, timezone
+from agent import LLMAgent
+from shared.spine_loader import load_spine
 
 LANG_MAP = {
     ".py": "python", ".js": "javascript", ".ts": "typescript",

@@ -15,9 +15,9 @@ This agent speaks ONLY the OpenAI Chat Completions wire protocol.
 import asyncio
 import json
 import re
-import requests
 
 import config
+import requests
 
 
 class LLMAgent:

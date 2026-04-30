@@ -8,8 +8,10 @@ Zero translation — the payload is forwarded as-is with only
 authentication headers and URL routing applied.
 """
 
-import httpx
 import asyncio
+
+import httpx
+
 
 class OpenAIStrategy:
     """Transparent proxy for OpenAI-compatible backends."""

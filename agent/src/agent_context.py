@@ -18,11 +18,12 @@ Properties:
     - Can be independently killed/paused via cancellation
 """
 
-from agent import GeminiAgent
 from context import ContextManager
-from publisher import FlussPublisher
 from fluss_client import FlussClient
+from publisher import FlussPublisher
 from tools import ToolDispatcher
+
+from agent import GeminiAgent
 
 
 class AgentContext:

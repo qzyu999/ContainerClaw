@@ -6,9 +6,9 @@ best-suited responder. Includes a debate tie-breaker mechanism where
 agents must defend or concede their votes based on others' reasoning.
 """
 
-import random
 import asyncio
-from typing import Callable, Awaitable
+import random
+from typing import Awaitable, Callable
 
 
 class ElectionProtocol:

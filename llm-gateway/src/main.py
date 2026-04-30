@@ -8,20 +8,22 @@ unchanged. For Gemini, the GeminiStrategy handles bidirectional translation.
 All provider configuration comes from config.yaml (mounted at /config/).
 """
 
+import json
 import os
 import sys
-import json
+from contextlib import asynccontextmanager
+
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from contextlib import asynccontextmanager
 
 # Add shared module path for config_loader
 sys.path.insert(0, os.getenv("SHARED_MODULE_PATH", "/app/shared"))
 
-from shared.config_loader import load_config  # noqa: E402
-from src.providers.openai_strategy import OpenAIStrategy
 from src.providers.gemini_strategy import GeminiStrategy
+from src.providers.openai_strategy import OpenAIStrategy
+
+from shared.config_loader import load_config  # noqa: E402
 
 # ── Strategy Registry ────────────────────────────────────────────
 
