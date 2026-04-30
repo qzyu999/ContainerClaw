@@ -231,6 +231,11 @@ def wait_for_completion(timeout: int, session_id: str) -> int:
             for line in resp.iter_lines(decode_unicode=True):
                 if time.time() - start > timeout:
                     print(f"⏰ Timeout reached ({timeout}s)")
+                    try:
+                        resp = requests.post(f"{BRIDGE_URL}/session/{session_id}/halt", timeout=5)
+                        resp.raise_for_status()
+                    except Exception as e:
+                        print(f"⚠️ Failed to send halt command: {e}")
                     return turns
 
                 if not line or not line.startswith("data: "):
@@ -263,6 +268,14 @@ def wait_for_completion(timeout: int, session_id: str) -> int:
 
         except requests.exceptions.ReadTimeout:
             elapsed = int(time.time() - start)
+            if time.time() - start > timeout:
+                print(f"⏰ Timeout reached ({timeout}s)")
+                try:
+                    resp = requests.post(f"{BRIDGE_URL}/session/{session_id}/halt", timeout=5)
+                    resp.raise_for_status()
+                except Exception as e:
+                    print(f"⚠️ Failed to send halt command: {e}")
+                return turns
             print(f"   ⏳ Still waiting... ({elapsed}s elapsed, reconnecting)")
             continue
         except requests.exceptions.ConnectionError:

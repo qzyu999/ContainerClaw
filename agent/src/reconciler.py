@@ -82,6 +82,10 @@ class ReconciliationController:
         # it's lost by the time the state returns to IDLE.
         self._pending_human_interrupt = False
 
+        # Permanent halt flag — once set, the main loop exits.
+        # Distinguished from SUSPENDED (which is resumable via human message).
+        self._halted: bool = False
+
     async def run(self, autonomous_steps: int = 0):
         """Main reconciliation loop. Never blocks."""
         self.mod.base_budget = autonomous_steps
@@ -131,7 +135,7 @@ class ReconciliationController:
 
         # ── The Reconciliation Loop ──
         # Invariant: this loop body completes in < 600ms (poll timeout + processing)
-        while True:
+        while not self._halted:
             try:
                 # 1. Poll stream (non-blocking, bounded by timeout_ms)
                 batches = await FlussClient.poll_async(self.mod.scanner, timeout_ms=500)
@@ -172,6 +176,9 @@ class ReconciliationController:
                             )
 
                     case State.SUSPENDED:
+                        # If permanently halted, don't respond to anything
+                        if self._halted:
+                            continue
                         # A human message should always wake the system up
                         # and immediately trigger an election (the message was
                         # already consumed from the stream — waiting for the
@@ -204,6 +211,7 @@ class ReconciliationController:
                 await asyncio.sleep(1)
 
         # Cleanup
+        print(f"🏁 [Reconciler] Loop exited for session {self.mod.session_id}. Halted={self._halted}")
         if self.heartbeat:
             await self.heartbeat.stop()
 
@@ -397,11 +405,23 @@ class ReconciliationController:
         return await self.mod._poll_once()
 
     def halt(self):
-        """Immediately halt execution — cancels running tasks."""
+        """Permanently halt this reconciler — the main loop will exit.
+
+        Unlike SUSPENDED (which can be resumed by a human message),
+        a halted reconciler is dead. Used by the SWE-bench harness
+        to prevent zombie sessions from burning autonomous budget
+        after a timeout.
+        """
+        self._halted = True
         self.state = State.SUSPENDED
         if self._election_task and not self._election_task.done():
             self._election_task.cancel()
             self._election_task = None
         self.mod.base_budget = 0
         self.mod.current_steps = 0
-        print("🛑 [Reconciler] Halted.")
+        
+        # Also halt any running subagents
+        if hasattr(self.mod, 'subagent_manager') and self.mod.subagent_manager:
+            asyncio.create_task(self.mod.subagent_manager.cancel_all())
+            
+        print("🛑 [Reconciler] Permanently halted — loop will exit.")

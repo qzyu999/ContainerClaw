@@ -29,9 +29,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY --from=fluss-builder /wheels/*.whl /tmp/
 RUN pip install /tmp/*.whl && rm /tmp/*.whl
 
-# Copy source and proto generated files
+# Copy source and proto definition (single source of truth: proto/)
 COPY proto/ ./proto/
-COPY bridge/proto/ ./proto/
 COPY bridge/src/ ./src/
 
 # Generate gRPC code

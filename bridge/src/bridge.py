@@ -97,6 +97,17 @@ def create_session():
         print(f"Bridge: CreateSession Error: {e}")
         return {"status": "error", "message": str(e)}, 500
 
+@app.route("/session/<session_id>/halt", methods=["POST"])
+def halt_session(session_id):
+    """Gracefully halt a running session."""
+    try:
+        stub = get_grpc_stub()
+        stub.HaltSession(agent_pb2.ActivityRequest(session_id=session_id))
+        return {"status": "ok"}
+    except Exception as e:
+        print(f"Bridge: HaltSession Error: {e}")
+        return {"status": "error", "message": str(e)}, 500
+
 @app.route("/events/<session_id>")
 def stream_events(session_id):
     def generate():

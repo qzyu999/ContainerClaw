@@ -27,6 +27,7 @@ service AgentService {
   // Phase 13: Session Management
   rpc ListSessions (Empty) returns (SessionListResponse);
   rpc CreateSession (CreateSessionRequest) returns (SessionEntry);
+  rpc HaltSession (ActivityRequest) returns (Empty);
 }
 
 message Empty {}

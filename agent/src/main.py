@@ -596,6 +596,16 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             await context.abort(grpc.StatusCode.INTERNAL, str(e))
 
 
+    async def HaltSession(self, request, context):
+        """Gracefully halt a running session by terminating its reconciler."""
+        session_id = request.session_id
+        if session_id in self.reconcilers:
+            print(f"🛑 [Agent] Halting session {session_id} upon request.")
+            self.reconcilers[session_id].halt()
+        else:
+            print(f"⚠️ [Agent] Halt requested for unknown/inactive session: {session_id}")
+        return agent_pb2.Empty()
+
 async def serve():
     """Async-native gRPC server — single event loop, no threading bridges."""
     # 1. Connect to Fluss
@@ -609,8 +619,26 @@ async def serve():
     server.add_insecure_port('0.0.0.0:50051')
     await server.start()
     print("🚀 Agent gRPC Server Online (async) on port 50051.")
+
+    # Graceful shutdown handler
+    import signal
+    loop = asyncio.get_running_loop()
+    async def shutdown(sig):
+        print(f"🛑 Received {sig.name}, shutting down server gracefully...")
+        agent_service.is_running = False
+        await server.stop(grace=1)
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        [task.cancel() for task in tasks]
+        loop.stop()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, lambda s=sig: asyncio.create_task(shutdown(s)))
+
     await server.wait_for_termination()
 
 
 if __name__ == "__main__":
-    asyncio.run(serve())
+    try:
+        asyncio.run(serve())
+    except asyncio.CancelledError:
+        pass
