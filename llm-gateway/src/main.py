@@ -8,7 +8,6 @@ unchanged. For Gemini, the GeminiStrategy handles bidirectional translation.
 All provider configuration comes from config.yaml (mounted at /config/).
 """
 
-import json
 import os
 import sys
 from contextlib import asynccontextmanager

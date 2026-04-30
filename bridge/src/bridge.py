@@ -1,7 +1,5 @@
 import json
 import os
-import pathlib
-import queue
 import sys
 import threading
 import time
@@ -9,7 +7,6 @@ from datetime import datetime
 
 import grpc
 import pyarrow as pa
-import yaml
 from flask import Flask, Response, request
 from flask_cors import CORS
 
@@ -325,7 +322,6 @@ def workspace_diff(session_id):
 # operations, since Flask threads can't use asyncio.run() safely.
 
 import asyncio
-import concurrent.futures
 
 # Dedicated event loop for Fluss async operations
 _fluss_loop = asyncio.new_event_loop()

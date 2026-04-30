@@ -26,7 +26,7 @@ import config
 from agent_context import AgentContext
 from fluss_client import FlussClient
 from tool_executor import ToolExecutor
-from tools import Tool, ToolDispatcher, ToolResult
+from tools import Tool, ToolDispatcher
 
 from agent import LLMAgent
 

@@ -11,12 +11,11 @@ Includes a circuit breaker that halts execution after 3 consecutive
 tool failures to prevent runaway error loops.
 """
 
-import asyncio
 import json
 from typing import Awaitable, Callable
 
 import config
-from tools import ToolDispatcher, ToolResult
+from tools import ToolDispatcher
 
 
 class ToolExecutor:

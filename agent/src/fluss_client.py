@@ -9,7 +9,6 @@ managing raw connections and admin objects directly.
 
 import asyncio
 import time
-import uuid
 
 import pyarrow as pa
 from schemas import (

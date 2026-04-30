@@ -1,8 +1,6 @@
 import asyncio
-import os
-import subprocess
 import uuid
-from typing import AsyncGenerator, Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 import config
 import docker

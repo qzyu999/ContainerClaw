@@ -1,8 +1,6 @@
 import asyncio
 from typing import List
 
-import config
-import pyarrow as pa
 from commands import create_default_dispatcher
 from context import ContextManager
 from election import ElectionProtocol
