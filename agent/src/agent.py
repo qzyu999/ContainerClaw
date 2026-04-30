@@ -19,6 +19,8 @@ import re
 import config
 import requests
 
+from shared.context_builder import ContextBuilder
+
 
 class LLMAgent:
     def __init__(self, agent_id, persona, provider="", model="", spine=""):
@@ -100,7 +102,6 @@ class LLMAgent:
             tool_choice: OpenAI tool_choice setting ("auto", "required", etc.)
             extra_turns: Additional messages for multi-turn tool calling.
         """
-        from shared.context_builder import ContextBuilder
 
         sys_instr_with_spine = (
             (self.spine + "\n\n" + sys_instr)

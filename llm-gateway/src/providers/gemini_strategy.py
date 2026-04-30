@@ -12,6 +12,7 @@ Translation covers:
 """
 
 import asyncio
+import json
 
 import httpx
 from tenacity import (
@@ -133,7 +134,6 @@ class GeminiStrategy:
                         parts.append({"text": content})
                     for tc in tool_calls:
                         fn = tc.get("function", {})
-                        import json
 
                         try:
                             args = json.loads(fn.get("arguments", "{}"))
@@ -254,7 +254,6 @@ class GeminiStrategy:
                 text_parts.append(part["text"])
             elif "functionCall" in part:
                 fc = part["functionCall"]
-                import json
 
                 tool_calls.append(
                     {

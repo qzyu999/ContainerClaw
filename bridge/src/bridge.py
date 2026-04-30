@@ -1,14 +1,18 @@
+import asyncio
 import json
 import os
 import sys
 import threading
 import time
+import traceback
 from datetime import datetime
 
 import grpc
 import pyarrow as pa
 from flask import Flask, Response, request
 from flask_cors import CORS
+
+import fluss
 
 # Add shared/ to path for context_builder and config_loader
 shared_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -17,6 +21,7 @@ if shared_parent not in sys.path:
 
 from shared.config_loader import load_config
 from shared.context_builder import ContextBuilder
+from shared.spine_loader import load_spine
 
 # Load Unified Configuration
 CONFIG = load_config()
@@ -373,7 +378,6 @@ def workspace_diff(session_id):
 # Uses a dedicated background event loop thread to run async Fluss
 # operations, since Flask threads can't use asyncio.run() safely.
 
-import asyncio
 
 # Dedicated event loop for Fluss async operations
 _fluss_loop = asyncio.new_event_loop()
@@ -411,8 +415,6 @@ async def _ensure_fluss_conn():
     if not bootstrap:
         return None
 
-    import fluss
-
     config = fluss.Config({"bootstrap.servers": bootstrap})
     _fluss_conn = await fluss.FlussConnection.create(config)
     print(f"✅ Bridge: Connected to Fluss at {bootstrap}")
@@ -421,7 +423,6 @@ async def _ensure_fluss_conn():
 
 async def _get_table(table_name):
     """Get a Fluss table handle, cached."""
-    import fluss
 
     if table_name in _fluss_tables:
         return _fluss_tables[table_name]
@@ -454,8 +455,6 @@ async def _lookup_dag_edges(session_id):
 
     edges = []
     try:
-        import fluss
-
         conn = await _ensure_fluss_conn()
         admin = await conn.get_admin()
         table_path = fluss.TablePath("containerclaw", "chatroom")
@@ -554,7 +553,6 @@ async def _lookup_dag_edges(session_id):
                 break
     except Exception as e:
         print(f"Bridge: DAG edges scan error: {e}")
-        import traceback
 
         traceback.print_exc()
 
@@ -583,7 +581,6 @@ def telemetry_dag_stream(session_id):
         return Response("data: []\n\n", mimetype="text/event-stream")
 
     def generate():
-        import fluss
 
         try:
             table = _run_async(_get_table("chatroom"))
@@ -697,8 +694,6 @@ async def _lookup_metrics(session_id):
 
     metrics = []
     try:
-        import fluss
-
         conn = await _ensure_fluss_conn()
         admin = await conn.get_admin()
         table_path = fluss.TablePath("containerclaw", "live_metrics")
@@ -780,8 +775,6 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
 
     events = []
     try:
-        import fluss
-
         conn = await _ensure_fluss_conn()
         admin = await conn.get_admin()
         table_path = fluss.TablePath("containerclaw", "chatroom")
@@ -796,7 +789,6 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
         # Fast poll loop: stop as soon as we've caught up or exceeded target_ts
         processed_any = False
         reached_target = False
-        target_ts_ms = target_ts_ms  # ensure availability
 
         # Determine anchor text at that specific historical moment
         anchor_text = await _fetch_anchor_at_timestamp(session_id, target_ts_ms)
@@ -868,7 +860,6 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
             break
 
     # ── SELF.md (Spine) Reconstruction (Sectional) ──
-    from shared.spine_loader import load_spine
 
     spine_content = load_spine(actor_id)
 
@@ -966,8 +957,6 @@ async def _lookup_raw_history(session_id, target_ts_str):
 
     events = []
     try:
-        import fluss
-
         conn = await _ensure_fluss_conn()
         admin = await conn.get_admin()
         table_path = fluss.TablePath("containerclaw", "chatroom")
@@ -1108,8 +1097,6 @@ async def _fetch_anchor_at_timestamp(session_id, target_ts_ms):
     table = await _get_table(ANCHOR_MESSAGE_TABLE)
     if table is None:
         return ""
-
-    import fluss
 
     conn = await _ensure_fluss_conn()
     admin = await conn.get_admin()

@@ -9,6 +9,7 @@ only the Fluss network flush is deferred.
 
 import asyncio
 import time
+import traceback
 import uuid
 
 import pyarrow as pa
@@ -150,7 +151,6 @@ class FlussPublisher:
             print(f"📤 [Publisher] Flushed {n} records to Fluss.")
         except Exception as e:
             print(f"❌ [Publisher] Flush failed ({n} records): {e}")
-            import traceback
 
             traceback.print_exc()
 

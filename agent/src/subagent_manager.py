@@ -19,6 +19,7 @@ Usage:
 
 import asyncio
 import time
+import traceback
 import uuid
 from dataclasses import dataclass, field
 
@@ -261,7 +262,6 @@ class SubagentManager:
                 edge_type="SEQUENTIAL",
             )
             print(f"💥 [SubagentManager] {task_id} error: {e}")
-            import traceback
 
             traceback.print_exc()
         finally:

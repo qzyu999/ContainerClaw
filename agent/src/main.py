@@ -13,6 +13,8 @@ Architecture (post-Surgery 2):
 
 import asyncio
 import os
+import signal
+import subprocess
 import time
 import uuid
 from datetime import datetime, timezone
@@ -499,7 +501,6 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
     @staticmethod
     def _diff_file_sync(rel_path: str, path: Path) -> tuple[str, str, str]:
         """Synchronous diff computation in worker thread."""
-        import subprocess
 
         modified = ""
         if path.exists() and path.is_file():
@@ -761,7 +762,6 @@ async def serve():
     print("🚀 Agent gRPC Server Online (async) on port 50051.")
 
     # Graceful shutdown handler
-    import signal
 
     loop = asyncio.get_running_loop()
 

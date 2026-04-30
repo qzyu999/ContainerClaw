@@ -1,4 +1,5 @@
 import asyncio
+import traceback
 from typing import List
 
 from commands import create_default_dispatcher
@@ -87,7 +88,6 @@ class StageModerator:
             )
         except Exception as e:
             print(f"❌ [Moderator] Failed to publish: {e}")
-            import traceback
 
             traceback.print_exc()
             return ""
@@ -120,7 +120,6 @@ class StageModerator:
                         break
             except Exception as e:
                 print(f"⚠️ [Moderator] Failed to lookup session start time: {e}")
-                import traceback
 
                 traceback.print_exc()
 

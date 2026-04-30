@@ -36,8 +36,11 @@ Usage:
 
 import asyncio
 import enum
+import traceback
 
 from fluss_client import FlussClient
+from publisher import FlussPublisher
+from tool_executor import ToolExecutor
 
 
 class State(enum.Enum):
@@ -92,8 +95,6 @@ class ReconciliationController:
         self.mod.current_steps = 0
 
         # Initialize publisher and executor (same as moderator.run)
-        from publisher import FlussPublisher
-        from tool_executor import ToolExecutor
 
         self.mod.publisher = FlussPublisher(
             self.mod.table,
@@ -216,7 +217,6 @@ class ReconciliationController:
                 break
             except Exception as e:
                 print(f"❌ [Reconciler] Error in main loop: {e}")
-                import traceback
 
                 traceback.print_exc()
                 await asyncio.sleep(1)
@@ -339,8 +339,6 @@ class ReconciliationController:
                         parent_event_id=winner_id,
                     )
                 else:
-                    from tool_executor import ToolExecutor
-
                     resp = await ToolExecutor.execute_text_only(
                         winning_agent, self.mod.context.get_window
                     )
@@ -397,7 +395,6 @@ class ReconciliationController:
             raise
         except Exception as e:
             print(f"❌ [Reconciler] Election/execution error: {e}")
-            import traceback
 
             traceback.print_exc()
         finally:
