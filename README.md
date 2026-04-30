@@ -96,3 +96,6 @@ ContainerClaw follows a **Microservices Security Pattern**:
 - [ ] **Phase 2**: Implement full gRPC protocol for Agent ↔ UI interaction.
 - [ ] **Phase 2b**: Session Persistence — the agent resumes its thought process after a restart.
 - [ ] **Phase 3**: Real-time log processing and anomaly detection via Apache Fluss.
+
+## 📘 Design/Research Notes
+- [UX + Multi-Agent Professionalization Review (April 30, 2026)](docs/ux_multiagent_professionalization_review_apr_2026.md)
