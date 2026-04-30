@@ -1022,6 +1022,106 @@ h3 {
   margin-top: 4px;
 }
 
+.board-card.expanded {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.board-card-comment-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 0.65rem;
+  color: #71717a;
+}
+
+.board-card-comment-count {
+  flex-shrink: 0;
+}
+
+.board-card-comment-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: italic;
+  color: #52525b;
+}
+
+.board-card-reason {
+  font-size: 0.65rem;
+  color: #52525b;
+  margin-top: 4px;
+  font-style: italic;
+}
+
+.board-card-expand-hint {
+  font-size: 0.6rem;
+  color: #3b3b44;
+  text-align: center;
+  margin-top: 6px;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.board-card-expand-hint:hover {
+  color: #71717a;
+}
+
+/* ── Comment Thread ── */
+
+.board-comment-thread {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  padding-top: 8px;
+}
+
+.board-comment {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+  border-left: 2px solid #333;
+}
+
+.board-comment-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.6rem;
+  margin-bottom: 3px;
+}
+
+.board-comment-icon {
+  font-size: 0.7rem;
+}
+
+.board-comment-category {
+  color: #71717a;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.board-comment-author {
+  font-weight: 600;
+}
+
+.board-comment-time {
+  color: #3b3b44;
+  margin-left: auto;
+}
+
+.board-comment-content {
+  font-size: 0.7rem;
+  color: #a1a1aa;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ================================================
    SCROLLBAR
    ================================================ */

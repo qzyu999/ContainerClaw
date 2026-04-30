@@ -15,8 +15,10 @@ import pyarrow as pa
 
 from schemas import (
     CHATROOM_SCHEMA, SESSIONS_SCHEMA, BOARD_EVENTS_SCHEMA,
+    BOARD_COMMENT_EVENTS_SCHEMA,
     AGENT_STATUS_SCHEMA, ANCHOR_MESSAGE_SCHEMA,
     DATABASE, CHATROOM_TABLE, SESSIONS_TABLE, BOARD_EVENTS_TABLE,
+    BOARD_COMMENT_EVENTS_TABLE,
     AGENT_STATUS_TABLE, ANCHOR_MESSAGE_TABLE,
     DEFAULT_BUCKET_COUNT, BUCKET_KEY,
 )
@@ -39,6 +41,7 @@ class FlussClient:
         self.chat_table = None
         self.sessions_table = None
         self.board_table = None
+        self.board_comment_table = None
         self.status_table = None
         self.anchor_table = None
 
@@ -69,6 +72,9 @@ class FlussClient:
                 )
                 self.board_table = await self._ensure_table(
                     BOARD_EVENTS_TABLE, BOARD_EVENTS_SCHEMA
+                )
+                self.board_comment_table = await self._ensure_table(
+                    BOARD_COMMENT_EVENTS_TABLE, BOARD_COMMENT_EVENTS_SCHEMA
                 )
                 self.status_table = await self._ensure_table(
                     AGENT_STATUS_TABLE, AGENT_STATUS_SCHEMA

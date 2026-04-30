@@ -35,6 +35,16 @@ export interface TaskResponse {
   message: string;
 }
 
+export interface BoardComment {
+  comment_id: string;
+  item_id: string;
+  author: string;
+  category: string;
+  content: string;
+  ts: number;
+  archived: boolean;
+}
+
 export interface BoardItem {
   id: string;
   type: string;
@@ -43,6 +53,8 @@ export interface BoardItem {
   status: string;
   assigned_to: string | null;
   created_at: number;
+  comments: BoardComment[];
+  last_reason: string | null;
 }
 
 export interface Session {
@@ -129,6 +141,24 @@ export const fetchBoardData = async (sessionId: string): Promise<BoardItem[]> =>
     return [];
   } catch {
     return [];
+  }
+};
+
+export interface BoardItemDetail {
+  item: BoardItem;
+  comments: BoardComment[];
+}
+
+export const fetchBoardItemDetail = async (sessionId: string, itemId: string): Promise<BoardItemDetail | null> => {
+  try {
+    const resp = await fetch(`${BRIDGE_URL}/board/${sessionId}/item/${itemId}`);
+    const data = await resp.json();
+    if (data.status === 'ok') {
+      return { item: data.item, comments: data.comments };
+    }
+    return null;
+  } catch {
+    return null;
   }
 };
 

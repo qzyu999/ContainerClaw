@@ -185,8 +185,21 @@ def get_board(session_id):
     try:
         stub = get_grpc_stub()
         response = stub.GetBoard(agent_pb2.ActivityRequest(session_id=session_id))
-        items = [
-            {
+        items = []
+        for item in response.items:
+            comments = [
+                {
+                    "comment_id": c.comment_id,
+                    "item_id": c.item_id,
+                    "author": c.author,
+                    "category": c.category,
+                    "content": c.content,
+                    "ts": c.ts,
+                    "archived": c.archived,
+                }
+                for c in item.comments
+            ]
+            items.append({
                 "id": item.id,
                 "type": item.type,
                 "title": item.title,
@@ -194,12 +207,52 @@ def get_board(session_id):
                 "status": item.status,
                 "assigned_to": item.assigned_to or None,
                 "created_at": item.created_at,
-            }
-            for item in response.items
-        ]
+                "comments": comments,
+                "last_reason": item.last_reason or None,
+            })
         return {"status": "ok", "items": items}
     except Exception as e:
         print(f"Bridge: GetBoard Error: {e}", flush=True)
+        return {"status": "error", "message": str(e)}, 500
+
+@app.route("/board/<session_id>/item/<item_id>")
+def get_board_item_detail(session_id, item_id):
+    """Fetch a single board item with its full comment thread."""
+    try:
+        stub = get_grpc_stub()
+        response = stub.GetBoardItem(agent_pb2.BoardItemRequest(
+            session_id=session_id,
+            item_id=item_id,
+        ))
+        item = response.item
+        comments = [
+            {
+                "comment_id": c.comment_id,
+                "item_id": c.item_id,
+                "author": c.author,
+                "category": c.category,
+                "content": c.content,
+                "ts": c.ts,
+                "archived": c.archived,
+            }
+            for c in response.comments
+        ]
+        return {
+            "status": "ok",
+            "item": {
+                "id": item.id,
+                "type": item.type,
+                "title": item.title,
+                "description": item.description,
+                "status": item.status,
+                "assigned_to": item.assigned_to or None,
+                "created_at": item.created_at,
+                "last_reason": item.last_reason or None,
+            },
+            "comments": comments,
+        }
+    except Exception as e:
+        print(f"Bridge: GetBoardItem Error: {e}", flush=True)
         return {"status": "error", "message": str(e)}, 500
 
 @app.route("/workspace/<session_id>")

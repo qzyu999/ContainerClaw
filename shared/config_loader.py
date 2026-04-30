@@ -113,6 +113,18 @@ class SidecarConfig(BaseModel):
     docker_config_path: str = "secrets/docker_config.json"
 
 
+class BoardCommentSettings(BaseModel):
+    """Anti-sprawl guardrails for board work-item comment threads."""
+    max_comments_per_item: int = 10
+    comment_max_chars: int = 500
+    max_items_per_cycle: int = 3
+    item_creation_window_s: int = 120
+    stale_threshold_cycles: int = 10
+    stale_cycle_duration_s: int = 120
+    summarize_count: int = 5
+    summary_line_truncate: int = 80
+
+
 class ToolSettings(BaseModel):
     """Global configuration for agent tools."""
     workspace_root: str = "/workspace"
@@ -138,6 +150,7 @@ class ClawConfig(BaseModel):
     autonomous_steps: int = -1
     conchshell_enabled: bool = True
     subagent_ttl_seconds: int = 120
+    board_comments: BoardCommentSettings = BoardCommentSettings()
     tool_settings: ToolSettings = ToolSettings()
     # Sidecar settings
     execution_mode: str = "native"
@@ -322,6 +335,7 @@ def load_config(config_path: str | None = None) -> ClawConfig:
         autonomous_steps=agent_settings.get("autonomous_steps", -1),
         conchshell_enabled=agent_settings.get("conchshell_enabled", True),
         subagent_ttl_seconds=agent_settings.get("subagent_ttl_seconds", 120),
+        board_comments=BoardCommentSettings(**agent_settings.get("board_comments", {})),
         tool_settings=ToolSettings(**agent_settings.get("tools", {})),
         execution_mode=agent_settings.get("execution_mode", "native"),
         sidecar_config=SidecarConfig(**agent_settings.get("sidecar_config", {})),

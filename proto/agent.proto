@@ -24,6 +24,9 @@ service AgentService {
   // Get project board items (W-2: Fluss-backed)
   rpc GetBoard (ActivityRequest) returns (BoardResponse);
 
+  // Get a single board item with its full comment thread
+  rpc GetBoardItem (BoardItemRequest) returns (BoardItemDetail);
+
   // Phase 13: Session Management
   rpc ListSessions (Empty) returns (SessionListResponse);
   rpc CreateSession (CreateSessionRequest) returns (SessionEntry);
@@ -115,6 +118,16 @@ message DiffResponse {
   string diff_text = 3;
 }
 
+message BoardComment {
+  string comment_id = 1;
+  string item_id = 2;
+  string author = 3;
+  string category = 4;    // "analysis" | "finding" | "conclusion" | "blocker" | "status_change" | "summary"
+  string content = 5;
+  int64 ts = 6;
+  bool archived = 7;
+}
+
 message BoardItem {
   string id = 1;
   string type = 2;
@@ -123,8 +136,20 @@ message BoardItem {
   string status = 5;
   string assigned_to = 6;
   double created_at = 7;
+  repeated BoardComment comments = 8;   // Active (non-archived) comments
+  string last_reason = 9;               // Reason for most recent status change
 }
 
 message BoardResponse {
   repeated BoardItem items = 1;
+}
+
+message BoardItemRequest {
+  string session_id = 1;
+  string item_id = 2;
+}
+
+message BoardItemDetail {
+  BoardItem item = 1;
+  repeated BoardComment comments = 2;   // Full comment thread (including archived)
 }

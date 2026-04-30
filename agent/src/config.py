@@ -36,5 +36,8 @@ WORKSPACE_ROOT = TOOLS.workspace_root
 TOOL_TIMEOUTS = TOOLS.timeouts
 SEARCH_LIMITS = TOOLS.search_limits
 
+# ── Board Comment Settings ──────────────────────────────────────
+BOARD_COMMENTS = _cfg.board_comments
+
 # Expose the full config object for new code
 CONFIG = _cfg

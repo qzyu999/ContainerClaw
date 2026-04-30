@@ -11,7 +11,7 @@ import subprocess
 import time
 import pyarrow as pa
 import config
-from schemas import BOARD_EVENTS_SCHEMA, DEFAULT_BUCKET_COUNT
+from schemas import BOARD_EVENTS_SCHEMA, BOARD_COMMENT_EVENTS_SCHEMA, DEFAULT_BUCKET_COUNT
 import ast
 import os
 import uuid
@@ -181,22 +181,29 @@ class TestRunnerTool(Tool):
 # ---------------------------------------------------------------------------
 
 class ProjectBoard:
-    """Project board backed by Fluss board_events table.
+    """Project board backed by Fluss board_events + board_comment_events tables.
     
     W-2: Replaces the old JSON file persistence. Mutations are stored
     as append-only events in Fluss. State is rebuilt by replaying the
     event log on startup (crash recovery).
     
+    Supports structured comment threads on board items with anti-sprawl
+    guardrails (comment budgets, auto-summarization, task creation throttle).
+    All limits sourced from config.BOARD_COMMENTS.
+    
     Falls back to JSON file if board_table is not available.
     """
 
-    def __init__(self, session_id: str, board_table=None):
+    def __init__(self, session_id: str, board_table=None, board_comment_table=None):
         self.session_id = session_id
         self.board_table = board_table
+        self.board_comment_table = board_comment_table
         self.board_dir = Path(config.WORKSPACE_ROOT) / ".claw_state"
         self.board_path = self.board_dir / f"{session_id}_board.json"  # Fallback only
         self.items: list[dict] = []
+        self.comments: dict[str, list[dict]] = {}  # item_id → list of comment dicts
         self._writer = None
+        self._comment_writer = None
         self._pa_schema = None
 
         if self.board_table:
@@ -205,12 +212,16 @@ class ProjectBoard:
         else:
             self._load()
 
+        if self.board_comment_table:
+            self._comment_writer = self.board_comment_table.new_append().create_writer()
+
     async def initialize(self):
-        """Async initialization: Replay board_events log to rebuild self.items."""
+        """Async initialization: Replay board_events + comment_events logs."""
         if not self.board_table:
             return
             
         try:
+            # Replay board events
             scanner = await self.board_table.new_scan().create_record_batch_log_scanner()
             scanner.subscribe_buckets(
                 {b: 0 for b in range(DEFAULT_BUCKET_COUNT)}
@@ -238,13 +249,17 @@ class ProjectBoard:
                                 "status": poll.column("status")[i].as_py(),
                                 "assigned_to": poll.column("assigned_to")[i].as_py() or None,
                                 "created_at": poll.column("ts")[i].as_py() / 1000,
+                                "last_reason": "",
                             })
                         elif action == "update_status":
                             item_id = poll.column("item_id")[i].as_py()
                             new_status = poll.column("status")[i].as_py()
+                            reason = poll.column("reason")[i].as_py() if "reason" in poll.schema.names else ""
                             for item in self.items:
                                 if item["id"] == item_id:
                                     item["status"] = new_status
+                                    if reason:
+                                        item["last_reason"] = reason
                                     break
                         elif action == "delete":
                             item_id = poll.column("item_id")[i].as_py()
@@ -254,8 +269,52 @@ class ProjectBoard:
             print(f"⚠️ [ProjectBoard] Fluss replay failed, falling back to JSON: {e}")
             self._load()
 
+        # Replay comment events
+        if not self.board_comment_table:
+            return
+        try:
+            scanner = await self.board_comment_table.new_scan().create_record_batch_log_scanner()
+            scanner.subscribe_buckets(
+                {b: 0 for b in range(DEFAULT_BUCKET_COUNT)}
+            )
+            while True:
+                batches = await scanner._async_poll_batches(500)
+                if not batches:
+                    break
+                batches = [b.batch for b in batches]
+                for poll in batches:
+                    for i in range(poll.num_rows):
+                        if poll.column("session_id")[i].as_py() != self.session_id:
+                            continue
+                        action = poll.column("action")[i].as_py()
+                        item_id = poll.column("item_id")[i].as_py()
+                        comment_id = poll.column("comment_id")[i].as_py()
+
+                        if action == "add" or action == "summarize":
+                            comment = {
+                                "comment_id": comment_id,
+                                "item_id": item_id,
+                                "author": poll.column("author")[i].as_py(),
+                                "category": poll.column("category")[i].as_py(),
+                                "content": poll.column("content")[i].as_py(),
+                                "ts": poll.column("ts")[i].as_py(),
+                                "archived": poll.column("archived")[i].as_py(),
+                            }
+                            self.comments.setdefault(item_id, []).append(comment)
+                        elif action == "archive":
+                            # Mark existing comment as archived
+                            for c in self.comments.get(item_id, []):
+                                if c["comment_id"] == comment_id:
+                                    c["archived"] = True
+                                    break
+            total = sum(len(v) for v in self.comments.values())
+            print(f"💬 [ProjectBoard] Replayed {total} comments from Fluss.")
+        except Exception as e:
+            print(f"⚠️ [ProjectBoard] Comment replay failed: {e}")
+
     async def _publish_event(self, action, item_id, item_type="", title="",
-                             description="", status="", assigned_to="", actor="Moderator"):
+                             description="", status="", assigned_to="",
+                             actor="Moderator", reason=""):
         """Write a board mutation event to Fluss (non-blocking)."""
         if not self._writer:
             return
@@ -271,6 +330,7 @@ class ProjectBoard:
                 pa.array([status], type=pa.string()),
                 pa.array([assigned_to or ""], type=pa.string()),
                 pa.array([actor], type=pa.string()),
+                pa.array([reason or ""], type=pa.string()),
             ], schema=self._pa_schema)
             self._writer.write_arrow_batch(batch)
             if hasattr(self._writer, "flush"):
@@ -278,6 +338,28 @@ class ProjectBoard:
             print(f"📋 [ProjectBoard] Published {action} event for {item_id}")
         except Exception as e:
             print(f"⚠️ [ProjectBoard] Failed to write to Fluss: {e}")
+
+    async def _publish_comment_event(self, action: str, comment: dict):
+        """Write a comment mutation event to Fluss."""
+        if not self._comment_writer:
+            return
+        try:
+            batch = pa.RecordBatch.from_arrays([
+                pa.array([self.session_id], type=pa.string()),
+                pa.array([comment["ts"]], type=pa.int64()),
+                pa.array([comment["item_id"]], type=pa.string()),
+                pa.array([comment["comment_id"]], type=pa.string()),
+                pa.array([action], type=pa.string()),
+                pa.array([comment["author"]], type=pa.string()),
+                pa.array([comment["category"]], type=pa.string()),
+                pa.array([comment["content"]], type=pa.string()),
+                pa.array([comment["archived"]], type=pa.bool_()),
+            ], schema=BOARD_COMMENT_EVENTS_SCHEMA)
+            self._comment_writer.write_arrow_batch(batch)
+            if hasattr(self._comment_writer, "flush"):
+                await self._comment_writer.flush()
+        except Exception as e:
+            print(f"⚠️ [ProjectBoard] Failed to write comment to Fluss: {e}")
 
     def _load(self):
         """Fallback: load from JSON file."""
@@ -298,7 +380,18 @@ class ProjectBoard:
         self, item_type: str, title: str,
         description: str = "", assigned_to: str | None = None,
         actor: str = "Moderator",
-    ) -> dict:
+    ) -> dict | None:
+        # Anti-sprawl: task creation throttle
+        bc = config.BOARD_COMMENTS
+        window = bc.item_creation_window_s
+        now = time.time()
+        recent_creates = sum(
+            1 for item in self.items
+            if item["created_at"] > (now - window)
+        )
+        if recent_creates >= bc.max_items_per_cycle:
+            return None  # Throttled
+
         item = {
             "id": f"{item_type[:1].upper()}-{len(self.items) + 1:03d}",
             "type": item_type,
@@ -306,7 +399,8 @@ class ProjectBoard:
             "description": description,
             "status": "todo",
             "assigned_to": assigned_to,
-            "created_at": time.time(),
+            "created_at": now,
+            "last_reason": "",
         }
         self.items.append(item)
         if self.board_table:
@@ -318,14 +412,28 @@ class ProjectBoard:
             self._save()
         return item
 
-    async def update_status(self, item_id: str, status: str, actor: str = "Moderator") -> dict | None:
+    async def update_status(self, item_id: str, status: str,
+                            actor: str = "Moderator",
+                            reason: str = "") -> dict | None:
         for item in self.items:
             if item["id"] == item_id:
                 item["status"] = status
+                item["last_reason"] = reason
                 if self.board_table:
-                    await self._publish_event("update_status", item_id, status=status, actor=actor)
+                    await self._publish_event(
+                        "update_status", item_id, status=status,
+                        actor=actor, reason=reason,
+                    )
                 else:
                     self._save()
+                # Auto-post a status_change comment
+                if reason:
+                    await self.add_comment(
+                        item_id=item_id,
+                        author=actor,
+                        category="status_change",
+                        content=f"→ {status}: {reason}",
+                    )
                 return item
         return None
 
@@ -340,6 +448,140 @@ class ProjectBoard:
             return True
         return False
 
+    # ── Comment Thread Methods ──────────────────────────────────────
+
+    async def add_comment(self, item_id: str, author: str,
+                          category: str, content: str) -> dict | None:
+        """Add a structured comment to a board item.
+
+        Returns the comment dict on success, None if item not found or throttled.
+        Enforces comment budget via auto-summarization.
+        """
+        # Verify item exists
+        if not any(item["id"] == item_id for item in self.items):
+            return None
+
+        bc = config.BOARD_COMMENTS
+        max_chars = bc.comment_max_chars
+
+        # Count active (non-archived) comments
+        active_comments = [
+            c for c in self.comments.get(item_id, [])
+            if not c.get("archived", False)
+        ]
+
+        if len(active_comments) >= bc.max_comments_per_item:
+            await self._summarize_oldest(item_id, count=bc.summarize_count)
+
+        comment = {
+            "comment_id": str(uuid.uuid4()),
+            "item_id": item_id,
+            "author": author,
+            "category": category,
+            "content": content[:max_chars],
+            "ts": int(time.time() * 1000),
+            "archived": False,
+        }
+        self.comments.setdefault(item_id, []).append(comment)
+        await self._publish_comment_event("add", comment)
+        return comment
+
+    async def _summarize_oldest(self, item_id: str, count: int | None = None):
+        """Compress the oldest N active comments into a single summary comment."""
+        bc = config.BOARD_COMMENTS
+        count = count or bc.summarize_count
+        trunc = bc.summary_line_truncate
+        max_chars = bc.comment_max_chars
+
+        active = [c for c in self.comments.get(item_id, []) if not c.get("archived", False)]
+        to_summarize = active[:count]
+
+        if not to_summarize:
+            return
+
+        summary_lines = []
+        for c in to_summarize:
+            summary_lines.append(f"[{c['category']}] {c['author']}: {c['content'][:trunc]}")
+
+        summary_content = "📦 Archived summary:\n" + "\n".join(summary_lines)
+
+        # Archive the originals
+        for c in to_summarize:
+            c["archived"] = True
+            await self._publish_comment_event("archive", c)
+
+        # Create the summary comment
+        summary = {
+            "comment_id": str(uuid.uuid4()),
+            "item_id": item_id,
+            "author": "System",
+            "category": "summary",
+            "content": summary_content[:max_chars],
+            "ts": int(time.time() * 1000),
+            "archived": False,
+        }
+        self.comments[item_id].append(summary)
+        await self._publish_comment_event("summarize", summary)
+        print(f"📦 [ProjectBoard] Summarized {len(to_summarize)} comments for {item_id}")
+
+    def get_active_comments(self, item_id: str) -> list[dict]:
+        """Return non-archived comments for an item, chronologically."""
+        return [
+            c for c in self.comments.get(item_id, [])
+            if not c.get("archived", False)
+        ]
+
+    def get_item_detail(self, item_id: str) -> str | None:
+        """Return formatted detail view of a board item with its comment thread."""
+        item = next((i for i in self.items if i["id"] == item_id), None)
+        if not item:
+            return None
+
+        icon = {"todo": "⬜", "in_progress": "🟡", "done": "✅"}.get(item["status"], "❓")
+        assignee = f" → {item['assigned_to']}" if item.get("assigned_to") else ""
+        lines = [
+            f"{icon} [{item['id']}] {item['title']}{assignee}",
+            f"   Type: {item['type']} | Status: {item['status']}",
+        ]
+        if item.get("description"):
+            lines.append(f"   Description: {item['description']}")
+        if item.get("last_reason"):
+            lines.append(f"   Last reason: {item['last_reason']}")
+
+        active = self.get_active_comments(item_id)
+        if active:
+            lines.append(f"\n   💬 {len(active)} comments:")
+            cat_icons = {
+                "analysis": "🔍", "finding": "💡", "conclusion": "✅",
+                "blocker": "🚧", "status_change": "🔄", "summary": "📦",
+            }
+            for c in active:
+                ci = cat_icons.get(c["category"], "💬")
+                ago = self._relative_time(c["ts"])
+                lines.append(f"   {ci} [{c['category']}] {c['author']} · {ago}")
+                lines.append(f"      \"{c['content']}\"")
+        else:
+            lines.append("\n   No comments yet.")
+
+        return "\n".join(lines)
+
+    def prune_stale(self):
+        """Mark items as stale if they haven't been updated in N cycles."""
+        bc = config.BOARD_COMMENTS
+        threshold = bc.stale_threshold_cycles
+        cycle_dur = bc.stale_cycle_duration_s
+        now = time.time()
+        for item in self.items:
+            if item["status"] == "in_progress":
+                comments = self.comments.get(item["id"], [])
+                last_activity = max(
+                    [c["ts"] / 1000 for c in comments if not c.get("archived", False)],
+                    default=item["created_at"]
+                )
+                item["_stale"] = (now - last_activity) > (threshold * cycle_dur)
+            else:
+                item["_stale"] = False
+
     def get_board_summary(self) -> str:
         if not self.items:
             return "Board is empty. No items have been created yet."
@@ -349,16 +591,54 @@ class ProjectBoard:
                 item["status"], "❓"
             )
             assignee = f" → {item['assigned_to']}" if item.get("assigned_to") else ""
-            lines.append(f"{icon} [{item['id']}] {item['title']}{assignee}")
+            stale = " ⚠️STALE" if item.get("_stale") else ""
+            line = f"{icon} [{item['id']}] {item['title']}{assignee}{stale}"
+
+            # Comment summary
+            active = self.get_active_comments(item["id"])
+            if active:
+                last = active[-1]
+                cat_icons = {
+                    "analysis": "🔍", "finding": "💡", "conclusion": "✅",
+                    "blocker": "🚧", "status_change": "🔄", "summary": "📦",
+                }
+                ci = cat_icons.get(last["category"], "💬")
+                ago = self._relative_time(last["ts"])
+                preview = last["content"][:60]
+                line += f"\n   💬 {len(active)} · Last: {ci} \"{preview}\" ({ago})"
+
+            lines.append(line)
         return "\n".join(lines)
+
+    @staticmethod
+    def _relative_time(ts_ms: int) -> str:
+        """Convert ms timestamp to human-readable relative time."""
+        diff = time.time() - (ts_ms / 1000)
+        if diff < 60:
+            return "just now"
+        elif diff < 3600:
+            return f"{int(diff / 60)} min ago"
+        elif diff < 86400:
+            return f"{int(diff / 3600)} hr ago"
+        return f"{int(diff / 86400)} day ago"
 
 
 class BoardTool(Tool):
     name = "board"
     description = (
-        "Interact with the shared project board. "
+        "Interact with the shared project board. Use this to track work items "
+        "and document your reasoning as structured comments.\n\n"
+        "GUIDELINES:\n"
+        "- Use 'comment' to document significant findings, not routine updates.\n"
+        "- Each comment must add NEW information. Do not repeat what's already there.\n"
+        "- Use categories: 'analysis' (investigating), 'finding' (discovered fact), "
+        "'conclusion' (final determination), 'blocker' (need help).\n"
+        "- When updating status, always provide a 'reason'.\n"
+        "- Before creating a new item, check if one already covers your intent.\n"
+        "- The board has a comment budget per item. Be concise.\n\n"
         "Actions: 'create' (type, title, description, assigned_to), "
-        "'update' (item_id, status), 'delete' (item_id), 'list' (no params)."
+        "'update' (item_id, status, reason), 'delete' (item_id), 'list', "
+        "'comment' (item_id, category, content), 'view' (item_id — shows full thread)."
     )
 
     def __init__(self, board: ProjectBoard, write_access: bool = True):
@@ -371,8 +651,8 @@ class BoardTool(Tool):
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "Board action: 'create', 'update', 'delete', or 'list'.",
-                    "enum": ["create", "update", "delete", "list"],
+                    "description": "Board action: 'create', 'update', 'delete', 'list', 'comment', or 'view'.",
+                    "enum": ["create", "update", "delete", "list", "comment", "view"],
                 },
                 "type": {
                     "type": "string",
@@ -392,11 +672,24 @@ class BoardTool(Tool):
                 },
                 "item_id": {
                     "type": "string",
-                    "description": "Item ID for 'update' (e.g. 'T-001').",
+                    "description": "Item ID (e.g. 'T-001') for 'update', 'delete', 'comment', or 'view'.",
                 },
                 "status": {
                     "type": "string",
                     "description": "New status for 'update': 'todo', 'in_progress', or 'done'.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why this status change is being made (required for 'update').",
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Comment category for 'comment': 'analysis', 'finding', 'conclusion', or 'blocker'.",
+                    "enum": ["analysis", "finding", "conclusion", "blocker"],
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Comment body for 'comment'. Be concise and actionable.",
                 },
             },
             "required": ["action"]
@@ -407,7 +700,17 @@ class BoardTool(Tool):
         action = params.get("action", "list")
 
         if action == "list":
+            self.board.prune_stale()
             return ToolResult(success=True, output=self.board.get_board_summary())
+
+        if action == "view":
+            item_id = params.get("item_id", "")
+            if not item_id:
+                return ToolResult(success=False, output="", error="'view' requires 'item_id'.")
+            detail = self.board.get_item_detail(item_id)
+            if detail:
+                return ToolResult(success=True, output=detail)
+            return ToolResult(success=False, output="", error=f"Item {item_id} not found.")
 
         if not self.write_access:
             return ToolResult(success=False, output="", error="Read-only board access.")
@@ -419,7 +722,14 @@ class BoardTool(Tool):
                 title=title,
                 description=params.get("description", ""),
                 assigned_to=params.get("assigned_to"),
+                actor=agent_id,
             )
+            if item is None:
+                return ToolResult(
+                    success=False, output="",
+                    error="Task creation throttled — too many items created recently. "
+                          "Wait before creating more.",
+                )
             return ToolResult(
                 success=True,
                 output=f"Created {item['id']}: {item['title']}",
@@ -428,20 +738,53 @@ class BoardTool(Tool):
         if action == "update":
             item_id = params.get("item_id", "")
             status = params.get("status", "")
+            reason = params.get("reason", "")
             if not item_id or not status:
                 return ToolResult(
                     success=False, output="",
                     error="'update' requires 'item_id' and 'status'.",
                 )
-            item = await self.board.update_status(item_id, status)
+            if not reason:
+                return ToolResult(
+                    success=False, output="",
+                    error="'update' requires a 'reason' explaining why the status is changing.",
+                )
+            item = await self.board.update_status(
+                item_id, status, actor=agent_id, reason=reason,
+            )
             if item:
                 return ToolResult(
                     success=True,
-                    output=f"Updated {item['id']} → {item['status']}",
+                    output=f"Updated {item['id']} → {item['status']} (reason: {reason})",
                 )
             return ToolResult(
                 success=False, output="",
                 error=f"Item {item_id} not found.",
+            )
+
+        if action == "comment":
+            item_id = params.get("item_id", "")
+            category = params.get("category", "analysis")
+            content = params.get("content", "")
+            if not item_id or not content:
+                return ToolResult(
+                    success=False, output="",
+                    error="'comment' requires 'item_id' and 'content'.",
+                )
+            result = await self.board.add_comment(
+                item_id=item_id,
+                author=agent_id,
+                category=category,
+                content=content,
+            )
+            if result:
+                return ToolResult(
+                    success=True,
+                    output=f"Comment added to {item_id} [{category}].",
+                )
+            return ToolResult(
+                success=False, output="",
+                error=f"Item {item_id} not found or comment budget exceeded.",
             )
 
         if action == "delete":
@@ -463,7 +806,7 @@ class BoardTool(Tool):
                     error=f"Item {item_id} has status '{target_item['status']}'. Only 'done' items can be deleted."
                 )
             
-            if await self.board.delete_item(item_id):
+            if await self.board.delete_item(item_id, actor=agent_id):
                 return ToolResult(success=True, output=f"Deleted {item_id} from board.")
             return ToolResult(success=False, output="", error=f"Failed to delete {item_id}.")
 

@@ -50,6 +50,22 @@ BOARD_EVENTS_SCHEMA = pa.schema([
     pa.field("status", pa.string()),
     pa.field("assigned_to", pa.string()),
     pa.field("actor", pa.string()),
+    pa.field("reason", pa.string()),             # Why the status changed
+])
+
+# ── Board Comment Events Table ──────────────────────────────────────
+# Append-only log of work-item comment mutations (add, archive, summarize).
+# Bucket key: session_id
+BOARD_COMMENT_EVENTS_SCHEMA = pa.schema([
+    pa.field("session_id", pa.string()),
+    pa.field("ts", pa.int64()),
+    pa.field("item_id", pa.string()),             # FK → BoardItem.id (e.g. "T-003")
+    pa.field("comment_id", pa.string()),          # UUID
+    pa.field("action", pa.string()),              # "add" | "archive" | "summarize"
+    pa.field("author", pa.string()),              # agent_id or "System"
+    pa.field("category", pa.string()),            # "analysis" | "finding" | "conclusion" | "blocker" | "status_change" | "summary"
+    pa.field("content", pa.string()),             # The comment body (≤comment_max_chars)
+    pa.field("archived", pa.bool_()),             # Soft-delete flag
 ])
 
 # ── Agent Status Table ──────────────────────────────────────────────
@@ -69,6 +85,7 @@ DATABASE = "containerclaw"
 CHATROOM_TABLE = "chatroom"
 SESSIONS_TABLE = "sessions"
 BOARD_EVENTS_TABLE = "board_events"
+BOARD_COMMENT_EVENTS_TABLE = "board_comment_events"
 AGENT_STATUS_TABLE = "agent_status"
 
 # ── Bucket Configuration ────────────────────────────────────────────

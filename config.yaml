@@ -140,6 +140,15 @@ agents:
     autonomous_steps: -1
     conchshell_enabled: true
     subagent_ttl_seconds: 120
+    board_comments:
+      max_comments_per_item: 10        # Active (non-archived) comments before auto-summarization
+      comment_max_chars: 500           # Hard cap per comment body
+      max_items_per_cycle: 3           # New board items allowed per election cycle
+      item_creation_window_s: 120      # Sliding window (seconds) for the per-cycle throttle
+      stale_threshold_cycles: 10       # Election cycles with no activity → stale flag
+      stale_cycle_duration_s: 120      # Estimated duration of one election cycle (seconds)
+      summarize_count: 5              # Number of oldest comments to compress when budget hit
+      summary_line_truncate: 80        # Max chars per comment line in auto-generated summaries
     tools:
       workspace_root: "/workspace"
       output_limit_chars: 8192

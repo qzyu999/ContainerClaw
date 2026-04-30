@@ -71,6 +71,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         self.fluss = fluss_client
         self.table = fluss_client.chat_table
         self.board_table = fluss_client.board_table
+        self.board_comment_table = fluss_client.board_comment_table
         self.sessions_table = fluss_client.sessions_table
         self.moderators = {}  # session_id -> StageModerator
         self.reconcilers = {}  # session_id -> ReconciliationController
@@ -131,7 +132,11 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         conchshell_enabled = config.CONCHSHELL_ENABLED
         tool_dispatcher = None
 
-        board = ProjectBoard(session_id=session_id, board_table=self.board_table)
+        board = ProjectBoard(
+            session_id=session_id,
+            board_table=self.board_table,
+            board_comment_table=self.board_comment_table,
+        )
         await board.initialize()
 
         if conchshell_enabled:
@@ -477,6 +482,20 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
         proto_items = []
         for item in moderator.board.items:
+            # Build comment protos for this item
+            active_comments = moderator.board.get_active_comments(item.get("id", ""))
+            proto_comments = [
+                agent_pb2.BoardComment(
+                    comment_id=c.get("comment_id", ""),
+                    item_id=c.get("item_id", ""),
+                    author=c.get("author", ""),
+                    category=c.get("category", ""),
+                    content=c.get("content", ""),
+                    ts=c.get("ts", 0),
+                    archived=c.get("archived", False),
+                )
+                for c in active_comments
+            ]
             proto_items.append(agent_pb2.BoardItem(
                 id=item.get("id", ""),
                 type=item.get("type", ""),
@@ -485,8 +504,50 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 status=item.get("status", ""),
                 assigned_to=item.get("assigned_to") or "",
                 created_at=item.get("created_at", 0.0),
+                comments=proto_comments,
+                last_reason=item.get("last_reason", ""),
             ))
         return agent_pb2.BoardResponse(items=proto_items)
+
+    async def GetBoardItem(self, request, context):
+        """Return a single board item with its full comment thread."""
+        moderator = await self._get_moderator(request.session_id)
+        if not moderator or not moderator.board:
+            await context.abort(grpc.StatusCode.NOT_FOUND, "Board not available")
+
+        item_id = request.item_id
+        item = next((i for i in moderator.board.items if i["id"] == item_id), None)
+        if not item:
+            await context.abort(grpc.StatusCode.NOT_FOUND, f"Item {item_id} not found")
+
+        all_comments = moderator.board.comments.get(item_id, [])
+        proto_comments = [
+            agent_pb2.BoardComment(
+                comment_id=c.get("comment_id", ""),
+                item_id=c.get("item_id", ""),
+                author=c.get("author", ""),
+                category=c.get("category", ""),
+                content=c.get("content", ""),
+                ts=c.get("ts", 0),
+                archived=c.get("archived", False),
+            )
+            for c in all_comments
+        ]
+
+        proto_item = agent_pb2.BoardItem(
+            id=item.get("id", ""),
+            type=item.get("type", ""),
+            title=item.get("title", ""),
+            description=item.get("description", ""),
+            status=item.get("status", ""),
+            assigned_to=item.get("assigned_to") or "",
+            created_at=item.get("created_at", 0.0),
+            last_reason=item.get("last_reason", ""),
+        )
+        return agent_pb2.BoardItemDetail(
+            item=proto_item,
+            comments=proto_comments,
+        )
 
     # ── Session Management (all async) ────────────────────────────
 
