@@ -44,7 +44,9 @@ class HeartbeatEmitter:
 
         self._state = "idle"
         self._current_task = ""
-        self._writer = status_table.new_append().create_writer() if status_table else None
+        self._writer = (
+            status_table.new_append().create_writer() if status_table else None
+        )
         self._task: asyncio.Task | None = None
         self._last_loop_time: float = 0.0
 
@@ -93,7 +95,7 @@ class HeartbeatEmitter:
 
     async def _write_heartbeat(self):
         """Write a single heartbeat record.
-        
+
         Note: Fluss writer.write_arrow_batch() is synchronous, but
         writer.flush() is a coroutine. Both are lightweight enough
         to run on the event loop without thread offloading.
@@ -102,13 +104,16 @@ class HeartbeatEmitter:
             return
         try:
             now_ms = int(time.time() * 1000)
-            batch = pa.RecordBatch.from_arrays([
-                pa.array([self.session_id], type=pa.string()),
-                pa.array([self.agent_id], type=pa.string()),
-                pa.array([self._state], type=pa.string()),
-                pa.array([now_ms], type=pa.int64()),
-                pa.array([self._current_task], type=pa.string()),
-            ], schema=AGENT_STATUS_SCHEMA)
+            batch = pa.RecordBatch.from_arrays(
+                [
+                    pa.array([self.session_id], type=pa.string()),
+                    pa.array([self.agent_id], type=pa.string()),
+                    pa.array([self._state], type=pa.string()),
+                    pa.array([now_ms], type=pa.int64()),
+                    pa.array([self._current_task], type=pa.string()),
+                ],
+                schema=AGENT_STATUS_SCHEMA,
+            )
 
             self._writer.write_arrow_batch(batch)
             if hasattr(self._writer, "flush"):

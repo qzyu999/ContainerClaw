@@ -11,73 +11,89 @@ import pyarrow as pa
 # ── Chatroom Log Table ──────────────────────────────────────────────
 # Append-only log of all messages, tool outputs, and agent activity.
 # Bucket key: session_id
-CHATROOM_SCHEMA = pa.schema([
-    pa.field("event_id", pa.string()),      # UUID — primary dedup key
-    pa.field("session_id", pa.string()),
-    pa.field("ts", pa.int64()),
-    pa.field("actor_id", pa.string()),
-    pa.field("content", pa.string()),
-    pa.field("type", pa.string()),
-    pa.field("tool_name", pa.string()),
-    pa.field("tool_success", pa.bool_()),
-    pa.field("parent_actor", pa.string()),          # DEPRECATED — retained for backward compat
-    pa.field("parent_event_id", pa.string()),       # In-Reply-To: UUID of causal parent event
-    pa.field("edge_type", pa.string()),             # SEQUENTIAL | SPAWN | RETURN | ROOT
-])
+CHATROOM_SCHEMA = pa.schema(
+    [
+        pa.field("event_id", pa.string()),  # UUID — primary dedup key
+        pa.field("session_id", pa.string()),
+        pa.field("ts", pa.int64()),
+        pa.field("actor_id", pa.string()),
+        pa.field("content", pa.string()),
+        pa.field("type", pa.string()),
+        pa.field("tool_name", pa.string()),
+        pa.field("tool_success", pa.bool_()),
+        pa.field(
+            "parent_actor", pa.string()
+        ),  # DEPRECATED — retained for backward compat
+        pa.field(
+            "parent_event_id", pa.string()
+        ),  # In-Reply-To: UUID of causal parent event
+        pa.field("edge_type", pa.string()),  # SEQUENTIAL | SPAWN | RETURN | ROOT
+    ]
+)
 
 # ── Sessions Table ──────────────────────────────────────────────────
-# Session metadata (log table). PK table migration deferred until 
+# Session metadata (log table). PK table migration deferred until
 # Fluss SDK supports CDC-based scanning for PK tables.
 # Bucket key: session_id
-SESSIONS_SCHEMA = pa.schema([
-    pa.field("session_id", pa.string()),
-    pa.field("title", pa.string()),
-    pa.field("created_at", pa.int64()),
-    pa.field("last_active_at", pa.int64()),
-])
+SESSIONS_SCHEMA = pa.schema(
+    [
+        pa.field("session_id", pa.string()),
+        pa.field("title", pa.string()),
+        pa.field("created_at", pa.int64()),
+        pa.field("last_active_at", pa.int64()),
+    ]
+)
 
 # ── Board Events Table ──────────────────────────────────────────────
 # Append-only log of project board mutations (create, update, delete).
 # Bucket key: session_id
-BOARD_EVENTS_SCHEMA = pa.schema([
-    pa.field("session_id", pa.string()),
-    pa.field("ts", pa.int64()),
-    pa.field("action", pa.string()),
-    pa.field("item_id", pa.string()),
-    pa.field("item_type", pa.string()),
-    pa.field("title", pa.string()),
-    pa.field("description", pa.string()),
-    pa.field("status", pa.string()),
-    pa.field("assigned_to", pa.string()),
-    pa.field("actor", pa.string()),
-    pa.field("reason", pa.string()),             # Why the status changed
-])
+BOARD_EVENTS_SCHEMA = pa.schema(
+    [
+        pa.field("session_id", pa.string()),
+        pa.field("ts", pa.int64()),
+        pa.field("action", pa.string()),
+        pa.field("item_id", pa.string()),
+        pa.field("item_type", pa.string()),
+        pa.field("title", pa.string()),
+        pa.field("description", pa.string()),
+        pa.field("status", pa.string()),
+        pa.field("assigned_to", pa.string()),
+        pa.field("actor", pa.string()),
+        pa.field("reason", pa.string()),  # Why the status changed
+    ]
+)
 
 # ── Board Comment Events Table ──────────────────────────────────────
 # Append-only log of work-item comment mutations (add, archive, summarize).
 # Bucket key: session_id
-BOARD_COMMENT_EVENTS_SCHEMA = pa.schema([
-    pa.field("session_id", pa.string()),
-    pa.field("ts", pa.int64()),
-    pa.field("item_id", pa.string()),             # FK → BoardItem.id (e.g. "T-003")
-    pa.field("comment_id", pa.string()),          # UUID
-    pa.field("action", pa.string()),              # "add" | "archive" | "summarize"
-    pa.field("author", pa.string()),              # agent_id or "System"
-    pa.field("category", pa.string()),            # "analysis" | "finding" | "conclusion" | "blocker" | "status_change" | "summary"
-    pa.field("content", pa.string()),             # The comment body (≤comment_max_chars)
-    pa.field("archived", pa.bool_()),             # Soft-delete flag
-])
+BOARD_COMMENT_EVENTS_SCHEMA = pa.schema(
+    [
+        pa.field("session_id", pa.string()),
+        pa.field("ts", pa.int64()),
+        pa.field("item_id", pa.string()),  # FK → BoardItem.id (e.g. "T-003")
+        pa.field("comment_id", pa.string()),  # UUID
+        pa.field("action", pa.string()),  # "add" | "archive" | "summarize"
+        pa.field("author", pa.string()),  # agent_id or "System"
+        pa.field(
+            "category", pa.string()
+        ),  # "analysis" | "finding" | "conclusion" | "blocker" | "status_change" | "summary"
+        pa.field("content", pa.string()),  # The comment body (≤comment_max_chars)
+        pa.field("archived", pa.bool_()),  # Soft-delete flag
+    ]
+)
 
 # ── Agent Status Table ──────────────────────────────────────────────
 # Agent liveness and state. Written by HeartbeatEmitter, read by UI
 # and monitoring agents. Bucket key: session_id
-AGENT_STATUS_SCHEMA = pa.schema([
-    pa.field("session_id", pa.string()),
-    pa.field("agent_id", pa.string()),
-    pa.field("state", pa.string()),             # "idle", "electing", "executing", "suspended"
-    pa.field("last_heartbeat", pa.int64()),     # ms timestamp
-    pa.field("current_task", pa.string()),      # description of active work
-])
+AGENT_STATUS_SCHEMA = pa.schema(
+    [
+        pa.field("session_id", pa.string()),
+        pa.field("agent_id", pa.string()),
+        pa.field("state", pa.string()),  # "idle", "electing", "executing", "suspended"
+        pa.field("last_heartbeat", pa.int64()),  # ms timestamp
+        pa.field("current_task", pa.string()),  # description of active work
+    ]
+)
 
 # ── Table Paths ─────────────────────────────────────────────────────
 # Centralized table path constants (database.table)
@@ -96,10 +112,12 @@ BUCKET_KEY = ["session_id"]
 # Append-only log of human steering directives.
 # Latest record per session is the "active" anchor.
 # Bucket key: session_id
-ANCHOR_MESSAGE_SCHEMA = pa.schema([
-    pa.field("session_id", pa.string()),
-    pa.field("ts", pa.int64()),
-    pa.field("content", pa.string()),
-    pa.field("author", pa.string()),
-])
+ANCHOR_MESSAGE_SCHEMA = pa.schema(
+    [
+        pa.field("session_id", pa.string()),
+        pa.field("ts", pa.int64()),
+        pa.field("content", pa.string()),
+        pa.field("author", pa.string()),
+    ]
+)
 ANCHOR_MESSAGE_TABLE = "anchor_message"

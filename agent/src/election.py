@@ -13,7 +13,7 @@ from typing import Awaitable, Callable
 
 class ElectionProtocol:
     """Run democratic elections among agents to decide who acts next.
-    
+
     The protocol runs up to 3 rounds:
     1. Initial vote — each agent votes based on the conversation
     2. Tie-breaker with debate — agents see others' reasoning and re-vote
@@ -29,14 +29,14 @@ class ElectionProtocol:
         parent_event_id: str = "",
     ) -> tuple[str | None, str, bool]:
         """Run a 3-round election.
-        
+
         Args:
             agents: List of GeminiAgent instances.
             roster_str: Human-readable roster (e.g., "Alice (architect), Bob (PM)").
             history: Context window messages for voting context.
             publish_fn: Async callback to publish events to Fluss.
             parent_event_id: Causal parent for election status messages.
-        
+
         Returns:
             (winner, election_log, is_job_done) where:
             - winner: Agent name or None if consensus is "task complete"
@@ -49,8 +49,13 @@ class ElectionProtocol:
 
         for r in range(1, 4):
             election_log_collector.append(f"--- Round {r} ---")
-            await publish_fn("Moderator", f"🗳️ Election Round {r}...", "thought",
-                             parent_event_id=parent_event_id, edge_type="SEQUENTIAL")
+            await publish_fn(
+                "Moderator",
+                f"🗳️ Election Round {r}...",
+                "thought",
+                parent_event_id=parent_event_id,
+                edge_type="SEQUENTIAL",
+            )
             print(f"🗳️ [Moderator] Election Round {r} starting...")
 
             # Stagger votes with random jitter to avoid thundering-herd SSL drops
@@ -58,10 +63,7 @@ class ElectionProtocol:
                 await asyncio.sleep(delay)
                 return await agent._vote(history, roster_str, previous_votes_context)
 
-            jittered = [
-                _staggered_vote(a, random.uniform(0, 2.0))
-                for a in agents
-            ]
+            jittered = [_staggered_vote(a, random.uniform(0, 2.0)) for a in agents]
             votes = await asyncio.gather(*jittered)
 
             tally = {}
@@ -72,13 +74,17 @@ class ElectionProtocol:
             for agent, vote_result in zip(agents, votes):
                 if vote_result and "vote" in vote_result:
                     valid_votes_count += 1
-                    nominee = vote_result['vote']
-                    reason = vote_result.get('reason', 'N/A')
+                    nominee = vote_result["vote"]
+                    reason = vote_result.get("reason", "N/A")
 
                     # Defensively parse the boolean in case the LLM returns a string "true"
-                    is_done_raw = vote_result.get('is_done', False)
-                    is_done = is_done_raw.lower() == 'true' if isinstance(is_done_raw, str) else bool(is_done_raw)
-                    done_reason = vote_result.get('done_reason', 'N/A')
+                    is_done_raw = vote_result.get("is_done", False)
+                    is_done = (
+                        is_done_raw.lower() == "true"
+                        if isinstance(is_done_raw, str)
+                        else bool(is_done_raw)
+                    )
+                    done_reason = vote_result.get("done_reason", "N/A")
 
                     if is_done:
                         done_votes_count += 1
@@ -87,7 +93,9 @@ class ElectionProtocol:
                     vote_str = f"{agent.agent_id} voted for {nominee} ('{reason}') | Done: {is_done} ('{done_reason}')"
                     attribution_list.append(vote_str)
                     election_log_collector.append(vote_str)
-                    print(f"🗣️ [{agent.agent_id}] voted for {nominee} -> \"{reason}\" | Done: {is_done} -> \"{done_reason}\"")
+                    print(
+                        f'🗣️ [{agent.agent_id}] voted for {nominee} -> "{reason}" | Done: {is_done} -> "{done_reason}"'
+                    )
                 else:
                     print(f"⚠️ [{agent.agent_id}] failed to cast a valid vote.")
 
@@ -95,12 +103,19 @@ class ElectionProtocol:
                 return random.choice(agent_names), "No valid votes received.", False
 
             # Check for unanimous agreement that the job is done
-            is_job_done = (done_votes_count == valid_votes_count) and (valid_votes_count > 0)
+            is_job_done = (done_votes_count == valid_votes_count) and (
+                valid_votes_count > 0
+            )
 
             tally_str = f"Tally: {tally}"
             election_log_collector.append(tally_str)
-            await publish_fn("Moderator", f"Round {r} {tally_str}", "thought",
-                             parent_event_id=parent_event_id, edge_type="SEQUENTIAL")
+            await publish_fn(
+                "Moderator",
+                f"Round {r} {tally_str}",
+                "thought",
+                parent_event_id=parent_event_id,
+                edge_type="SEQUENTIAL",
+            )
             print(f"📊 [Moderator] Round {r} {tally_str}")
 
             # If everyone agrees the task is finished, return immediately

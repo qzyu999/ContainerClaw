@@ -20,7 +20,7 @@ from tools import ToolDispatcher
 
 class ToolExecutor:
     """Execute an agent's turn with tool support and circuit breaking.
-    
+
     Uses callback injection to avoid circular imports with the moderator:
     - publish_fn: write events to Fluss
     - get_context_fn: get current context window
@@ -39,8 +39,9 @@ class ToolExecutor:
         self.get_context = get_context_fn
         self.poll = poll_fn
 
-    async def execute_with_tools(self, agent, check_halt_fn: Callable[[], bool],
-                                  parent_event_id: str = "") -> str | None:
+    async def execute_with_tools(
+        self, agent, check_halt_fn: Callable[[], bool], parent_event_id: str = ""
+    ) -> str | None:
         """Run an agent's full tool-augmented turn.
 
         Args:
@@ -49,7 +50,7 @@ class ToolExecutor:
                            (e.g., user sent /stop mid-turn).
             parent_event_id: The event_id this execution chains from
                              (e.g., the winner announcement).
-        
+
         Returns:
             Agent's final text response, or None.
         """
@@ -73,15 +74,17 @@ class ToolExecutor:
                 # Build functionResponse parts from the last round's results
                 function_responses = []
                 for call_result in last_round_results:
-                    function_responses.append({
-                        "name": call_result["name"],
-                        "response": {
-                            "result": call_result["output"],
-                            "success": call_result["success"],
-                            "error": call_result.get("error"),
-                        },
-                        "id": call_result["id"],
-                    })
+                    function_responses.append(
+                        {
+                            "name": call_result["name"],
+                            "response": {
+                                "result": call_result["output"],
+                                "success": call_result["success"],
+                                "error": call_result.get("error"),
+                            },
+                            "id": call_result["id"],
+                        }
+                    )
 
                 text, fn_calls = await agent._send_function_responses(
                     shared_context, function_responses, available_tools
@@ -91,7 +94,7 @@ class ToolExecutor:
             if text and text.strip():
                 cleaned_text = text.strip()
                 final_text = cleaned_text
-                
+
                 # Publish agent reasoning as a 'thought' event so it persists
                 # in Fluss traces. Without this, chain-of-thought is only stored
                 # in the ephemeral _api_turns buffer and never archived.
@@ -114,7 +117,9 @@ class ToolExecutor:
                 tool_args = call["args"]
                 call_id = call["id"]
 
-                print(f"🔧 [{agent.agent_id}] Tool call: {tool_name}({json.dumps(tool_args)[:200]})")
+                print(
+                    f"🔧 [{agent.agent_id}] Tool call: {tool_name}({json.dumps(tool_args)[:200]})"
+                )
                 # Log tool call (Use agent.agent_id for UI filtering)
                 tool_call_id = await self.publish(
                     agent.agent_id,
@@ -133,11 +138,11 @@ class ToolExecutor:
                     # For now, we publish as a transparent 'telemetry' event.
                     # In production, this would go to a dedicated Fluss byte-stream topic.
                     await self.publish(
-                        agent.agent_id, 
-                        chunk.decode(errors="replace"), 
+                        agent.agent_id,
+                        chunk.decode(errors="replace"),
                         "telemetry",
                         parent_event_id=tool_call_id,
-                        edge_type="SEQUENTIAL"
+                        edge_type="SEQUENTIAL",
                     )
 
                 result = await self.dispatcher.execute(
@@ -154,14 +159,18 @@ class ToolExecutor:
                     msg = f"🛑 Circuit Breaker: {agent.agent_id} halted after 3 consecutive tool failures."
                     print(f"⚠️ [Circuit Breaker] {msg}")
                     await self.publish(
-                        "Moderator", msg, "system",
+                        "Moderator",
+                        msg,
+                        "system",
                         parent_event_id=tool_call_id,
                         edge_type="SEQUENTIAL",
                     )
                     return "🛑 Execution stopped due to consecutive tool failures."
 
                 # Log tool result (child of tool call)
-                result_summary = result.output[:500] if result.success else f"ERROR: {result.error}"
+                result_summary = (
+                    result.output[:500] if result.success else f"ERROR: {result.error}"
+                )
                 print(f"  → {'✅' if result.success else '❌'} {result_summary[:200]}")
                 # Log tool result summary (Use agent.agent_id for UI filtering)
                 tool_result_id = await self.publish(
@@ -180,7 +189,9 @@ class ToolExecutor:
                     f"{(' | Error: ' + result.error) if result.error else ''}"
                 )
                 await self.publish(
-                    agent.agent_id, tool_result_content, "action",
+                    agent.agent_id,
+                    tool_result_content,
+                    "action",
                     tool_name=tool_name,
                     tool_success=result.success,
                     parent_actor=agent.agent_id,
@@ -215,20 +226,27 @@ class ToolExecutor:
                         + output[-tail_budget:]
                     )
                 elif len(output) > limit:
-                    output = output[:limit] + "\n\n[TRUNCATED: Result too large for context window. Narrow your search or use pagination.]"
+                    output = (
+                        output[:limit]
+                        + "\n\n[TRUNCATED: Result too large for context window. Narrow your search or use pagination.]"
+                    )
 
-                last_round_results.append({
-                    "name": tool_name,
-                    "id": call_id,
-                    "output": output,
-                    "success": result.success,
-                    "error": result.error,
-                })
+                last_round_results.append(
+                    {
+                        "name": tool_name,
+                        "id": call_id,
+                        "output": output,
+                        "success": result.success,
+                        "error": result.error,
+                    }
+                )
 
             # Poll Fluss to pick up published messages
             interrupted = await self.poll()
             if interrupted and check_halt_fn():
-                print(f"🛑 [Moderator] {agent.agent_id} execution halted mid-turn by user command.")
+                print(
+                    f"🛑 [Moderator] {agent.agent_id} execution halted mid-turn by user command."
+                )
                 return "🛑 Turn aborted by user command."
 
         else:
@@ -236,7 +254,9 @@ class ToolExecutor:
             warning_msg = f"\n\n🛑 Execution halted: Exceeded max tool rounds ({config.MAX_TOOL_ROUNDS})."
             final_text = (final_text or "") + warning_msg
             await self.publish(
-                "Moderator", warning_msg, "system",
+                "Moderator",
+                warning_msg,
+                "system",
                 parent_event_id=current_parent,
                 edge_type="SEQUENTIAL",
             )
@@ -247,7 +267,9 @@ class ToolExecutor:
         return final_text
 
     @staticmethod
-    async def execute_text_only(agent, get_context_fn: Callable[[], list[dict]]) -> str | None:
+    async def execute_text_only(
+        agent, get_context_fn: Callable[[], list[dict]]
+    ) -> str | None:
         """Execute the winning agent's turn without tools (backward-compatible)."""
         updated_context = get_context_fn()
         return await agent._think(updated_context)

@@ -30,6 +30,7 @@ def is_transient_error(exception):
     # Retry on network-level failures (DNS, Connection Refused, etc.)
     return isinstance(exception, httpx.TransportError)
 
+
 class GeminiStrategy:
     """Translates OpenAI wire format ↔ Gemini generateContent format."""
 
@@ -46,7 +47,7 @@ class GeminiStrategy:
         wait=wait_exponential(multiplier=1, max=10) + wait_random(0, 1),
         stop=stop_after_attempt(3),
         retry=retry_if_result(is_transient_error),
-        reraise=True
+        reraise=True,
     )
     async def _post_with_retry(self, url: str, json_payload: dict) -> httpx.Response:
         """Execute post request under a concurrency semaphore with status-aware retry."""
@@ -78,14 +79,13 @@ class GeminiStrategy:
         except Exception as e:
             return {"error": f"Gemini strategy request failed: {str(e)}"}, 502
 
-
     # ── OpenAI → Gemini Translation ──────────────────────────────
 
     def _to_gemini(self, openai_payload: dict, model: str) -> dict:
         """Convert OpenAI Chat Completions request → Gemini generateContent."""
         contents = []
         system_instructions = []
-        
+
         current_tool_parts = []
 
         for msg in openai_payload.get("messages", []):
@@ -98,32 +98,33 @@ class GeminiStrategy:
 
             if role == "tool":
                 # OpenAI tool result → Gemini functionResponse part
-                current_tool_parts.append({
-                    "functionResponse": {
-                        "name": msg.get("name", ""),
-                        "response": {"result": content},
-                        "id": msg.get("tool_call_id", ""),
+                current_tool_parts.append(
+                    {
+                        "functionResponse": {
+                            "name": msg.get("name", ""),
+                            "response": {"result": content},
+                            "id": msg.get("tool_call_id", ""),
+                        }
                     }
-                })
+                )
                 continue
-                
+
             # Flush accumulated tool parts before adding next message
             if current_tool_parts:
-                contents.append({
-                    "role": "user",
-                    "parts": current_tool_parts
-                })
+                contents.append({"role": "user", "parts": current_tool_parts})
                 current_tool_parts = []
 
             if role == "assistant":
                 gemini_role = "model"
-                
+
                 # If we have preserved raw Gemini parts, use them directly!
                 # This ensures `thought_signature` and `thought` are perfectly echoed.
                 if "_gemini_parts" in msg:
-                    contents.append({"role": gemini_role, "parts": msg["_gemini_parts"]})
+                    contents.append(
+                        {"role": gemini_role, "parts": msg["_gemini_parts"]}
+                    )
                     continue
-                
+
                 # Check for tool_calls in assistant message (cross-provider mapping fallback)
                 tool_calls = msg.get("tool_calls", [])
                 if tool_calls:
@@ -133,33 +134,30 @@ class GeminiStrategy:
                     for tc in tool_calls:
                         fn = tc.get("function", {})
                         import json
+
                         try:
                             args = json.loads(fn.get("arguments", "{}"))
                         except (json.JSONDecodeError, TypeError):
                             args = {}
-                        parts.append({
-                            "functionCall": {
-                                "name": fn.get("name", ""),
-                                "args": args,
-                                "id": tc.get("id", ""),
+                        parts.append(
+                            {
+                                "functionCall": {
+                                    "name": fn.get("name", ""),
+                                    "args": args,
+                                    "id": tc.get("id", ""),
+                                }
                             }
-                        })
+                        )
                     contents.append({"role": gemini_role, "parts": parts})
                     continue
             else:
                 gemini_role = "user"
 
-            contents.append({
-                "role": gemini_role,
-                "parts": [{"text": content}]
-            })
+            contents.append({"role": gemini_role, "parts": [{"text": content}]})
 
         # Flush any trailing tool parts
         if current_tool_parts:
-            contents.append({
-                "role": "user",
-                "parts": current_tool_parts
-            })
+            contents.append({"role": "user", "parts": current_tool_parts})
 
         gemini = {"contents": contents}
 
@@ -183,8 +181,7 @@ class GeminiStrategy:
             if "thinking_config" not in gen_config:
                 gen_config["thinking_config"] = {"thinking_level": thinking_level}
             gen_config.setdefault(
-                "max_output_tokens",
-                self.settings.get("max_output_tokens", 8192)
+                "max_output_tokens", self.settings.get("max_output_tokens", 8192)
             )
 
         if gen_config:
@@ -207,11 +204,13 @@ class GeminiStrategy:
         for tool in openai_tools:
             if tool.get("type") == "function":
                 fn = tool.get("function", {})
-                declarations.append({
-                    "name": fn.get("name", ""),
-                    "description": fn.get("description", ""),
-                    "parameters": fn.get("parameters", {}),
-                })
+                declarations.append(
+                    {
+                        "name": fn.get("name", ""),
+                        "description": fn.get("description", ""),
+                        "parameters": fn.get("parameters", {}),
+                    }
+                )
         return [{"function_declarations": declarations}] if declarations else []
 
     def _convert_tool_choice(self, tool_choice) -> dict:
@@ -256,14 +255,17 @@ class GeminiStrategy:
             elif "functionCall" in part:
                 fc = part["functionCall"]
                 import json
-                tool_calls.append({
-                    "id": fc.get("id", ""),
-                    "type": "function",
-                    "function": {
-                        "name": fc.get("name", ""),
-                        "arguments": json.dumps(fc.get("args", {})),
+
+                tool_calls.append(
+                    {
+                        "id": fc.get("id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": fc.get("name", ""),
+                            "arguments": json.dumps(fc.get("args", {})),
+                        },
                     }
-                })
+                )
 
         text = "\n".join(text_parts).strip() if text_parts else None
 
@@ -275,7 +277,7 @@ class GeminiStrategy:
             message["content"] = None
         if tool_calls:
             message["tool_calls"] = tool_calls
-            
+
         # Required to pass `thought` and `thought_signature` parts back to Gemini in identical form
         message["_gemini_parts"] = parts
 
@@ -287,10 +289,12 @@ class GeminiStrategy:
             "id": f"gemini-{model}",
             "object": "chat.completion",
             "model": model,
-            "choices": [{
-                "index": 0,
-                "message": message,
-                "finish_reason": finish_reason,
-            }],
+            "choices": [
+                {
+                    "index": 0,
+                    "message": message,
+                    "finish_reason": finish_reason,
+                }
+            ],
             "usage": gemini_response.get("usageMetadata", {}),
         }

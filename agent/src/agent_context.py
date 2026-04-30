@@ -90,8 +90,13 @@ class AgentContext:
         if self.publisher:
             await self.publisher.stop()
 
-    async def publish(self, content: str, m_type: str = "output",
-                       parent_event_id: str = "", edge_type: str = "SEQUENTIAL"):
+    async def publish(
+        self,
+        content: str,
+        m_type: str = "output",
+        parent_event_id: str = "",
+        edge_type: str = "SEQUENTIAL",
+    ):
         """Publish a message from this agent to the shared Fluss log.
 
         Automatically sets actor_id and parent_actor for provenance tracking.
@@ -108,7 +113,9 @@ class AgentContext:
             )
         return ""
 
-    async def _on_message(self, actor_id: str, content: str, ts: int, event_id: str = None):
+    async def _on_message(
+        self, actor_id: str, content: str, ts: int, event_id: str = None
+    ):
         """Callback for immediate memory update from publisher."""
         self.context.add_message(actor_id, content, ts)
 

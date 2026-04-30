@@ -102,7 +102,9 @@ class FlussPublisher:
 
         # Fire callback immediately (memory update, includes event_id for backbone tracking)
         if self.on_message:
-            await self.on_message(actor_id, content, ts, event_id=event_id, m_type=m_type)
+            await self.on_message(
+                actor_id, content, ts, event_id=event_id, m_type=m_type
+            )
 
         async with self._lock:
             self._buffer.append(record)
@@ -149,6 +151,7 @@ class FlussPublisher:
         except Exception as e:
             print(f"❌ [Publisher] Flush failed ({n} records): {e}")
             import traceback
+
             traceback.print_exc()
 
     async def _flush_loop(self):

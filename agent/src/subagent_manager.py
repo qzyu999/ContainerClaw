@@ -34,6 +34,7 @@ from agent import LLMAgent
 @dataclass
 class SubagentHandle:
     """Tracking state for a running subagent."""
+
     task_id: str
     agent_id: str
     description: str
@@ -111,7 +112,9 @@ class SubagentManager:
         agent_id = f"Sub/{task_id}"
 
         # Create a fresh agent with the requested persona
-        agent = LLMAgent(agent_id, agent_persona, provider=self.provider, model=self.model)
+        agent = LLMAgent(
+            agent_id, agent_persona, provider=self.provider, model=self.model
+        )
 
         # Build tool scope
         tools = available_tools or []
@@ -143,8 +146,9 @@ class SubagentManager:
 
         # Launch the autonomous loop as a task, passing spawn_event_id for chaining
         async_task = asyncio.create_task(
-            self._run_subagent(task_id, ctx, task_desc, timeout_s,
-                               parent_event_id=spawn_event_id)
+            self._run_subagent(
+                task_id, ctx, task_desc, timeout_s, parent_event_id=spawn_event_id
+            )
         )
 
         handle = SubagentHandle(
@@ -160,7 +164,11 @@ class SubagentManager:
         return task_id
 
     async def _run_subagent(
-        self, task_id: str, ctx: AgentContext, task_desc: str, timeout_s: int,
+        self,
+        task_id: str,
+        ctx: AgentContext,
+        task_desc: str,
+        timeout_s: int,
         parent_event_id: str = "",
     ):
         """Execute a subagent's autonomous tool-calling loop with timeout."""
@@ -168,7 +176,9 @@ class SubagentManager:
         try:
             async with asyncio.timeout(timeout_s):
                 # Seed the context with the task
-                sys_msg = config.CONFIG.prompts.subagent_spawn.format(task_desc=task_desc)
+                sys_msg = config.CONFIG.prompts.subagent_spawn.format(
+                    task_desc=task_desc
+                )
                 ctx.context.add_message(
                     "Moderator",
                     sys_msg,
@@ -205,7 +215,8 @@ class SubagentManager:
                         )
                         if result:
                             last_event_id = await ctx.publish(
-                                result, "output",
+                                result,
+                                "output",
                                 parent_event_id=last_event_id,
                                 edge_type="SEQUENTIAL",
                             )
@@ -220,7 +231,8 @@ class SubagentManager:
                     result = await ctx.agent._think(context)
                     if result:
                         last_event_id = await ctx.publish(
-                            result, "output",
+                            result,
+                            "output",
                             parent_event_id=last_event_id,
                             edge_type="SEQUENTIAL",
                         )
@@ -250,6 +262,7 @@ class SubagentManager:
             )
             print(f"💥 [SubagentManager] {task_id} error: {e}")
             import traceback
+
             traceback.print_exc()
         finally:
             await ctx.stop()
@@ -310,6 +323,4 @@ class SubagentManager:
 
     def release_locks(self, task_id: str):
         """Release all locks held by a subagent."""
-        self._file_locks = {
-            p: t for p, t in self._file_locks.items() if t != task_id
-        }
+        self._file_locks = {p: t for p, t in self._file_locks.items() if t != task_id}

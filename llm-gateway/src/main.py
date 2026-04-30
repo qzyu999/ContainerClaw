@@ -72,7 +72,8 @@ app = FastAPI(lifespan=lifespan)
 
 # ── Routes ───────────────────────────────────────────────────────
 
-@app.post('/v1/chat/completions')
+
+@app.post("/v1/chat/completions")
 async def proxy(request: Request):
     """Route LLM requests to the appropriate provider strategy."""
     try:
@@ -86,15 +87,17 @@ async def proxy(request: Request):
 
     if not strategy:
         return JSONResponse(
-            {"error": f"Unknown provider: {provider_name}. Available: {list(app.state.strategies.keys())}"}, 
-            status_code=400
+            {
+                "error": f"Unknown provider: {provider_name}. Available: {list(app.state.strategies.keys())}"
+            },
+            status_code=400,
         )
 
     res, status_code = await strategy.send(data)
     return JSONResponse(content=res, status_code=status_code)
 
 
-@app.get('/health')
+@app.get("/health")
 async def health():
     """Health check endpoint."""
     return {
@@ -106,4 +109,5 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("src.main:app", host="0.0.0.0", port=8000)

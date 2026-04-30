@@ -28,25 +28,27 @@ import agent_pb2
 import agent_pb2_grpc
 
 app = Flask(__name__)
-CORS(app) # Allow frontend to hit the bridge
+CORS(app)  # Allow frontend to hit the bridge
+
 
 def get_grpc_stub():
     # 60 attempts * 2s = 2 minutes of patience
     # This is plenty of time for the Fluss Tablet Server to boot
-    for i in range(60): 
+    for i in range(60):
         try:
             channel = grpc.insecure_channel(CONFIG.agent_url)
             # This is the "Python version" of the nc command
             # It blocks until port 50051 is actually open
             grpc.channel_ready_future(channel).result(timeout=2)
-            print(f"✅ Bridge: Connected to Agent on attempt {i+1}")
+            print(f"✅ Bridge: Connected to Agent on attempt {i + 1}")
             return agent_pb2_grpc.AgentServiceStub(channel)
         except Exception:
             if i % 5 == 0:
-                print(f"⏳ Bridge: Waiting for Agent gRPC... (Attempt {i+1}/60)")
+                print(f"⏳ Bridge: Waiting for Agent gRPC... (Attempt {i + 1}/60)")
             time.sleep(2)
-    
+
     raise Exception("❌ Bridge: Timeout waiting for Agent.")
+
 
 @app.route("/sessions")
 def list_sessions():
@@ -59,7 +61,7 @@ def list_sessions():
                 "session_id": s.session_id,
                 "title": s.title,
                 "created_at": s.created_at,
-                "last_active_at": s.last_active_at
+                "last_active_at": s.last_active_at,
             }
             for s in response.sessions
         ]
@@ -67,6 +69,7 @@ def list_sessions():
     except Exception as e:
         print(f"Bridge: ListSessions Error: {e}")
         return {"status": "error", "message": str(e)}, 500
+
 
 @app.route("/sessions/new", methods=["POST"])
 def create_session():
@@ -77,23 +80,26 @@ def create_session():
     execution_mode = data.get("execution_mode", "")
     try:
         stub = get_grpc_stub()
-        s = stub.CreateSession(agent_pb2.CreateSessionRequest(
-            title=title,
-            runtime_image=runtime_image,
-            execution_mode=execution_mode,
-        ))
+        s = stub.CreateSession(
+            agent_pb2.CreateSessionRequest(
+                title=title,
+                runtime_image=runtime_image,
+                execution_mode=execution_mode,
+            )
+        )
         return {
             "status": "ok",
             "session": {
                 "session_id": s.session_id,
                 "title": s.title,
                 "created_at": s.created_at,
-                "last_active_at": s.last_active_at
-            }
+                "last_active_at": s.last_active_at,
+            },
         }
     except Exception as e:
         print(f"Bridge: CreateSession Error: {e}")
         return {"status": "error", "message": str(e)}, 500
+
 
 @app.route("/session/<session_id>/halt", methods=["POST"])
 def halt_session(session_id):
@@ -106,6 +112,7 @@ def halt_session(session_id):
         print(f"Bridge: HaltSession Error: {e}")
         return {"status": "error", "message": str(e)}, 500
 
+
 @app.route("/events/<session_id>")
 def stream_events(session_id):
     def generate():
@@ -113,14 +120,16 @@ def stream_events(session_id):
         try:
             stub = get_grpc_stub()
             # Consume gRPC stream
-            stream = stub.StreamActivity(agent_pb2.ActivityRequest(session_id=session_id))
+            stream = stub.StreamActivity(
+                agent_pb2.ActivityRequest(session_id=session_id)
+            )
             for event in stream:
                 data = {
                     "timestamp": event.timestamp,
                     "type": event.type,
                     "content": event.content,
                     "risk_score": event.risk_score,
-                    "actor_id": event.actor_id
+                    "actor_id": event.actor_id,
                 }
                 # SSE Format: data: <json>\n\n
                 yield f"data: {json.dumps(data)}\n\n"
@@ -133,6 +142,7 @@ def stream_events(session_id):
 
     return Response(generate(), mimetype="text/event-stream")
 
+
 @app.route("/task", methods=["POST"])
 def proxy_task():
     data = request.json
@@ -140,21 +150,29 @@ def proxy_task():
     if not session_id:
         return {"status": "error", "message": "Missing session_id"}, 400
     prompt = data.get("prompt", "")
-    
+
     # Simple retry for task submission
     for i in range(3):
         try:
             stub = get_grpc_stub()
-            response = stub.ExecuteTask(agent_pb2.TaskRequest(prompt=prompt, session_id=session_id))
+            response = stub.ExecuteTask(
+                agent_pb2.TaskRequest(prompt=prompt, session_id=session_id)
+            )
             return {"status": "ok", "message": response.message}
         except grpc.RpcError as e:
             if e.code() == grpc.StatusCode.UNAVAILABLE and i < 2:
-                print(f"Bridge: Agent unavailable, retrying task {i+1}...", flush=True)
+                print(
+                    f"Bridge: Agent unavailable, retrying task {i + 1}...", flush=True
+                )
                 time.sleep(2)
                 continue
-            return {"status": "error", "message": f"gRPC Error: {e.code()} - {e.details()}"}, 500
+            return {
+                "status": "error",
+                "message": f"gRPC Error: {e.code()} - {e.details()}",
+            }, 500
         except Exception as e:
             return {"status": "error", "message": str(e)}, 500
+
 
 @app.route("/history/<session_id>")
 def history_stream(session_id):
@@ -168,7 +186,7 @@ def history_stream(session_id):
                 "type": event.type,
                 "content": event.content,
                 "risk_score": event.risk_score,
-                "actor_id": event.actor_id
+                "actor_id": event.actor_id,
             }
             for event in response.events
         ]
@@ -176,6 +194,7 @@ def history_stream(session_id):
     except Exception as e:
         print(f"Bridge: GetHistory Error: {e}", flush=True)
         return {"status": "error", "message": str(e)}, 500
+
 
 @app.route("/board/<session_id>")
 def get_board(session_id):
@@ -197,31 +216,36 @@ def get_board(session_id):
                 }
                 for c in item.comments
             ]
-            items.append({
-                "id": item.id,
-                "type": item.type,
-                "title": item.title,
-                "description": item.description,
-                "status": item.status,
-                "assigned_to": item.assigned_to or None,
-                "created_at": item.created_at,
-                "comments": comments,
-                "last_reason": item.last_reason or None,
-            })
+            items.append(
+                {
+                    "id": item.id,
+                    "type": item.type,
+                    "title": item.title,
+                    "description": item.description,
+                    "status": item.status,
+                    "assigned_to": item.assigned_to or None,
+                    "created_at": item.created_at,
+                    "comments": comments,
+                    "last_reason": item.last_reason or None,
+                }
+            )
         return {"status": "ok", "items": items}
     except Exception as e:
         print(f"Bridge: GetBoard Error: {e}", flush=True)
         return {"status": "error", "message": str(e)}, 500
+
 
 @app.route("/board/<session_id>/item/<item_id>")
 def get_board_item_detail(session_id, item_id):
     """Fetch a single board item with its full comment thread."""
     try:
         stub = get_grpc_stub()
-        response = stub.GetBoardItem(agent_pb2.BoardItemRequest(
-            session_id=session_id,
-            item_id=item_id,
-        ))
+        response = stub.GetBoardItem(
+            agent_pb2.BoardItemRequest(
+                session_id=session_id,
+                item_id=item_id,
+            )
+        )
         item = response.item
         comments = [
             {
@@ -253,18 +277,26 @@ def get_board_item_detail(session_id, item_id):
         print(f"Bridge: GetBoardItem Error: {e}", flush=True)
         return {"status": "error", "message": str(e)}, 500
 
+
 @app.route("/workspace/<session_id>")
 def list_workspace(session_id):
     """List workspace files (backward compatible endpoint)."""
     try:
         stub = get_grpc_stub()
         response = stub.ListWorkspace(agent_pb2.WorkspaceRequest(session_id=session_id))
-        files = [{"path": f.path, "is_directory": f.is_directory,
-                  "size_bytes": f.size_bytes, "modified_at": f.modified_at}
-                 for f in response.files]
+        files = [
+            {
+                "path": f.path,
+                "is_directory": f.is_directory,
+                "size_bytes": f.size_bytes,
+                "modified_at": f.modified_at,
+            }
+            for f in response.files
+        ]
         return {"status": "ok", "files": files}
     except Exception as e:
         return {"status": "error", "message": str(e)}, 500
+
 
 @app.route("/workspace/<session_id>/tree")
 def workspace_tree(session_id):
@@ -272,12 +304,19 @@ def workspace_tree(session_id):
     try:
         stub = get_grpc_stub()
         response = stub.ListWorkspace(agent_pb2.WorkspaceRequest(session_id=session_id))
-        files = [{"path": f.path, "is_directory": f.is_directory,
-                  "size_bytes": f.size_bytes, "modified_at": f.modified_at}
-                 for f in response.files]
+        files = [
+            {
+                "path": f.path,
+                "is_directory": f.is_directory,
+                "size_bytes": f.size_bytes,
+                "modified_at": f.modified_at,
+            }
+            for f in response.files
+        ]
         return {"status": "ok", "files": files}
     except Exception as e:
         return {"status": "error", "message": str(e)}, 500
+
 
 @app.route("/workspace/<session_id>/file")
 def workspace_file(session_id):
@@ -287,13 +326,20 @@ def workspace_file(session_id):
         return {"status": "error", "message": "Missing 'path' query parameter"}, 400
     try:
         stub = get_grpc_stub()
-        response = stub.ReadFile(agent_pb2.FileRequest(session_id=session_id, path=path))
-        return {"status": "ok", "content": response.content,
-                "language": response.language, "path": response.path}
+        response = stub.ReadFile(
+            agent_pb2.FileRequest(session_id=session_id, path=path)
+        )
+        return {
+            "status": "ok",
+            "content": response.content,
+            "language": response.language,
+            "path": response.path,
+        }
     except grpc.RpcError as e:
         return {"status": "error", "message": f"{e.code()}: {e.details()}"}, 404
     except Exception as e:
         return {"status": "error", "message": str(e)}, 500
+
 
 @app.route("/workspace/<session_id>/diff")
 def workspace_diff(session_id):
@@ -303,9 +349,15 @@ def workspace_diff(session_id):
         return {"status": "error", "message": "Missing 'path' query parameter"}, 400
     try:
         stub = get_grpc_stub()
-        response = stub.DiffFile(agent_pb2.DiffRequest(session_id=session_id, path=path))
-        return {"status": "ok", "original": response.original,
-                "modified": response.modified, "diff_text": response.diff_text}
+        response = stub.DiffFile(
+            agent_pb2.DiffRequest(session_id=session_id, path=path)
+        )
+        return {
+            "status": "ok",
+            "original": response.original,
+            "modified": response.modified,
+            "diff_text": response.diff_text,
+        }
     except grpc.RpcError as e:
         return {"status": "error", "message": f"{e.code()}: {e.details()}"}, 404
     except Exception as e:
@@ -332,12 +384,14 @@ _fluss_conn = None
 _fluss_tables = {}
 
 # ── Anchor Message Schema ──────────────────────────────────────────
-ANCHOR_MESSAGE_SCHEMA = pa.schema([
-    pa.field("session_id", pa.string()),
-    pa.field("ts", pa.int64()),
-    pa.field("content", pa.string()),
-    pa.field("author", pa.string()),
-])
+ANCHOR_MESSAGE_SCHEMA = pa.schema(
+    [
+        pa.field("session_id", pa.string()),
+        pa.field("ts", pa.int64()),
+        pa.field("content", pa.string()),
+        pa.field("author", pa.string()),
+    ]
+)
 ANCHOR_MESSAGE_TABLE = "anchor_message"
 
 
@@ -358,6 +412,7 @@ async def _ensure_fluss_conn():
         return None
 
     import fluss
+
     config = fluss.Config({"bootstrap.servers": bootstrap})
     _fluss_conn = await fluss.FlussConnection.create(config)
     print(f"✅ Bridge: Connected to Fluss at {bootstrap}")
@@ -367,6 +422,7 @@ async def _ensure_fluss_conn():
 async def _get_table(table_name):
     """Get a Fluss table handle, cached."""
     import fluss
+
     if table_name in _fluss_tables:
         return _fluss_tables[table_name]
 
@@ -399,6 +455,7 @@ async def _lookup_dag_edges(session_id):
     edges = []
     try:
         import fluss
+
         conn = await _ensure_fluss_conn()
         admin = await conn.get_admin()
         table_path = fluss.TablePath("containerclaw", "chatroom")
@@ -416,10 +473,11 @@ async def _lookup_dag_edges(session_id):
             try:
                 batches = await scanner._async_poll_batches(200)
                 if not batches:
-                    if processed_any: break # Caught up to the current head
+                    if processed_any:
+                        break  # Caught up to the current head
                     await asyncio.sleep(0.1)
                     continue
-                
+
                 processed_any = True
                 for record_batch in batches:
                     batch = record_batch.batch
@@ -435,7 +493,9 @@ async def _lookup_dag_edges(session_id):
 
                     has_parent_event_id = "parent_event_id" in batch.schema.names
                     has_edge_type = "edge_type" in batch.schema.names
-                    parent_eid_arr = batch.column("parent_event_id") if has_parent_event_id else None
+                    parent_eid_arr = (
+                        batch.column("parent_event_id") if has_parent_event_id else None
+                    )
                     edge_type_arr = batch.column("edge_type") if has_edge_type else None
 
                     for i in range(batch.num_rows):
@@ -443,13 +503,19 @@ async def _lookup_dag_edges(session_id):
                             continue
 
                         parent_eid = parent_eid_arr[i].as_py() if parent_eid_arr else ""
-                        edge_type = edge_type_arr[i].as_py() if edge_type_arr else "SEQUENTIAL"
+                        edge_type = (
+                            edge_type_arr[i].as_py() if edge_type_arr else "SEQUENTIAL"
+                        )
                         event_type = type_arr[i].as_py()
                         actor = actor_arr[i].as_py()
-                        
+
                         # Safely extract and decode content
                         raw_content = content_arr[i].as_py() if content_arr else ""
-                        content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else str(raw_content)
+                        content = (
+                            raw_content.decode("utf-8")
+                            if isinstance(raw_content, bytes)
+                            else str(raw_content)
+                        )
 
                         if event_type in ("finish", "done", "checkpoint"):
                             status = "DONE"
@@ -470,23 +536,26 @@ async def _lookup_dag_edges(session_id):
                         elif "Winner:" in content:
                             label = content[:25]
 
-                        edges.append({
-                            "parent": parent_eid if parent_eid else "ROOT",
-                            "child": eid_arr[i].as_py(),
-                            "child_label": label,
-                            "edge_type": edge_type if edge_type else "SEQUENTIAL",
-                            "status": status,
-                            "updated_at": ts_arr[i].as_py(),
-                            "ts": ts_arr[i].as_py(),
-                            "content": content,
-                            "actor": actor,
-                        })
+                        edges.append(
+                            {
+                                "parent": parent_eid if parent_eid else "ROOT",
+                                "child": eid_arr[i].as_py(),
+                                "child_label": label,
+                                "edge_type": edge_type if edge_type else "SEQUENTIAL",
+                                "status": status,
+                                "updated_at": ts_arr[i].as_py(),
+                                "ts": ts_arr[i].as_py(),
+                                "content": content,
+                                "actor": actor,
+                            }
+                        )
             except Exception as e:
                 print(f"Bridge: DAG batch error: {e}")
                 break
     except Exception as e:
         print(f"Bridge: DAG edges scan error: {e}")
         import traceback
+
         traceback.print_exc()
 
     return edges
@@ -515,6 +584,7 @@ def telemetry_dag_stream(session_id):
 
     def generate():
         import fluss
+
         try:
             table = _run_async(_get_table("chatroom"))
             if table is None:
@@ -527,9 +597,7 @@ def telemetry_dag_stream(session_id):
             table_info = _run_async(admin.get_table_info(table_path))
             num_buckets = table_info.num_buckets
 
-            scanner = _run_async(
-                table.new_scan().create_record_batch_log_scanner()
-            )
+            scanner = _run_async(table.new_scan().create_record_batch_log_scanner())
             # Subscribe from LATEST — only new events after this point
             scanner.subscribe_buckets(
                 {b: fluss.LATEST_OFFSET for b in range(num_buckets)}
@@ -554,7 +622,9 @@ def telemetry_dag_stream(session_id):
 
                     has_parent_event_id = "parent_event_id" in batch.schema.names
                     has_edge_type = "edge_type" in batch.schema.names
-                    parent_eid_arr = batch.column("parent_event_id") if has_parent_event_id else None
+                    parent_eid_arr = (
+                        batch.column("parent_event_id") if has_parent_event_id else None
+                    )
                     edge_type_arr = batch.column("edge_type") if has_edge_type else None
 
                     for i in range(batch.num_rows):
@@ -562,13 +632,19 @@ def telemetry_dag_stream(session_id):
                             continue
 
                         parent_eid = parent_eid_arr[i].as_py() if parent_eid_arr else ""
-                        edge_type = edge_type_arr[i].as_py() if edge_type_arr else "SEQUENTIAL"
+                        edge_type = (
+                            edge_type_arr[i].as_py() if edge_type_arr else "SEQUENTIAL"
+                        )
                         event_type = type_arr[i].as_py()
                         actor = actor_arr[i].as_py()
 
                         # Safely extract and decode content
                         raw_content = content_arr[i].as_py() if content_arr else ""
-                        content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else str(raw_content)
+                        content = (
+                            raw_content.decode("utf-8")
+                            if isinstance(raw_content, bytes)
+                            else str(raw_content)
+                        )
 
                         # --- FIX P4: Better Status Mapping ---
                         if event_type in ("finish", "done", "checkpoint"):
@@ -622,19 +698,23 @@ async def _lookup_metrics(session_id):
     metrics = []
     try:
         import fluss
+
         conn = await _ensure_fluss_conn()
         admin = await conn.get_admin()
         table_path = fluss.TablePath("containerclaw", "live_metrics")
         table_info = await admin.get_table_info(table_path)
 
         scanner = await table.new_scan().create_record_batch_log_scanner()
-        scanner.subscribe_buckets({b: fluss.EARLIEST_OFFSET for b in range(table_info.num_buckets)})
+        scanner.subscribe_buckets(
+            {b: fluss.EARLIEST_OFFSET for b in range(table_info.num_buckets)}
+        )
 
         processed_any = False
         for poll_attempt in range(25):
             batches = await scanner._async_poll_batches(200)
             if not batches:
-                if processed_any: break
+                if processed_any:
+                    break
                 await asyncio.sleep(0.1)
                 continue
 
@@ -652,13 +732,15 @@ async def _lookup_metrics(session_id):
                         continue
                     dt = ws_arr[i].as_py()
                     ms = int(dt.timestamp() * 1000) if dt else 0
-                    metrics.append({
-                        "window_start": ms,
-                        "total_messages": tm_arr[i].as_py(),
-                        "tool_calls": tc_arr[i].as_py(),
-                        "tool_successes": ts_arr[i].as_py(),
-                        "avg_latency_ms": 0.0,
-                    })
+                    metrics.append(
+                        {
+                            "window_start": ms,
+                            "total_messages": tm_arr[i].as_py(),
+                            "tool_calls": tc_arr[i].as_py(),
+                            "tool_successes": ts_arr[i].as_py(),
+                            "avg_latency_ms": 0.0,
+                        }
+                    )
     except Exception as e:
         print(f"Bridge metrics scan error: {e}")
 
@@ -680,6 +762,7 @@ def telemetry_metrics(session_id):
         print(f"Bridge: Telemetry Metrics Error: {e}")
         return {"status": "ok", "metrics": []}
 
+
 async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
     """Stateless reconstruction of the context window using same logic as agent._format_history"""
     table = await _get_table("chatroom")
@@ -689,7 +772,7 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
     # Parse target_ts_str (ISO) to milliseconds
     try:
         # Handle decimal precision (some browsers/systems send more/less than 3 digits)
-        ts_clean = target_ts_str.replace('Z', '+00:00')
+        ts_clean = target_ts_str.replace("Z", "+00:00")
         target_ts_ms = int(datetime.fromisoformat(ts_clean).timestamp() * 1000)
     except Exception as e:
         print(f"Bridge Snorkel: Timestamp parse error '{target_ts_str}': {e}")
@@ -698,6 +781,7 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
     events = []
     try:
         import fluss
+
         conn = await _ensure_fluss_conn()
         admin = await conn.get_admin()
         table_path = fluss.TablePath("containerclaw", "chatroom")
@@ -705,24 +789,27 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
         num_buckets = table_info.num_buckets
 
         scanner = await table.new_scan().create_record_batch_log_scanner()
-        scanner.subscribe_buckets({b: fluss.EARLIEST_OFFSET for b in range(num_buckets)})
+        scanner.subscribe_buckets(
+            {b: fluss.EARLIEST_OFFSET for b in range(num_buckets)}
+        )
 
         # Fast poll loop: stop as soon as we've caught up or exceeded target_ts
         processed_any = False
         reached_target = False
-        target_ts_ms = target_ts_ms # ensure availability
-        
+        target_ts_ms = target_ts_ms  # ensure availability
+
         # Determine anchor text at that specific historical moment
         anchor_text = await _fetch_anchor_at_timestamp(session_id, target_ts_ms)
-        
+
         for poll_attempt in range(25):
             try:
                 batches = await scanner._async_poll_batches(200)
                 if not batches:
-                    if processed_any: break # Caught up to the current head
+                    if processed_any:
+                        break  # Caught up to the current head
                     await asyncio.sleep(0.1)
                     continue
-                
+
                 processed_any = True
                 for record_batch in batches:
                     batch = record_batch.batch
@@ -737,23 +824,29 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
                     for i in range(batch.num_rows):
                         if sid_arr[i].as_py() != session_id:
                             continue
-                        
+
                         ts = ts_arr[i].as_py()
                         # Integer comparison for ms timestamps
                         if ts > target_ts_ms:
                             reached_target = True
-                            continue # Skip events after target, but keep scanning for this batch
+                            continue  # Skip events after target, but keep scanning for this batch
 
                         raw_content = content_arr[i].as_py() if content_arr else ""
-                        content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else str(raw_content)
+                        content = (
+                            raw_content.decode("utf-8")
+                            if isinstance(raw_content, bytes)
+                            else str(raw_content)
+                        )
 
-                        events.append({
-                            "ts": ts,
-                            "actor_id": actor_arr[i].as_py(),
-                            "type": type_arr[i].as_py(),
-                            "content": content
-                        })
-                
+                        events.append(
+                            {
+                                "ts": ts,
+                                "actor_id": actor_arr[i].as_py(),
+                                "type": type_arr[i].as_py(),
+                                "content": content,
+                            }
+                        )
+
                 if reached_target:
                     break
             except Exception as e:
@@ -776,6 +869,7 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
 
     # ── SELF.md (Spine) Reconstruction (Sectional) ──
     from shared.spine_loader import load_spine
+
     spine_content = load_spine(actor_id)
 
     # ── Team Roster & Tool Reconstruction ──
@@ -783,10 +877,7 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
     tool_names = ", ".join(agent_tools)
 
     sys_prompt = CONFIG.prompts.think_with_tools.format(
-        agent_id=actor_id,
-        persona=persona,
-        tool_names=tool_names,
-        roster=roster_str
+        agent_id=actor_id, persona=persona, tool_names=tool_names, roster=roster_str
     )
     if spine_content:
         sys_prompt = spine_content + "\n\n" + sys_prompt
@@ -808,7 +899,7 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
             input_history.append(e)
 
     # Determine if this was a JSON-mode turn (e.g. Voting)
-    is_json = (subject_type == "voting")
+    is_json = subject_type == "voting"
 
     perspective = ContextBuilder.build_payload(
         raw_messages=input_history,
@@ -816,7 +907,7 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
         actor_id=actor_id,
         system_prompt=sys_prompt,
         anchor_text=anchor_text,
-        is_json=is_json
+        is_json=is_json,
     )
 
     # If we found the response, append it to show as the logical result of the context
@@ -867,7 +958,7 @@ async def _lookup_raw_history(session_id, target_ts_str):
         return []
 
     try:
-        ts_clean = target_ts_str.replace('Z', '+00:00')
+        ts_clean = target_ts_str.replace("Z", "+00:00")
         target_ts_ms = int(datetime.fromisoformat(ts_clean).timestamp() * 1000)
     except Exception as e:
         print(f"Bridge Raw History: Timestamp parse error '{target_ts_str}': {e}")
@@ -876,6 +967,7 @@ async def _lookup_raw_history(session_id, target_ts_str):
     events = []
     try:
         import fluss
+
         conn = await _ensure_fluss_conn()
         admin = await conn.get_admin()
         table_path = fluss.TablePath("containerclaw", "chatroom")
@@ -883,7 +975,9 @@ async def _lookup_raw_history(session_id, target_ts_str):
         num_buckets = table_info.num_buckets
 
         scanner = await table.new_scan().create_record_batch_log_scanner()
-        scanner.subscribe_buckets({b: fluss.EARLIEST_OFFSET for b in range(num_buckets)})
+        scanner.subscribe_buckets(
+            {b: fluss.EARLIEST_OFFSET for b in range(num_buckets)}
+        )
 
         processed_any = False
         reached_target = False
@@ -891,10 +985,11 @@ async def _lookup_raw_history(session_id, target_ts_str):
             try:
                 batches = await scanner._async_poll_batches(200)
                 if not batches:
-                    if processed_any: break
+                    if processed_any:
+                        break
                     await asyncio.sleep(0.1)
                     continue
-                
+
                 processed_any = True
                 for record_batch in batches:
                     batch = record_batch.batch
@@ -908,23 +1003,33 @@ async def _lookup_raw_history(session_id, target_ts_str):
                     for i in range(batch.num_rows):
                         if sid_arr[i].as_py() != session_id:
                             continue
-                        
+
                         ts = ts_arr[i].as_py()
                         if ts > target_ts_ms:
                             reached_target = True
                             continue
 
                         raw_content = content_arr[i].as_py() if content_arr else ""
-                        content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else str(raw_content)
+                        content = (
+                            raw_content.decode("utf-8")
+                            if isinstance(raw_content, bytes)
+                            else str(raw_content)
+                        )
                         raw_actor = actor_arr[i].as_py()
-                        actor = raw_actor.decode("utf-8") if isinstance(raw_actor, bytes) else str(raw_actor)
+                        actor = (
+                            raw_actor.decode("utf-8")
+                            if isinstance(raw_actor, bytes)
+                            else str(raw_actor)
+                        )
 
-                        events.append({
-                            "actor_id": actor,
-                            "content": content,
-                            "ts": ts,
-                        })
-                
+                        events.append(
+                            {
+                                "actor_id": actor,
+                                "content": content,
+                                "ts": ts,
+                            }
+                        )
+
                 if reached_target:
                     break
             except Exception as e:
@@ -940,11 +1045,13 @@ async def _lookup_raw_history(session_id, target_ts_str):
 
 # ── Anchor Protocol Bridge Logic ───────────────────────────────────
 
+
 @app.route("/anchor/templates")
 def get_anchor_templates():
     """Return the list of steering templates from config.yaml."""
     templates = [t.model_dump() for t in CONFIG.ui.anchor_templates]
     return {"status": "ok", "templates": templates}
+
 
 @app.route("/session/<session_id>/anchor", methods=["POST"])
 def set_anchor(session_id):
@@ -975,14 +1082,17 @@ async def _write_anchor(session_id, content, author):
     table = await _get_table(ANCHOR_MESSAGE_TABLE)
     if table is None:
         raise Exception("anchor_message table not available")
-    
-    batch = pa.RecordBatch.from_arrays([
-        pa.array([session_id], type=pa.string()),
-        pa.array([int(time.time() * 1000)], type=pa.int64()),
-        pa.array([content], type=pa.string()),
-        pa.array([author], type=pa.string()),
-    ], schema=ANCHOR_MESSAGE_SCHEMA)
-    
+
+    batch = pa.RecordBatch.from_arrays(
+        [
+            pa.array([session_id], type=pa.string()),
+            pa.array([int(time.time() * 1000)], type=pa.int64()),
+            pa.array([content], type=pa.string()),
+            pa.array([author], type=pa.string()),
+        ],
+        schema=ANCHOR_MESSAGE_SCHEMA,
+    )
+
     writer = table.new_append().create_writer()
     writer.write_arrow_batch(batch)
     if hasattr(writer, "flush"):
@@ -998,8 +1108,9 @@ async def _fetch_anchor_at_timestamp(session_id, target_ts_ms):
     table = await _get_table(ANCHOR_MESSAGE_TABLE)
     if table is None:
         return ""
-    
+
     import fluss
+
     conn = await _ensure_fluss_conn()
     admin = await conn.get_admin()
     table_path = fluss.TablePath("containerclaw", ANCHOR_MESSAGE_TABLE)
@@ -1011,17 +1122,18 @@ async def _fetch_anchor_at_timestamp(session_id, target_ts_ms):
 
     latest_ts = -1
     latest_content = ""
-    
+
     # Scan full history up to target_ts_ms
     processed_any = False
     for poll_attempt in range(20):
         try:
             batches = await scanner._async_poll_batches(200)
             if not batches:
-                if processed_any: break
+                if processed_any:
+                    break
                 await asyncio.sleep(0.1)
                 continue
-            
+
             processed_any = True
             for record_batch in batches:
                 batch = record_batch.batch
@@ -1032,22 +1144,25 @@ async def _fetch_anchor_at_timestamp(session_id, target_ts_ms):
                 for i in range(batch.num_rows):
                     if sid_arr[i].as_py() != session_id:
                         continue
-                    
+
                     ts = ts_arr[i].as_py()
                     if ts > target_ts_ms:
-                        continue 
-                    
+                        continue
+
                     if ts > latest_ts:
                         latest_ts = ts
                         raw_content = content_arr[i].as_py()
-                        latest_content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else str(raw_content)
+                        latest_content = (
+                            raw_content.decode("utf-8")
+                            if isinstance(raw_content, bytes)
+                            else str(raw_content)
+                        )
         except Exception as e:
             print(f"Bridge: Anchor scan batch error: {e}")
             break
-            
+
     return latest_content
 
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001, threaded=True)
-

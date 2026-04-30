@@ -58,21 +58,24 @@ class CommandDispatcher:
 
 # ── Built-in Command Handlers ───────────────────────────────────────
 
+
 async def _handle_stop(content: str, moderator):
     """Halt all autonomous execution immediately.
-    
+
     If a ReconciliationController is wired, uses halt() to cancel
     running election/execution tasks. Otherwise falls back to
     budget zeroing.
     """
-    reconciler = getattr(moderator, '_reconciler', None)
+    reconciler = getattr(moderator, "_reconciler", None)
     if reconciler:
         reconciler.halt()
     else:
         moderator.base_budget = 0
         moderator.current_steps = 0
     print("🛑 [Moderator] /stop received. Halting autonomy.")
-    await moderator.publish("Moderator", "🛑 Automation halted by user demand.", "system")
+    await moderator.publish(
+        "Moderator", "🛑 Automation halted by user demand.", "system"
+    )
 
 
 async def _handle_automation(content: str, moderator):
@@ -82,23 +85,28 @@ async def _handle_automation(content: str, moderator):
         moderator.base_budget = val
         moderator.current_steps = val
         # If reconciler is in SUSPENDED state, transition back to IDLE
-        reconciler = getattr(moderator, '_reconciler', None)
+        reconciler = getattr(moderator, "_reconciler", None)
         if reconciler:
             from reconciler import State
+
             if reconciler.state == State.SUSPENDED:
                 reconciler.state = State.IDLE
                 print(f"🔄 [Reconciler] Exiting SUSPENDED → IDLE (budget={val})")
         print(f"🤖 [Moderator] /automation={val} received. Budget updated.")
-        await moderator.publish("Moderator", f"🤖 Step budget updated to: {val}", "system")
+        await moderator.publish(
+            "Moderator", f"🤖 Step budget updated to: {val}", "system"
+        )
     except (IndexError, ValueError):
         print("⚠️ [Moderator] Invalid /automation command format.")
 
 
 async def _handle_subagents(content: str, moderator):
     """Show status of active subagents."""
-    mgr = getattr(moderator, 'subagent_manager', None)
+    mgr = getattr(moderator, "subagent_manager", None)
     if not mgr:
-        await moderator.publish("Moderator", "⚠️ SubagentManager not available.", "system")
+        await moderator.publish(
+            "Moderator", "⚠️ SubagentManager not available.", "system"
+        )
         return
     status = mgr.get_status()
     await moderator.publish("Moderator", f"📊 {status}", "system")
@@ -106,19 +114,27 @@ async def _handle_subagents(content: str, moderator):
 
 async def _handle_cancel_subagent(content: str, moderator):
     """Cancel a specific subagent: /cancel_subagent=<task_id>."""
-    mgr = getattr(moderator, 'subagent_manager', None)
+    mgr = getattr(moderator, "subagent_manager", None)
     if not mgr:
-        await moderator.publish("Moderator", "⚠️ SubagentManager not available.", "system")
+        await moderator.publish(
+            "Moderator", "⚠️ SubagentManager not available.", "system"
+        )
         return
     try:
         task_id = content.split("=")[1].strip()
         success = await mgr.cancel(task_id)
         if success:
-            await moderator.publish("Moderator", f"🛑 Subagent {task_id} cancellation requested.", "system")
+            await moderator.publish(
+                "Moderator", f"🛑 Subagent {task_id} cancellation requested.", "system"
+            )
         else:
-            await moderator.publish("Moderator", f"⚠️ Subagent {task_id} not found.", "system")
+            await moderator.publish(
+                "Moderator", f"⚠️ Subagent {task_id} not found.", "system"
+            )
     except (IndexError, ValueError):
-        await moderator.publish("Moderator", "⚠️ Usage: /cancel_subagent=<task_id>", "system")
+        await moderator.publish(
+            "Moderator", "⚠️ Usage: /cancel_subagent=<task_id>", "system"
+        )
 
 
 def create_default_dispatcher() -> CommandDispatcher:

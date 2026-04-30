@@ -103,7 +103,7 @@ class ReconciliationController:
         await self.mod.publisher.start()
 
         # Wire SubagentManager publisher
-        if hasattr(self.mod, 'subagent_manager') and self.mod.subagent_manager:
+        if hasattr(self.mod, "subagent_manager") and self.mod.subagent_manager:
             self.mod.subagent_manager.publisher = self.mod.publisher
 
         # Initialize ToolExecutor
@@ -125,7 +125,9 @@ class ReconciliationController:
         # Resume from replayed history if autonomous
         if self.mod.last_replayed_offset > 0 and self.mod.base_budget != 0:
             self.mod.current_steps = self.mod.base_budget
-            print(f"🔄 [Reconciler] Resuming from replayed history ({self.mod.last_replayed_offset} msgs).")
+            print(
+                f"🔄 [Reconciler] Resuming from replayed history ({self.mod.last_replayed_offset} msgs)."
+            )
         else:
             self.mod.current_steps = 0
 
@@ -164,13 +166,17 @@ class ReconciliationController:
                         # Buffer human interrupts that arrive mid-cycle
                         if human_interrupted:
                             self._pending_human_interrupt = True
-                            print("📌 [Reconciler] Human message buffered — will trigger after current cycle.")
+                            print(
+                                "📌 [Reconciler] Human message buffered — will trigger after current cycle."
+                            )
                         # Check if the dispatched task has completed
                         if self._election_task and self._election_task.done():
                             self._election_task = None
                             self.state = State.IDLE
                             self.backbone_id = await self.mod.publish(
-                                "Moderator", "Cycle complete.", "checkpoint",
+                                "Moderator",
+                                "Cycle complete.",
+                                "checkpoint",
                                 parent_event_id=self.backbone_id,
                                 edge_type="SEQUENTIAL",
                             )
@@ -192,11 +198,15 @@ class ReconciliationController:
                             self._election_task = asyncio.create_task(
                                 self._run_election_and_execute()
                             )
-                            print("🔄 [Reconciler] Human message — SUSPENDED → ELECTING.")
+                            print(
+                                "🔄 [Reconciler] Human message — SUSPENDED → ELECTING."
+                            )
                         # Automation budget restored via /automation=N
                         elif self.mod.base_budget != 0 and self.mod.current_steps != 0:
                             self.state = State.IDLE
-                            print("🔄 [Reconciler] Budget restored — exiting SUSPENDED → IDLE.")
+                            print(
+                                "🔄 [Reconciler] Budget restored — exiting SUSPENDED → IDLE."
+                            )
 
                 # 4. Yield to event loop (minimal sleep to prevent spin)
                 await asyncio.sleep(0.1)
@@ -207,11 +217,14 @@ class ReconciliationController:
             except Exception as e:
                 print(f"❌ [Reconciler] Error in main loop: {e}")
                 import traceback
+
                 traceback.print_exc()
                 await asyncio.sleep(1)
 
         # Cleanup
-        print(f"🏁 [Reconciler] Loop exited for session {self.mod.session_id}. Halted={self._halted}")
+        print(
+            f"🏁 [Reconciler] Loop exited for session {self.mod.session_id}. Halted={self._halted}"
+        )
         if self.heartbeat:
             await self.heartbeat.stop()
 
@@ -257,7 +270,9 @@ class ReconciliationController:
 
             # Election start — branches from backbone
             election_start_id = await self.mod.publish(
-                "Moderator", "🗳️ Starting Election...", "thought",
+                "Moderator",
+                "🗳️ Starting Election...",
+                "thought",
                 parent_event_id=self.backbone_id,
                 edge_type="SEQUENTIAL",
             )
@@ -268,13 +283,18 @@ class ReconciliationController:
 
             # Election — pass parent so internal round messages can chain
             winner, election_log, is_job_done = await self.mod.election.run_election(
-                self.mod.agents, self.mod.roster_str, context_window, self.mod.publish,
+                self.mod.agents,
+                self.mod.roster_str,
+                context_window,
+                self.mod.publish,
                 parent_event_id=election_start_id,
             )
 
             # Summary: child of election-start (collapsible detail, not backbone)
             await self.mod.publish(
-                "Moderator", f"Election Summary:\n{election_log}", "voting",
+                "Moderator",
+                f"Election Summary:\n{election_log}",
+                "voting",
                 parent_event_id=election_start_id,
                 edge_type="SEQUENTIAL",
             )
@@ -282,7 +302,9 @@ class ReconciliationController:
             if is_job_done:
                 print("🎉 [Reconciler] Job is complete!")
                 self.backbone_id = await self.mod.publish(
-                    "Moderator", "Consensus: Task Complete.", "finish",
+                    "Moderator",
+                    "Consensus: Task Complete.",
+                    "finish",
                     parent_event_id=self.backbone_id,
                     edge_type="SEQUENTIAL",
                 )
@@ -301,7 +323,9 @@ class ReconciliationController:
 
                 # Winner announcement: child of election-start
                 winner_id = await self.mod.publish(
-                    "Moderator", f"🏆 Winner: {winner}", "thought",
+                    "Moderator",
+                    f"🏆 Winner: {winner}",
+                    "thought",
                     parent_event_id=election_start_id,
                     edge_type="SEQUENTIAL",
                 )
@@ -316,6 +340,7 @@ class ReconciliationController:
                     )
                 else:
                     from tool_executor import ToolExecutor
+
                     resp = await ToolExecutor.execute_text_only(
                         winning_agent, self.mod.context.get_window
                     )
@@ -328,14 +353,18 @@ class ReconciliationController:
                     print(f"📢 [{winner} says]: {resp}")
                     # Agent output advances the backbone
                     self.backbone_id = await self.mod.publish(
-                        winner, resp, "output",
+                        winner,
+                        resp,
+                        "output",
                         parent_event_id=winner_id,
                         edge_type="SEQUENTIAL",
                     )
                 else:
                     print(f"💤 [{winner}] chose to WAIT. Nudging...")
                     await self.mod.publish(
-                        "Moderator", f"💤 {winner} is waiting. Nudging...", "thought",
+                        "Moderator",
+                        f"💤 {winner} is waiting. Nudging...",
+                        "thought",
                         parent_event_id=winner_id,
                         edge_type="SEQUENTIAL",
                     )
@@ -344,7 +373,9 @@ class ReconciliationController:
                         f"Could you briefly explain why so the team knows what you're waiting for?"
                     )
                     await self.mod.publish(
-                        "Moderator", nudge_text, "system",
+                        "Moderator",
+                        nudge_text,
+                        "system",
                         parent_event_id=winner_id,
                         edge_type="SEQUENTIAL",
                     )
@@ -354,7 +385,9 @@ class ReconciliationController:
                     if resp:
                         print(f"📢 [{winner} explanation]: {resp}")
                         self.backbone_id = await self.mod.publish(
-                            winner, resp, "output",
+                            winner,
+                            resp,
+                            "output",
                             parent_event_id=winner_id,
                             edge_type="SEQUENTIAL",
                         )
@@ -365,6 +398,7 @@ class ReconciliationController:
         except Exception as e:
             print(f"❌ [Reconciler] Election/execution error: {e}")
             import traceback
+
             traceback.print_exc()
         finally:
             if self.heartbeat:
@@ -389,7 +423,9 @@ class ReconciliationController:
             parent_event_id="",
             edge_type="ROOT",
         )
-        print(f"🚀 [Reconciler] Boot event published for session {self.mod.session_id}.")
+        print(
+            f"🚀 [Reconciler] Boot event published for session {self.mod.session_id}."
+        )
 
     def _was_human_trigger(self) -> bool:
         """Check if the last context message was from a human."""
@@ -419,9 +455,9 @@ class ReconciliationController:
             self._election_task = None
         self.mod.base_budget = 0
         self.mod.current_steps = 0
-        
+
         # Also halt any running subagents
-        if hasattr(self.mod, 'subagent_manager') and self.mod.subagent_manager:
+        if hasattr(self.mod, "subagent_manager") and self.mod.subagent_manager:
             asyncio.create_task(self.mod.subagent_manager.cancel_all())
-            
+
         print("🛑 [Reconciler] Permanently halted — loop will exit.")

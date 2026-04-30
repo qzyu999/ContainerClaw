@@ -34,7 +34,7 @@ import fluss
 
 class FlussClient:
     """Centralized Fluss connection and table management.
-    
+
     Usage:
         client = FlussClient(bootstrap_servers)
         await client.connect()       # Connect + create tables
@@ -95,13 +95,16 @@ class FlussClient:
                 return
 
             except Exception as e:
-                print(f"⏳ Fluss initialization failed (attempt {attempt + 1}/{max_attempts}): {e}")
+                print(
+                    f"⏳ Fluss initialization failed (attempt {attempt + 1}/{max_attempts}): {e}"
+                )
                 await asyncio.sleep(retry_delay)
 
         raise Exception(f"❌ Failed to initialize Fluss after {max_attempts} attempts.")
 
-    async def _ensure_table(self, table_name: str, schema: pa.Schema,
-                             primary_keys: list[str] | None = None):
+    async def _ensure_table(
+        self, table_name: str, schema: pa.Schema, primary_keys: list[str] | None = None
+    ):
         """Create a table if it doesn't exist, then return a table handle.
 
         Args:
@@ -125,12 +128,12 @@ class FlussClient:
 
     async def create_scanner(self, table, start_ts: int | None = None):
         """Create a batch log scanner with dynamic bucket discovery.
-        
+
         Args:
             table: Fluss table handle (e.g., self.chat_table)
             start_ts: Optional millisecond timestamp to seek from.
                        If None, subscribes from the beginning (offset 0).
-        
+
         Returns:
             A record-batch log scanner ready to poll.
         """
@@ -159,7 +162,7 @@ class FlussClient:
             if "poisoned" in str(e).lower() or "unexpectedeof" in str(e).lower():
                 print("♻️ [FlussClient] Poisoned connection detected. Self-healing...")
                 await self.connect()
-                
+
                 # Fetch a fresh table reference from the new connection
                 fresh_table = await self.conn.get_table(table.get_table_path())
                 return await self.create_scanner(fresh_table, start_ts)
@@ -179,11 +182,11 @@ class FlussClient:
             list[pa.RecordBatch]: May be empty (timeout, not end-of-stream).
         """
         try:
-            # SHIELD THE RUST FUTURE: Because _async_poll_batches is a Rust function, 
+            # SHIELD THE RUST FUTURE: Because _async_poll_batches is a Rust function,
             # it returns a Future, not a coroutine. We use ensure_future to safely wrap it.
             future = asyncio.ensure_future(scanner._async_poll_batches(timeout_ms))
             batches = await asyncio.shield(future)
-            
+
             if not batches:
                 return []
             return [b.batch for b in batches]
@@ -200,12 +203,15 @@ class FlussClient:
             dict with session_id, title, created_at, last_active_at.
         """
         now = int(time.time() * 1000)
-        batch = pa.RecordBatch.from_arrays([
-            pa.array([session_id], type=pa.string()),
-            pa.array([title], type=pa.string()),
-            pa.array([now], type=pa.int64()),
-            pa.array([now], type=pa.int64()),
-        ], schema=SESSIONS_SCHEMA)
+        batch = pa.RecordBatch.from_arrays(
+            [
+                pa.array([session_id], type=pa.string()),
+                pa.array([title], type=pa.string()),
+                pa.array([now], type=pa.int64()),
+                pa.array([now], type=pa.int64()),
+            ],
+            schema=SESSIONS_SCHEMA,
+        )
 
         writer = self.sessions_table.new_append().create_writer()
         writer.write_arrow_batch(batch)
@@ -257,7 +263,9 @@ class FlussClient:
             )
         except Exception as e:
             if "poisoned" in str(e).lower() or "unexpectedeof" in str(e).lower():
-                print("♻️ [FlussClient] Poisoned connection in list_sessions. Self-healing...")
+                print(
+                    "♻️ [FlussClient] Poisoned connection in list_sessions. Self-healing..."
+                )
                 await self.connect()
                 return await self.list_sessions()
             raise e
@@ -316,19 +324,21 @@ class FlussClient:
                             e_type = e_type.decode("utf-8")
                     except (KeyError, ValueError, IndexError):
                         e_type = "thought" if actor_id == "Moderator" else "output"
-                    events.append({
-                        "ts": ts_ms,
-                        "actor_id": actor_id,
-                        "content": content,
-                        "type": e_type,
-                    })
+                    events.append(
+                        {
+                            "ts": ts_ms,
+                            "actor_id": actor_id,
+                            "content": content,
+                            "type": e_type,
+                        }
+                    )
 
         events.sort(key=lambda x: x["ts"])
         return events
 
     async def fetch_latest_anchor(self, session_id: str) -> str:
         """Return the content of the most recent anchor_message for a session.
-        
+
         Returns empty string if no anchor has been set.
         """
         scanner = await self.create_scanner(self.anchor_table)
@@ -352,22 +362,29 @@ class FlussClient:
                     if ts > latest_ts:
                         latest_ts = ts
                         content = content_arr[i].as_py()
-                        latest_content = content.decode("utf-8") if isinstance(content, bytes) else str(content)
+                        latest_content = (
+                            content.decode("utf-8")
+                            if isinstance(content, bytes)
+                            else str(content)
+                        )
         return latest_content
 
     async def set_anchor(self, session_id: str, content: str) -> bool:
         """Write a new steering anchor message to the anchor_table.
-        
+
         Returns:
             True if successful.
         """
         now = int(time.time() * 1000)
-        batch = pa.RecordBatch.from_arrays([
-            pa.array([session_id], type=pa.string()),
-            pa.array([now], type=pa.int64()),
-            pa.array([content], type=pa.string()),
-            pa.array(["System"], type=pa.string()),
-        ], schema=ANCHOR_MESSAGE_SCHEMA)
+        batch = pa.RecordBatch.from_arrays(
+            [
+                pa.array([session_id], type=pa.string()),
+                pa.array([now], type=pa.int64()),
+                pa.array([content], type=pa.string()),
+                pa.array(["System"], type=pa.string()),
+            ],
+            schema=ANCHOR_MESSAGE_SCHEMA,
+        )
 
         try:
             writer = self.anchor_table.new_append().create_writer()

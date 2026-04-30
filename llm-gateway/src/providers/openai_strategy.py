@@ -49,4 +49,3 @@ class OpenAIStrategy:
             return res.json(), res.status_code
         except Exception as e:
             return {"error": f"OpenAI strategy request failed: {str(e)}"}, 502
-

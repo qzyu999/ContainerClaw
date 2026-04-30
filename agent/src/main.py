@@ -51,19 +51,35 @@ from agent import LLMAgent
 from shared.spine_loader import load_spine
 
 LANG_MAP = {
-    ".py": "python", ".js": "javascript", ".ts": "typescript",
-    ".java": "java", ".go": "go", ".rs": "rust", ".rb": "ruby",
-    ".md": "markdown", ".json": "json", ".yaml": "yaml", ".yml": "yaml",
-    ".html": "html", ".css": "css", ".sh": "bash", ".sql": "sql",
-    ".txt": "plaintext", ".toml": "toml", ".xml": "xml",
-    ".c": "c", ".cpp": "cpp", ".h": "c", ".hpp": "cpp",
+    ".py": "python",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".java": "java",
+    ".go": "go",
+    ".rs": "rust",
+    ".rb": "ruby",
+    ".md": "markdown",
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".html": "html",
+    ".css": "css",
+    ".sh": "bash",
+    ".sql": "sql",
+    ".txt": "plaintext",
+    ".toml": "toml",
+    ".xml": "xml",
+    ".c": "c",
+    ".cpp": "cpp",
+    ".h": "c",
+    ".hpp": "cpp",
 }
 
 
 def ms_to_iso(ts_ms: int) -> str:
     """Convert millisecond timestamp to high-precision RFC 3339 string."""
     dt = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
-    return dt.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 class AgentService(agent_pb2_grpc.AgentServiceServicer):
@@ -106,9 +122,9 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 execution_mode=scfg.get("execution_mode", ""),
             )
 
-    async def _init_moderator(self, session_id: str,
-                               runtime_image: str = "",
-                               execution_mode: str = "") -> StageModerator:
+    async def _init_moderator(
+        self, session_id: str, runtime_image: str = "", execution_mode: str = ""
+    ) -> StageModerator:
         """Initialize a new session moderator. Runs on the event loop.
 
         Args:
@@ -120,20 +136,24 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
         # Build agents from config.yaml roster
         cfg = config.CONFIG
-        
+
         agents = []
         for agent_cfg in cfg.agents:
             # ── Loading SELF.md (Spine) Sectional Parsing ──
             spine_content = load_spine(agent_cfg.name)
 
-            agents.append(LLMAgent(
-                agent_id=agent_cfg.name,
-                persona=agent_cfg.persona,
-                provider=agent_cfg.provider or cfg.default_provider,
-                model=agent_cfg.model or cfg.default_model,
-                spine=spine_content
-            ))
-        print(f"🤖 [Agent] Roster: {[a.agent_id for a in agents]} (Spine Loaded: {bool(spine_content)})")
+            agents.append(
+                LLMAgent(
+                    agent_id=agent_cfg.name,
+                    persona=agent_cfg.persona,
+                    provider=agent_cfg.provider or cfg.default_provider,
+                    model=agent_cfg.model or cfg.default_model,
+                    spine=spine_content,
+                )
+            )
+        print(
+            f"🤖 [Agent] Roster: {[a.agent_id for a in agents]} (Spine Loaded: {bool(spine_content)})"
+        )
 
         # ── ConchShell: Per-agent tool authorization ──
         conchshell_enabled = config.CONCHSHELL_ENABLED
@@ -178,7 +198,9 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                     pass
 
                 if not docker_available:
-                    print(f"⚠️ [Agent] Docker not available — implicit_proxy mode requires")
+                    print(
+                        f"⚠️ [Agent] Docker not available — implicit_proxy mode requires"
+                    )
                     print(f"    a pre-provisioned sidecar (docker-compose/k8s).")
                     print(f"    Falling back to native mode for this session.")
                     sandbox_mgr.mode = "native"
@@ -187,7 +209,9 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                         sandbox_mgr.client.containers.get(session_runtime)
                         print(f"🐳 [Agent] Sidecar validated: {session_runtime}")
                     except Exception as e:
-                        print(f"⚠️ [Agent] Sidecar '{session_runtime}' not reachable: {e}")
+                        print(
+                            f"⚠️ [Agent] Sidecar '{session_runtime}' not reachable: {e}"
+                        )
                         print(f"    Falling back to native mode for this session.")
                         sandbox_mgr.mode = "native"
                 else:
@@ -195,7 +219,9 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                     print(f"    Falling back to native mode for this session.")
                     sandbox_mgr.mode = "native"
             elif session_exec_mode == "explicit_orchestrator":
-                print(f"🐳 [Agent] Explicit orchestrator mode — ephemeral containers on demand.")
+                print(
+                    f"🐳 [Agent] Explicit orchestrator mode — ephemeral containers on demand."
+                )
             else:
                 print(f"🐳 [Agent] Native execution mode for session {session_id[:8]}.")
 
@@ -211,14 +237,22 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             structured_search = StructuredSearchTool()
             linter = LinterTool()
             create_file = CreateFileTool()
-            
+
             # Explicit Sidecar Orchestration
             execute_sandbox = ExecuteInSandboxTool(sandbox_manager=sandbox_mgr)
 
             common_tools = [
-                board_rw, test_runner, diff,
-                surgical_edit, advanced_read, repo_map, structured_search,
-                linter, session_shell, create_file, execute_sandbox
+                board_rw,
+                test_runner,
+                diff,
+                surgical_edit,
+                advanced_read,
+                repo_map,
+                structured_search,
+                linter,
+                session_shell,
+                create_file,
+                execute_sandbox,
             ]
 
             # DelegateTool — wired after SubagentManager is created below
@@ -231,20 +265,25 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             toolsets = {}
             for agent_cfg in cfg.agents:
                 agent_tool_names = agent_cfg.resolved_tools(cfg.default_tools)
-                agent_tools = [tool_registry[n] for n in agent_tool_names if n in tool_registry]
+                agent_tools = [
+                    tool_registry[n] for n in agent_tool_names if n in tool_registry
+                ]
                 toolsets[agent_cfg.name] = agent_tools
             tool_dispatcher = ToolDispatcher(toolsets)
-            print(f"🐚 [ConchShell] Tool dispatcher initialized for session {session_id}.")
+            print(
+                f"🐚 [ConchShell] Tool dispatcher initialized for session {session_id}."
+            )
         else:
             sandbox_mgr = None
             print("🐚 [ConchShell] Disabled — agents will use text-only mode.")
 
         moderator = StageModerator(
-            self.table, agents,
+            self.table,
+            agents,
             session_id=session_id,
             tool_dispatcher=tool_dispatcher,
             sessions_table=self.sessions_table,
-            fluss_client=self.fluss
+            fluss_client=self.fluss,
         )
         moderator.board = board
         moderator.sandbox_mgr = sandbox_mgr  # Expose for session context building
@@ -279,9 +318,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         moderator._reconciler = reconciler
 
         # Start the reconciler loop as a task on THIS event loop
-        asyncio.create_task(reconciler.run(
-            autonomous_steps=config.AUTONOMOUS_STEPS
-        ))
+        asyncio.create_task(reconciler.run(autonomous_steps=config.AUTONOMOUS_STEPS))
 
         return moderator
 
@@ -289,7 +326,9 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
     async def ExecuteTask(self, request, context):
         """Accept a task from the UI and publish to Fluss."""
-        print(f"📥 Received task from UI: {request.prompt} (Session: {request.session_id})")
+        print(
+            f"📥 Received task from UI: {request.prompt} (Session: {request.session_id})"
+        )
 
         moderator = await self._get_moderator(request.session_id)
         try:
@@ -315,7 +354,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             yield agent_pb2.ActivityEvent(
                 timestamp=ms_to_iso(int(time.time() * 1000)),
                 type="thought",
-                content=f"Connected to session: {session_id}"
+                content=f"Connected to session: {session_id}",
             )
 
             # 2. Create optimized scanner (seek to start_ts) — direct await
@@ -359,9 +398,12 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                                 continue
                             seen_keys.add(key)
 
-                            if isinstance(actor_id, bytes): actor_id = actor_id.decode('utf-8')
-                            if isinstance(content, bytes): content = content.decode('utf-8')
-                            if isinstance(e_type, bytes): e_type = e_type.decode('utf-8')
+                            if isinstance(actor_id, bytes):
+                                actor_id = actor_id.decode("utf-8")
+                            if isinstance(content, bytes):
+                                content = content.decode("utf-8")
+                            if isinstance(e_type, bytes):
+                                e_type = e_type.decode("utf-8")
 
                             ts_iso = ms_to_iso(ts_ms)
 
@@ -369,7 +411,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                                 timestamp=ts_iso,
                                 type=e_type or "output",
                                 content=content,
-                                actor_id=actor_id
+                                actor_id=actor_id,
                             )
                 except Exception as e:
                     print(f"⚠️ [StreamActivity] Poll error: {e}")
@@ -401,15 +443,17 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             if ".git" in rel.split(os.sep) and not rel.endswith(".gitkeep"):
                 continue
             try:
-                entries.append(agent_pb2.FileEntry(
-                    path=rel,
-                    is_directory=p.is_dir(),
-                    size_bytes=p.stat().st_size if p.is_file() else 0,
-                    modified_at=time.strftime(
-                        "%Y-%m-%dT%H:%M:%SZ",
-                        time.gmtime(p.stat().st_mtime),
-                    ),
-                ))
+                entries.append(
+                    agent_pb2.FileEntry(
+                        path=rel,
+                        is_directory=p.is_dir(),
+                        size_bytes=p.stat().st_size if p.is_file() else 0,
+                        modified_at=time.strftime(
+                            "%Y-%m-%dT%H:%M:%SZ",
+                            time.gmtime(p.stat().st_mtime),
+                        ),
+                    )
+                )
             except OSError:
                 continue  # Skip unreadable entries
         return entries
@@ -418,9 +462,13 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         """Read a single file from /workspace. File I/O offloaded to thread."""
         path = Path("/workspace") / request.path
         if not path.resolve().is_relative_to(Path("/workspace")):
-            await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Path traversal denied")
+            await context.abort(
+                grpc.StatusCode.PERMISSION_DENIED, "Path traversal denied"
+            )
         if not path.exists() or path.is_dir():
-            await context.abort(grpc.StatusCode.NOT_FOUND, f"File not found: {request.path}")
+            await context.abort(
+                grpc.StatusCode.NOT_FOUND, f"File not found: {request.path}"
+            )
 
         lang = LANG_MAP.get(path.suffix, "plaintext")
         try:
@@ -436,7 +484,9 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         """Generate a diff for a file (vs git HEAD or vs empty). Offloaded to thread."""
         path = Path("/workspace") / request.path
         if not path.resolve().is_relative_to(Path("/workspace")):
-            await context.abort(grpc.StatusCode.PERMISSION_DENIED, "Path traversal denied")
+            await context.abort(
+                grpc.StatusCode.PERMISSION_DENIED, "Path traversal denied"
+            )
 
         original, modified, diff_text = await asyncio.to_thread(
             self._diff_file_sync, request.path, path
@@ -450,6 +500,7 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
     def _diff_file_sync(rel_path: str, path: Path) -> tuple[str, str, str]:
         """Synchronous diff computation in worker thread."""
         import subprocess
+
         modified = ""
         if path.exists() and path.is_file():
             try:
@@ -462,7 +513,10 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         try:
             result = subprocess.run(
                 ["git", "show", f"HEAD:{rel_path}"],
-                capture_output=True, text=True, cwd="/workspace", timeout=5,
+                capture_output=True,
+                text=True,
+                cwd="/workspace",
+                timeout=5,
             )
             if result.returncode == 0:
                 original = result.stdout
@@ -472,7 +526,10 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         try:
             diff_result = subprocess.run(
                 ["git", "diff", "HEAD", "--", rel_path],
-                capture_output=True, text=True, cwd="/workspace", timeout=5,
+                capture_output=True,
+                text=True,
+                cwd="/workspace",
+                timeout=5,
             )
             if diff_result.returncode == 0:
                 diff_text = diff_result.stdout
@@ -503,17 +560,19 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 )
                 for c in active_comments
             ]
-            proto_items.append(agent_pb2.BoardItem(
-                id=item.get("id", ""),
-                type=item.get("type", ""),
-                title=item.get("title", ""),
-                description=item.get("description", ""),
-                status=item.get("status", ""),
-                assigned_to=item.get("assigned_to") or "",
-                created_at=item.get("created_at", 0.0),
-                comments=proto_comments,
-                last_reason=item.get("last_reason", ""),
-            ))
+            proto_items.append(
+                agent_pb2.BoardItem(
+                    id=item.get("id", ""),
+                    type=item.get("type", ""),
+                    title=item.get("title", ""),
+                    description=item.get("description", ""),
+                    status=item.get("status", ""),
+                    assigned_to=item.get("assigned_to") or "",
+                    created_at=item.get("created_at", 0.0),
+                    comments=proto_comments,
+                    last_reason=item.get("last_reason", ""),
+                )
+            )
         return agent_pb2.BoardResponse(items=proto_items)
 
     async def GetBoardItem(self, request, context):
@@ -562,14 +621,17 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         """List sessions via FlussClient. Direct await — no bridging."""
         try:
             sessions = await self.fluss.list_sessions()
-            return agent_pb2.SessionListResponse(sessions=[
-                agent_pb2.SessionEntry(
-                    session_id=s["session_id"],
-                    title=s["title"],
-                    created_at=s["created_at"],
-                    last_active_at=s["last_active_at"],
-                ) for s in sessions
-            ])
+            return agent_pb2.SessionListResponse(
+                sessions=[
+                    agent_pb2.SessionEntry(
+                        session_id=s["session_id"],
+                        title=s["title"],
+                        created_at=s["created_at"],
+                        last_active_at=s["last_active_at"],
+                    )
+                    for s in sessions
+                ]
+            )
         except Exception as e:
             print(f"❌ [Agent] ListSessions Error: {e}")
             await context.abort(grpc.StatusCode.INTERNAL, str(e))
@@ -597,12 +659,14 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 if dedup_key in seen:
                     continue
                 seen.add(dedup_key)
-                events.append(agent_pb2.ActivityEvent(
-                    timestamp=ms_to_iso(msg["ts"]),
-                    type=m_type,
-                    content=msg.get("content", ""),
-                    actor_id=msg.get("actor_id", ""),
-                ))
+                events.append(
+                    agent_pb2.ActivityEvent(
+                        timestamp=ms_to_iso(msg["ts"]),
+                        type=m_type,
+                        content=msg.get("content", ""),
+                        actor_id=msg.get("actor_id", ""),
+                    )
+                )
             return agent_pb2.HistoryResponse(events=events)
 
         try:
@@ -617,12 +681,14 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
                 if dedup_key in seen:
                     continue
                 seen.add(dedup_key)
-                events.append(agent_pb2.ActivityEvent(
-                    timestamp=ms_to_iso(e["ts"]),
-                    type=e_type,
-                    content=e["content"],
-                    actor_id=e["actor_id"],
-                ))
+                events.append(
+                    agent_pb2.ActivityEvent(
+                        timestamp=ms_to_iso(e["ts"]),
+                        type=e_type,
+                        content=e["content"],
+                        actor_id=e["actor_id"],
+                    )
+                )
             return agent_pb2.HistoryResponse(events=events)
         except Exception as e:
             print(f"❌ [Agent] GetHistory Error: {e}")
@@ -632,11 +698,13 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
         """Create a new session via FlussClient. Direct await — no bridging."""
         session_id = str(uuid.uuid4())
         title = request.title or f"Chat {session_id[:8]}"
-        runtime_image = getattr(request, 'runtime_image', '') or ''
-        execution_mode = getattr(request, 'execution_mode', '') or ''
+        runtime_image = getattr(request, "runtime_image", "") or ""
+        execution_mode = getattr(request, "execution_mode", "") or ""
         print(f"🆕 [Agent] Creating session: {title} ({session_id})")
         if runtime_image or execution_mode:
-            print(f"    Runtime: {runtime_image or '(default)'}, Mode: {execution_mode or '(default)'}")
+            print(
+                f"    Runtime: {runtime_image or '(default)'}, Mode: {execution_mode or '(default)'}"
+            )
 
         # Store per-session config for deferred moderator init
         self._session_configs[session_id] = {
@@ -646,11 +714,13 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
 
         try:
             result = await self.fluss.create_session(session_id, title)
-            
+
             # ── Auto-Drop Default Anchor ──
             default_anchor = config.CONFIG.get_default_anchor()
             if default_anchor:
-                print(f"⚓ [Agent] Auto-dropping default anchor for session: {session_id}")
+                print(
+                    f"⚓ [Agent] Auto-dropping default anchor for session: {session_id}"
+                )
                 await self.fluss.set_anchor(session_id, default_anchor)
 
             return agent_pb2.SessionEntry(
@@ -663,7 +733,6 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             print(f"❌ [Agent] CreateSession Error: {e}")
             await context.abort(grpc.StatusCode.INTERNAL, str(e))
 
-
     async def HaltSession(self, request, context):
         """Gracefully halt a running session by terminating its reconciler."""
         session_id = request.session_id
@@ -671,8 +740,11 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             print(f"🛑 [Agent] Halting session {session_id} upon request.")
             self.reconcilers[session_id].halt()
         else:
-            print(f"⚠️ [Agent] Halt requested for unknown/inactive session: {session_id}")
+            print(
+                f"⚠️ [Agent] Halt requested for unknown/inactive session: {session_id}"
+            )
         return agent_pb2.Empty()
+
 
 async def serve():
     """Async-native gRPC server — single event loop, no threading bridges."""
@@ -684,13 +756,15 @@ async def serve():
     server = grpc.aio.server()
     agent_service = AgentService(fluss_client)
     agent_pb2_grpc.add_AgentServiceServicer_to_server(agent_service, server)
-    server.add_insecure_port('0.0.0.0:50051')
+    server.add_insecure_port("0.0.0.0:50051")
     await server.start()
     print("🚀 Agent gRPC Server Online (async) on port 50051.")
 
     # Graceful shutdown handler
     import signal
+
     loop = asyncio.get_running_loop()
+
     async def shutdown(sig):
         print(f"🛑 Received {sig.name}, shutting down server gracefully...")
         agent_service.is_running = False
