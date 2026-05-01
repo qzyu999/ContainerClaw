@@ -201,6 +201,22 @@ def submit_task(
         return ""
 
 
+def _halt_session(session_id: str) -> None:
+    """Send a halt command to the bridge to terminate the active session.
+
+    Used on both timeout and user cancellation (Ctrl+C) to ensure
+    the agent reconciler stops its autonomous budget immediately.
+    """
+    import requests
+
+    try:
+        resp = requests.post(f"{BRIDGE_URL}/session/{session_id}/halt", timeout=5)
+        resp.raise_for_status()
+        print(f"🛑 Halt command sent to session {session_id}")
+    except Exception as e:
+        print(f"⚠️ Failed to send halt command: {e}")
+
+
 def wait_for_completion(timeout: int, session_id: str) -> int:
     """Wait for agents to finish by polling the SSE event stream.
 
@@ -231,11 +247,7 @@ def wait_for_completion(timeout: int, session_id: str) -> int:
             for line in resp.iter_lines(decode_unicode=True):
                 if time.time() - start > timeout:
                     print(f"⏰ Timeout reached ({timeout}s)")
-                    try:
-                        resp = requests.post(f"{BRIDGE_URL}/session/{session_id}/halt", timeout=5)
-                        resp.raise_for_status()
-                    except Exception as e:
-                        print(f"⚠️ Failed to send halt command: {e}")
+                    _halt_session(session_id)
                     return turns
 
                 if not line or not line.startswith("data: "):
@@ -270,11 +282,7 @@ def wait_for_completion(timeout: int, session_id: str) -> int:
             elapsed = int(time.time() - start)
             if time.time() - start > timeout:
                 print(f"⏰ Timeout reached ({timeout}s)")
-                try:
-                    resp = requests.post(f"{BRIDGE_URL}/session/{session_id}/halt", timeout=5)
-                    resp.raise_for_status()
-                except Exception as e:
-                    print(f"⚠️ Failed to send halt command: {e}")
+                _halt_session(session_id)
                 return turns
             print(f"   ⏳ Still waiting... ({elapsed}s elapsed, reconnecting)")
             continue
@@ -290,6 +298,7 @@ def wait_for_completion(timeout: int, session_id: str) -> int:
             break
 
     print(f"⏰ Timeout reached ({timeout}s)")
+    _halt_session(session_id)
     return turns
 
 def _stop_mlx_server():
@@ -358,6 +367,7 @@ def run_single(instance_id: str, args) -> dict:
     agent_patch = ""
     turns = 0
     error = None
+    session_id = ""
 
     try:
         if not args.skip_docker:
@@ -423,6 +433,15 @@ def run_single(instance_id: str, args) -> dict:
                 )
             except Exception as e:
                 print(f"⚠️  Trace archival failed (non-fatal): {e}")
+
+    except KeyboardInterrupt:
+        # Halt the active agent session before propagating the interrupt.
+        # Without this, Ctrl+C would tear down Docker but leave the
+        # reconciler's autonomous budget running as a zombie.
+        if session_id:
+            print(f"\n🛑 Interrupt received — halting session {session_id}...")
+            _halt_session(session_id)
+        raise
 
     finally:
         # 9. ALWAYS clean up Docker (unless skip or keep-alive)
