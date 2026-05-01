@@ -57,6 +57,7 @@ llm:
         reasoning_effort: "high"
         thinking:
           type: "enabled"
+        supports_required_tool_choice: false
 
   # Default provider + model (used when agent config doesn't specify)
   # default_provider: "mlx-local"

@@ -35,6 +35,15 @@ class LLMAgent:
         self.gateway_url = f"{config.LLM_GATEWAY_URL}/v1/chat/completions"
         self._api_turns = []  # Structured turns for multi-turn tool calling
 
+    def _supports_required_tool_choice(self) -> bool:
+        """Read provider capability from config (defaults to True)."""
+        try:
+            provider_cfg = config.CONFIG.providers.get(self.provider)
+            settings = getattr(provider_cfg, "settings", {}) or {}
+            return settings.get("supports_required_tool_choice", True)
+        except Exception:
+            return True
+
     @staticmethod
     def _sanitize_json(text: str) -> str:
         """Best-effort cleanup of LLM-generated JSON.
@@ -134,6 +143,7 @@ class LLMAgent:
             payload["response_format"] = {"type": "json_object"}
         if tools:
             payload["tools"] = tools
+
         if tool_choice:
             payload["tool_choice"] = tool_choice
 
@@ -252,12 +262,21 @@ class LLMAgent:
                 }
             )
 
-        # Force function calling — model MUST emit tool_calls
+        tool_choice_mode = (
+            "required" if self._supports_required_tool_choice() else "auto"
+        )
+        if tool_choice_mode == "auto":
+            print(
+                f"ℹ️ [{self.agent_id}] Provider {self.provider!r} disables required "
+                "tool_choice; using tool_choice='auto' for initial tool turn."
+            )
+
+        # Initial tool turn (required by default, configurable per provider)
         raw_response = await self._call_gateway(
             instr,
             history,
             tools=tools,
-            tool_choice="required",
+            tool_choice=tool_choice_mode,
             extra_turns=self._api_turns,
         )
 
