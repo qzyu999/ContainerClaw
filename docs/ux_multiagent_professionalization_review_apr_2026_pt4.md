@@ -14,25 +14,25 @@ It gives a rigorous path from present-day parallel subagents to a Fluss-centered
 
 Define the system as a constrained distributed decision process:
 
-- Environment state space: \(\mathcal{E}\)
-- Agent set: \(A = \{a_1,\dots,a_n\}\)
-- Policy set: \(\Pi\)
-- Evidence stream: \(S(t)\)
-- Action set: \(U\)
+- Environment state space: $\mathcal{E}$
+- Agent set: $A = \{a_1,\dots,a_n\}$
+- Policy set: $\Pi$
+- Evidence stream: $S(t)$
+- Action set: $U$
 
-The orchestration objective is to choose action sequence \(u_{0:T}\) maximizing expected utility:
+The orchestration objective is to choose action sequence $u_{0:T}$ maximizing expected utility:
 
-\[
+$$
 \max_{u_{0:T}\in U^{T+1}} \; \mathbb{E}[R \mid S(0:T),\Pi]
-\]
+$$
 
 subject to safety and resource constraints:
 
-\[
+$$
 \Pr(\text{policy violation}) \leq \epsilon, \quad
 \text{cost}(u_{0:T}) \leq B, \quad
 \text{latency}(u_t) \leq L.
-\]
+$$
 
 ### Key theorem-like design requirement
 
@@ -45,13 +45,13 @@ A multi-agent civilization is not optional "complexity theater"; it is required 
 
 ## 2. Physics bound: speed of light as lower latency limit
 
-For any coordination event between two compute locations separated by distance \(d\):
+For any coordination event between two compute locations separated by distance $d$:
 
-\[
+$$
 \tau_{min} \geq \frac{d}{c}
-\]
+$$
 
-where \(c\) is speed of light in medium (strict upper bound in vacuum, lower in fiber).
+where $c$ is speed of light in medium (strict upper bound in vacuum, lower in fiber).
 
 Practical implication:
 - Global strong synchronization per micro-decision is provably latency-amplifying.
@@ -132,32 +132,32 @@ flowchart LR
 
 ## 5. Formal decision protocol
 
-For each proposal \(p\):
+For each proposal $p$:
 
-- Risk class \(r(p) \in \{\text{routine},\text{risky},\text{policy-change}\}\)
-- Votes \(v_i \in \{-1,0,+1\}\) (reject/abstain/approve)
-- Confidence \(c_i \in [0,1]\)
-- Agent weight \(w_i\) from reputation and calibration
+- Risk class $r(p) \in \{\text{routine},\text{risky},\text{policy-change}\}$
+- Votes $v_i \in \{-1,0,+1\}$ (reject/abstain/approve)
+- Confidence $c_i \in [0,1]$
+- Agent weight $w_i$ from reputation and calibration
 
 Weighted support:
-\[
+$$
 W(p)=\sum_i w_i c_i v_i
-\]
+$$
 
 Decision function:
-\[
+$$
 D(p)=
 \begin{cases}
 \text{approve} & \text{if } W(p)\ge \theta_{r(p)} \wedge Q_{r(p)} \wedge J_{r(p)}\\
 \text{defer} & \text{if uncertainty}(p)>u_{max}\\
 \text{reject} & \text{otherwise}
 \end{cases}
-\]
+$$
 
 where:
-- \(\theta_{r}\): risk-dependent support threshold
-- \(Q_r\): quorum condition
-- \(J_r\): critic/judicial signoff condition
+- $\theta_{r}$: risk-dependent support threshold
+- $Q_r$: quorum condition
+- $J_r$: critic/judicial signoff condition
 
 This is the minimum mechanism for high-assurance democracy with bounded cost.
 
@@ -167,19 +167,19 @@ This is the minimum mechanism for high-assurance democracy with bounded cost.
 
 Define three context windows:
 
-- Micro \(W_\mu\): recent tool/action events (seconds-minutes)
-- Meso \(W_m\): objective-branch reasoning (minutes-hours)
-- Macro \(W_M\): policy/reputation/history (hours-weeks)
+- Micro $W_\mu$: recent tool/action events (seconds-minutes)
+- Meso $W_m$: objective-branch reasoning (minutes-hours)
+- Macro $W_M$: policy/reputation/history (hours-weeks)
 
-Context assembly function for agent \(a\):
-\[
+Context assembly function for agent $a$:
+$$
 C_a = f_a(W_\mu, W_m, W_M, \text{role}_a, \text{task}_a)
-\]
+$$
 
 Constraint:
-\[
+$$
 |C_a| \leq K_a
-\]
+$$
 (token budget)
 
 The system optimizes not for maximum context volume, but maximum marginal information gain per token.
@@ -208,10 +208,10 @@ flowchart TD
 
 ### Stage 2: Reputation-weighted voting
 - Calibrate each agent by Brier-like error against realized correctness.
-- Update \(w_i\) with floor/cap to avoid dictatorship collapse.
+- Update $w_i$ with floor/cap to avoid dictatorship collapse.
 
 ### Stage 3: Market allocation
-- Agents submit bid tuples \((\hat p_{success}, \hat c_{tokens}, \hat \ell_{latency})\).
+- Agents submit bid tuples $(\hat p_{success}, \hat c_{tokens}, \hat \ell_{latency})$.
 - Scheduler maximizes expected information gain under budget constraints.
 
 ### Stage 4: Cross-region optimization
