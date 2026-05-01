@@ -35,7 +35,7 @@ llm:
       models:
         - "gemini-3-flash-preview"
       settings:
-        thinking_level: "HIGH"           # Gemini 3 thinking
+        thinking_level: "LOW"           # Gemini 3 thinking
         max_output_tokens: 8192
 
     openai-cloud:
