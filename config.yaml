@@ -46,11 +46,25 @@ llm:
         - "gpt-4o"
         - "gpt-4o-mini"
 
+    deepseek-cloud:
+      type: openai              # DeepSeek uses OpenAI-compatible API
+      base_url: "https://api.deepseek.com"
+      api_key_secret: "deepseek_api_key"
+      models:
+        - "deepseek-v4-pro"
+        - "deepseek-v4-flash"
+      settings:
+        reasoning_effort: "high"
+        thinking:
+          type: "enabled"
+
   # Default provider + model (used when agent config doesn't specify)
   # default_provider: "mlx-local"
   # default_model: "auto"
-  default_provider: "gemini-cloud"
-  default_model: "gemini-3-flash-preview"
+  # default_provider: "gemini-cloud"
+  # default_model: "gemini-3-flash-preview"
+  default_provider: "deepseek-cloud"
+  default_model: "deepseek-v4-pro"
 
 # --- Agent Roster ---
 agents:

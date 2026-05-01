@@ -75,6 +75,7 @@ services:
       - gemini_api_key
       - anthropic_api_key
       - openai_api_key
+      - deepseek_api_key
     environment:
       - CLAW_CONFIG_PATH=/config/config.yaml
       - SHARED_MODULE_PATH=/app/shared
@@ -258,6 +259,8 @@ secrets:
     file: ./secrets/anthropic_api_key.txt
   openai_api_key:
     file: ./secrets/openai_api_key.txt
+  deepseek_api_key:
+    file: ./secrets/deepseek_api_key.txt
   discord_bot_token:
     file: ./secrets/discord_bot_token.txt
   discord_webhook_url:
