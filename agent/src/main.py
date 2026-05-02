@@ -638,7 +638,11 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
             await context.abort(grpc.StatusCode.INTERNAL, str(e))
 
     async def GetHistory(self, request, context):
-        """Fetch chat history — from memory if moderator active, else from Fluss.
+        """Fetch full chat history from Fluss (the complete, untrimmed log).
+
+        Always reads from Fluss rather than the in-memory context buffer,
+        because ContextManager.trim() evicts old messages to keep the LLM
+        context window bounded. The audit trail must be complete.
 
         Applies two filters:
         1. Deduplication by (actor_id, content) — the reconciler's scanner can
@@ -648,28 +652,6 @@ class AgentService(agent_pb2_grpc.AgentServiceServicer):
            real-time streaming, not conversation history.
         """
         session_id = request.session_id
-        if session_id in self.moderators:
-            moderator = self.moderators[session_id]
-            seen = set()
-            events = []
-            for msg in moderator.context.all_messages:
-                m_type = msg.get("type", "output")
-                if m_type == "telemetry":
-                    continue
-                dedup_key = (msg.get("actor_id", ""), msg.get("content", ""))
-                if dedup_key in seen:
-                    continue
-                seen.add(dedup_key)
-                events.append(
-                    agent_pb2.ActivityEvent(
-                        timestamp=ms_to_iso(msg["ts"]),
-                        type=m_type,
-                        content=msg.get("content", ""),
-                        actor_id=msg.get("actor_id", ""),
-                    )
-                )
-            return agent_pb2.HistoryResponse(events=events)
-
         try:
             raw_events = await self.fluss.fetch_history(session_id)
             seen = set()
