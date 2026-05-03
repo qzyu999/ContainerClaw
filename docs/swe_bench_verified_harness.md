@@ -7,7 +7,15 @@ This guide explains how to create a stratified sample from the SWE-bench Verifie
 To ensure a balanced evaluation across different repositories, use the `stratified_swebench_verified_sample.py` script. This script samples up to `N` instances per repository.
 
 ### Prerequisites
-The script expects a JSONL version of the dataset. If you have already run `run.py`, the dataset is likely cached in `scripts/swe_bench/.cache/`.
+The script expects a JSONL version of the dataset. The dataset is automatically downloaded and cached when you first run the benchmark or the instance loader.
+
+**Populate the cache (if missing):**
+If you haven't run a benchmark yet, you can trigger the download manually:
+```bash
+cd scripts/swe_bench
+python3 instance_loader.py --list
+```
+This will create `.cache/princeton-nlp_SWE-bench_Verified_test.json`.
 
 ### Steps:
 1. **Convert Cached JSON to JSONL**:
