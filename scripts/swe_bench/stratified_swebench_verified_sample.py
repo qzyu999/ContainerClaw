@@ -1,11 +1,11 @@
 """Create a stratified sample from SWE-bench Verified by repository.
 
 Usage:
-  python3 notebooks/stratified_swebench_verified_sample.py \
-    --dataset-path /path/to/swebench_verified.jsonl \
+  python3 stratified_swebench_verified_sample.py \
+    --dataset-path swebench_verified.jsonl \
     --per-repo 3 \
     --seed 42 \
-    --output notebooks/swebench_verified_stratified_sample.jsonl
+    --output swebench_verified_stratified_sample.jsonl
 
 Notes:
 - Expects JSONL records containing at least: `instance_id` and `repo`.
@@ -33,6 +33,7 @@ def load_jsonl(path: Path) -> list[dict]:
 
 
 def save_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         for row in rows:
             f.write(json.dumps(row, ensure_ascii=False) + "\n")

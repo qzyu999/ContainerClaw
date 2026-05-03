@@ -22,7 +22,7 @@ The script expects a JSONL version of the dataset. If you have already run `run.
      --dataset-path swebench_verified.jsonl \
      --per-repo 3 \
      --seed 42 \
-     --output notebooks/swebench_verified_stratified_sample.jsonl
+     --output swebench_verified_stratified_sample.jsonl
    ```
    *   `--per-repo`: Max instances per repository (default: 3).
    *   `--seed`: Random seed for reproducibility (default: 42).
@@ -37,7 +37,7 @@ Once you have a sampled JSONL file, you can instruct `run.py` to use it as the d
 ```bash
 uv run python run.py \
   --batch \
-  --dataset notebooks/swebench_verified_stratified_sample.jsonl \
+  --dataset swebench_verified_stratified_sample.jsonl \
   --model-name containerclaw-v1 \
   --timeout 7200 \
   --run-id smoke_test_stratified \
