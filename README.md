@@ -99,3 +99,4 @@ ContainerClaw follows a **Microservices Security Pattern**:
 
 ## 📘 Design/Research Notes
 - [UX + Multi-Agent Professionalization Review (April 30, 2026)](docs/ux_multiagent_professionalization_review_apr_2026.md)
+- [SWE-bench Verified: Sampling & Evaluation Guide](docs/swe_bench_verified_harness.md)

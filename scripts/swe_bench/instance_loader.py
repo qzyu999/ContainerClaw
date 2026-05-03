@@ -19,7 +19,20 @@ CACHE_DIR = Path(__file__).parent / ".cache"
 
 def load_dataset_cached(dataset_name: str = "princeton-nlp/SWE-bench_Verified",
                         split: str = "test") -> list[dict]:
-    """Load SWE-bench dataset, caching locally as JSON for fast reuse."""
+    """Load SWE-bench dataset, caching locally as JSON for fast reuse.
+
+    If dataset_name is a local file path (ending in .json or .jsonl), it loads
+    directly from that file.
+    """
+    path = Path(dataset_name)
+    if path.exists() and path.is_file():
+        print(f"📄 Loading dataset from local file: {path}")
+        if path.suffix == ".jsonl":
+            with path.open("r", encoding="utf-8") as f:
+                return [json.loads(line) for line in f if line.strip()]
+        elif path.suffix == ".json":
+            return json.loads(path.read_text(encoding="utf-8"))
+
     cache_file = CACHE_DIR / f"{dataset_name.replace('/', '_')}_{split}.json"
 
     if cache_file.exists():
