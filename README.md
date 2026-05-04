@@ -38,6 +38,27 @@ You can also update your local git to untrack those files after adding your API 
     ```
 3.  **Customize Agents (Optional):** Define new agents in the `agents.roster` section of `config.yaml`. You can assign different models or providers securely on a per-agent basis.
 
+#### Single-agent vs multi-agent SWE-bench runs
+If you want to isolate the effect of orchestration (voting/debate) on SWE-bench, use `config.yaml` as follows:
+
+- **Single-agent condition**: set `agents.roster` to exactly one agent entry (for example only `Alice`).
+  - With one agent, election still executes structurally, but there is no real inter-agent competition or tie-break debate because only one voter/nominee exists.
+- **Multi-agent condition**: keep 2+ entries in `agents.roster` (default is 5) to enable full vote dynamics.
+- Keep all other settings fixed between runs (model, max tool rounds, dataset slice, timeout) so your comparison is attributable to agent count.
+
+Example minimal single-agent roster:
+
+```yaml
+agents:
+  roster:
+    - name: "Alice"
+      persona: "Software architect."
+      tools: "default_tools"
+```
+
+Tip: if you want stricter single-agent behavior, keep `conchshell_enabled: true` but use one roster member. Disabling `conchshell_enabled` switches to direct single-agent fallback behavior, which is a different runtime mode and not a pure "same-loop, fewer agents" ablation.
+
+
 ### 3. Launching the Stack
 Use the provided `claw.sh` script to manage the lifecycle of your agent sessions.
 
