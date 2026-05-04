@@ -562,8 +562,14 @@ Examples:
     elif args.batch:
         # ── Batch Mode ──
         instances = list_instances(args.dataset, args.repo)
-        if args.limit:
-            instances = instances[:args.limit]
+
+        # Count already-completed instances (have prediction files on disk)
+        already_done = sum(
+            1 for inst in instances
+            if (Path(args.predictions_dir) / f"{inst['instance_id'].replace('/', '__')}.json").exists()
+        )
+        remaining = len(instances) - already_done
+        batch_size = min(args.limit, remaining) if args.limit else remaining
 
         # Save run manifest
         config_path = str(PROJECT_ROOT / "config.yaml")
@@ -576,18 +582,27 @@ Examples:
             config_path=config_path,
         )
 
-        print(f"\n🏁 Starting batch run: {len(instances)} instances")
+        print(f"\n🏁 Starting batch run: {batch_size} new instances "
+              f"({already_done} already completed, {len(instances)} total)")
         print(f"   Run ID:      {args.run_id}")
         print(f"   Model:       {args.model_name}")
         print(f"   Dataset:     {args.dataset}")
         print(f"   Timeout:     {args.timeout}s per instance")
+        if args.limit:
+            print(f"   Limit:       {args.limit} new instances per invocation")
         print(f"   Predictions: {args.predictions_dir}\n")
 
         completed = 0
         errors = 0
+        new_processed = 0
 
         for i, inst in enumerate(instances):
             iid = inst["instance_id"]
+
+            # Stop once we've processed enough NEW instances
+            if args.limit and new_processed >= args.limit:
+                print(f"\n✅ Reached --limit of {args.limit} new instances. Stopping.")
+                break
 
             # Checkpoint: skip if prediction already exists
             pred_file = Path(args.predictions_dir) / f"{iid.replace('/', '__')}.json"
@@ -596,9 +611,10 @@ Examples:
                 completed += 1
                 continue
 
-            print(f"\n[{i+1}/{len(instances)}] {iid}")
+            print(f"\n[{new_processed+1}/{batch_size}] {iid}")
             try:
                 result = run_single(iid, args)
+                new_processed += 1
                 completed += 1
                 if result.get("error"):
                     errors += 1
@@ -612,12 +628,18 @@ Examples:
                     )
             except KeyboardInterrupt:
                 print("\n🛑 Batch run interrupted by user. Gracefully exiting...")
+                # Remove partial prediction so this instance re-runs next time
+                partial = Path(args.predictions_dir) / f"{iid.replace('/', '__')}.json"
+                if partial.exists():
+                    partial.unlink()
+                    print(f"🗑️  Removed partial prediction for {iid} (will re-run next time)")
                 # Ensure Docker is cleaned up
                 if not args.skip_docker and not args.keep_alive:
                     _docker_compose_down()
                 break
             except Exception as e:
                 print(f"❌ Failed {iid}: {e}")
+                new_processed += 1
                 errors += 1
                 # Save error prediction for checkpointing
                 save_prediction(
