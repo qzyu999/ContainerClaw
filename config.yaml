@@ -149,8 +149,10 @@ agents:
       - "create_file"
       - "delegate"
       - "run_tests"
-    max_history_messages: 100
-    max_history_chars: 480000
+    # DeepSeek V4 Pro (1M-token context): expand retrieval window so history truncation is model-bound, not config-bound.
+    # Rough conversion: 1 token ~= 3.5-4 chars. 3,200,000 chars leaves room for system/tool overhead.
+    max_history_messages: 1200
+    max_history_chars: 3200000
     max_tool_rounds: 30
     autonomous_steps: -1
     conchshell_enabled: true
