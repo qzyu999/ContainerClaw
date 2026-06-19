@@ -7,6 +7,13 @@ secrets/*.txt
 !secrets/openai_api_key.txt
 !secrets/gemini_api_key.txt
 !secrets/deepseek_api_key.txt
+!secrets/discord_bot_token.txt
+!secrets/discord_webhook_url.txt
+!secrets/discord_channel_id.txt
+
+# Local config override (enterprise/private provider settings)
+config.local.yaml
+docker-compose.enterprise.yml
 
 # Python
 __pycache__/

@@ -1,0 +1,30 @@
+# config.local.yaml — Local Configuration Override
+# =================================================
+# Copy this file to config.local.yaml and fill in your values.
+# config.local.yaml is gitignored and will never be pushed.
+#
+# This file is deep-merged on top of config.yaml at load time.
+# Only include the keys you want to override.
+#
+# Use case: connect to an enterprise LLM endpoint that uses
+# a different auth scheme or non-standard endpoint path.
+
+llm:
+  providers:
+    # Example: Enterprise provider with Basic auth and custom endpoint
+    enterprise:
+      type: openai
+      base_url: "https://your-enterprise-api.example.com"
+      endpoint_path: "/conversation"       # Custom path (instead of /v1/chat/completions)
+      auth_scheme: "basic"                 # "bearer" (default) or "basic"
+      api_key_secret: "enterprise_pat"     # Reads from secrets/enterprise_pat.txt
+      models:
+        - "gpt-4o-mini"
+        - "gpt-4.1-mini"
+      settings:
+        conversation_source: "containerclaw"
+        skip_db_save: true
+
+  # Override the default provider to use your enterprise endpoint
+  default_provider: "enterprise"
+  default_model: "gpt-4.1-mini"
