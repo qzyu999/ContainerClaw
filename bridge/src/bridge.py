@@ -1162,5 +1162,208 @@ async def _fetch_anchor_at_timestamp(session_id, target_ts_ms):
     return latest_content
 
 
+# ── Programmatic Agent API (Phase 1.5) ─────────────────────────────
+#
+# Headless endpoints for automated/programmatic interaction.
+# These enable ContainerClaw to be called from scripts, CI/CD,
+# notebooks, or other services without a browser.
+
+API_POLL_INTERVAL_S = 1.0        # How often to check if agent is done
+API_DEFAULT_TIMEOUT_S = 300      # Default timeout for synchronous run
+
+
+@app.route("/api/v1/run", methods=["POST"])
+def api_run_task():
+    """Synchronous task execution — submits a prompt and waits for completion.
+
+    Request:
+        {
+            "prompt": "Do something useful",
+            "session_id": "optional — auto-created if omitted",
+            "timeout_s": 300,       // optional, default 300
+            "title": "optional session title"
+        }
+
+    Response:
+        {
+            "status": "complete" | "timeout" | "error",
+            "session_id": "abc-123",
+            "events": [...],
+            "result": "final agent text output",
+            "elapsed_s": 45.2
+        }
+    """
+    data = request.json or {}
+    prompt = data.get("prompt", "")
+    if not prompt:
+        return {"status": "error", "message": "Missing 'prompt' field"}, 400
+
+    timeout_s = data.get("timeout_s", API_DEFAULT_TIMEOUT_S)
+    session_id = data.get("session_id", "")
+    title = data.get("title", "")
+
+    stub = get_grpc_stub()
+
+    # Auto-create session if not provided
+    if not session_id:
+        try:
+            session = stub.CreateSession(
+                agent_pb2.CreateSessionRequest(title=title or prompt[:50])
+            )
+            session_id = session.session_id
+        except Exception as e:
+            return {"status": "error", "message": f"Failed to create session: {e}"}, 500
+
+    # Submit the task
+    try:
+        stub.ExecuteTask(
+            agent_pb2.TaskRequest(prompt=prompt, session_id=session_id)
+        )
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to submit task: {e}"}, 500
+
+    # Poll for completion via the activity stream
+    start = time.time()
+    completed = False
+
+    while time.time() - start < timeout_s:
+        time.sleep(API_POLL_INTERVAL_S)
+        try:
+            history = stub.GetHistory(
+                agent_pb2.ActivityRequest(session_id=session_id)
+            )
+            # Check if the agent has finished (look for "finish" event or idle indicators)
+            for event in history.events:
+                if event.type == "finish":
+                    completed = True
+                    break
+            if completed:
+                break
+        except Exception:
+            pass  # Transient gRPC errors during polling are fine
+
+    # Collect final results
+    elapsed = time.time() - start
+    try:
+        history = stub.GetHistory(
+            agent_pb2.ActivityRequest(session_id=session_id)
+        )
+        events = [
+            {
+                "timestamp": e.timestamp,
+                "type": e.type,
+                "content": e.content,
+                "actor_id": e.actor_id,
+            }
+            for e in history.events
+        ]
+        # Extract the last substantive agent output as "result"
+        result = ""
+        for e in reversed(history.events):
+            if e.actor_id not in ("Human", "Moderator", "System", "") and e.type == "output":
+                result = e.content
+                break
+    except Exception as e:
+        return {
+            "status": "error",
+            "session_id": session_id,
+            "message": f"Failed to retrieve results: {e}",
+            "elapsed_s": elapsed,
+        }, 500
+
+    return {
+        "status": "complete" if completed else "timeout",
+        "session_id": session_id,
+        "events": events,
+        "result": result,
+        "event_count": len(events),
+        "elapsed_s": round(elapsed, 2),
+    }
+
+
+@app.route("/api/v1/status/<session_id>")
+def api_session_status(session_id):
+    """Check the current state of a session.
+
+    Response:
+        {
+            "status": "ok",
+            "session_id": "abc-123",
+            "state": "active" | "idle" | "unknown",
+            "event_count": 42,
+            "last_actor": "Alice",
+            "last_event_type": "output"
+        }
+    """
+    try:
+        stub = get_grpc_stub()
+        history = stub.GetHistory(
+            agent_pb2.ActivityRequest(session_id=session_id)
+        )
+        events = list(history.events)
+        if not events:
+            return {"status": "ok", "session_id": session_id, "state": "idle", "event_count": 0}
+
+        last = events[-1]
+        # Determine state from last event
+        if last.type == "finish":
+            state = "idle"
+        elif last.actor_id in ("Human",) and len(events) < 3:
+            state = "active"  # Just started
+        else:
+            state = "active"
+
+        return {
+            "status": "ok",
+            "session_id": session_id,
+            "state": state,
+            "event_count": len(events),
+            "last_actor": last.actor_id,
+            "last_event_type": last.type,
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+
+
+@app.route("/api/v1/sessions", methods=["GET"])
+def api_list_sessions():
+    """List all sessions. Alias for /sessions with consistent API prefix."""
+    try:
+        stub = get_grpc_stub()
+        response = stub.ListSessions(agent_pb2.Empty())
+        sessions = [
+            {
+                "session_id": s.session_id,
+                "title": s.title,
+                "created_at": s.created_at,
+                "last_active_at": s.last_active_at,
+            }
+            for s in response.sessions
+        ]
+        return {"status": "ok", "sessions": sessions}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+
+
+@app.route("/api/v1/history/<session_id>")
+def api_get_history(session_id):
+    """Get full event history for a session. Alias with consistent API prefix."""
+    try:
+        stub = get_grpc_stub()
+        response = stub.GetHistory(agent_pb2.ActivityRequest(session_id=session_id))
+        events = [
+            {
+                "timestamp": e.timestamp,
+                "type": e.type,
+                "content": e.content,
+                "actor_id": e.actor_id,
+            }
+            for e in response.events
+        ]
+        return {"status": "ok", "session_id": session_id, "events": events}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}, 500
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5001, threaded=True)
