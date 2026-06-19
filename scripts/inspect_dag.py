@@ -35,7 +35,7 @@ async def inspect():
         
         empty_polls = 0
         while empty_polls < 3:
-            batches = await scanner._async_poll_batches(500)
+            batches = await scanner.poll_record_batch(500)
             if not batches:
                 empty_polls += 1
                 continue
@@ -112,7 +112,7 @@ async def inspect():
                     print("   Type: Log Table (Scanning all, but only showing the top 5 most recent...)")
                     all_records = []
                     while empty_polls < 3: 
-                        batches = await scanner._async_poll_batches(500)
+                        batches = await scanner.poll_record_batch(500)
                         if not batches:
                             empty_polls += 1
                             continue
@@ -139,7 +139,7 @@ async def inspect():
                 empty_polls = 0
 
                 while empty_polls < 3:
-                    batches = await scanner._async_poll_batches(500)
+                    batches = await scanner.poll_record_batch(500)
                     if not batches:
                         empty_polls += 1
                         continue

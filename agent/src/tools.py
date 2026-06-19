@@ -270,7 +270,7 @@ class ProjectBoard:
             scanner.subscribe_buckets({b: 0 for b in range(DEFAULT_BUCKET_COUNT)})
 
             while True:
-                batches = await scanner._async_poll_batches(500)
+                batches = await scanner.poll_record_batch(500)
                 if not batches:
                     break
                 # Unwrap Fluss RecordBatch → pyarrow RecordBatch
@@ -331,7 +331,7 @@ class ProjectBoard:
             scanner = await self.board_comment_table.new_scan().create_record_batch_log_scanner()
             scanner.subscribe_buckets({b: 0 for b in range(DEFAULT_BUCKET_COUNT)})
             while True:
-                batches = await scanner._async_poll_batches(500)
+                batches = await scanner.poll_record_batch(500)
                 if not batches:
                     break
                 batches = [b.batch for b in batches]

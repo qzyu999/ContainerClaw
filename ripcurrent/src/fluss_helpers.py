@@ -35,7 +35,7 @@ async def poll_batches(scanner, timeout_ms: int = 500):
     Returns:
         list[pa.RecordBatch]: May be empty on timeout.
     """
-    batches = await scanner._async_poll_batches(timeout_ms)
+    batches = await scanner.poll_record_batch(timeout_ms)
     if not batches:
         return []
     return [b.batch for b in batches]

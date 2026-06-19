@@ -470,7 +470,7 @@ async def _lookup_dag_edges(session_id):
         processed_any = False
         for poll_attempt in range(25):
             try:
-                batches = await scanner._async_poll_batches(200)
+                batches = await scanner.poll_record_batch(200)
                 if not batches:
                     if processed_any:
                         break  # Caught up to the current head
@@ -601,7 +601,7 @@ def telemetry_dag_stream(session_id):
             )
 
             while True:
-                batches = _run_async(scanner._async_poll_batches(1000))
+                batches = _run_async(scanner.poll_record_batch(1000))
                 if not batches:
                     yield ": heartbeat\n\n"
                     continue
@@ -706,7 +706,7 @@ async def _lookup_metrics(session_id):
 
         processed_any = False
         for poll_attempt in range(25):
-            batches = await scanner._async_poll_batches(200)
+            batches = await scanner.poll_record_batch(200)
             if not batches:
                 if processed_any:
                     break
@@ -795,7 +795,7 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
 
         for poll_attempt in range(25):
             try:
-                batches = await scanner._async_poll_batches(200)
+                batches = await scanner.poll_record_batch(200)
                 if not batches:
                     if processed_any:
                         break  # Caught up to the current head
@@ -972,7 +972,7 @@ async def _lookup_raw_history(session_id, target_ts_str):
         reached_target = False
         for poll_attempt in range(25):
             try:
-                batches = await scanner._async_poll_batches(200)
+                batches = await scanner.poll_record_batch(200)
                 if not batches:
                     if processed_any:
                         break
@@ -1114,7 +1114,7 @@ async def _fetch_anchor_at_timestamp(session_id, target_ts_ms):
     processed_any = False
     for poll_attempt in range(20):
         try:
-            batches = await scanner._async_poll_batches(200)
+            batches = await scanner.poll_record_batch(200)
             if not batches:
                 if processed_any:
                     break

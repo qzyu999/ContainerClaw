@@ -147,7 +147,8 @@ class FlussPublisher:
             )
             self._writer.write_arrow_batch(batch)
             if hasattr(self._writer, "flush"):
-                await self._writer.flush()
+                flush_future = asyncio.ensure_future(self._writer.flush())
+                await asyncio.shield(flush_future)
             print(f"📤 [Publisher] Flushed {n} records to Fluss.")
         except Exception as e:
             print(f"❌ [Publisher] Flush failed ({n} records): {e}")

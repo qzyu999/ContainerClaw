@@ -66,7 +66,7 @@ class FlussClient:
             try:
                 self.conn = await fluss.FlussConnection.create(fluss_config)
                 print("✅ Connected to Fluss.")
-                self.admin = await self.conn.get_admin()
+                self.admin = self.conn.get_admin()
 
                 # Create database
                 await self.admin.create_database(DATABASE, ignore_if_exists=True)
@@ -172,8 +172,8 @@ class FlussClient:
     async def poll_async(scanner, timeout_ms: int = 500):
         """Perform a single async poll, returning a list of pyarrow RecordBatch.
 
-        Uses the Rust-native _async_poll_batches() which integrates directly
-        with Python's event loop via tokio — no asyncio.to_thread() needed.
+        Uses poll_record_batch() from apache/fluss-rust which integrates
+        with Python's event loop via tokio (future_into_py) — GIL-releasing.
 
         The Fluss SDK returns its own RecordBatch wrapper objects; we unwrap
         them via .batch to get standard pyarrow RecordBatch instances.
@@ -182,16 +182,13 @@ class FlussClient:
             list[pa.RecordBatch]: May be empty (timeout, not end-of-stream).
         """
         try:
-            # SHIELD THE RUST FUTURE: Because _async_poll_batches is a Rust function,
-            # it returns a Future, not a coroutine. We use ensure_future to safely wrap it.
-            future = asyncio.ensure_future(scanner._async_poll_batches(timeout_ms))
+            future = asyncio.ensure_future(scanner.poll_record_batch(timeout_ms))
             batches = await asyncio.shield(future)
 
             if not batches:
                 return []
             return [b.batch for b in batches]
         except asyncio.CancelledError:
-            # Python task aborts immediately, but Rust task finishes safely behind the scenes
             raise
 
     # ── Session CRUD ────────────────────────────────────────────────

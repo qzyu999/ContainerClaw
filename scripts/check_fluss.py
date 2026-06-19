@@ -55,7 +55,7 @@ async def check_fluss(sid="default-session"):
                 print("\n   🕒 Tailing new events (LATEST)...")
                 scanner = await table.new_scan().create_record_batch_log_scanner()
                 scanner.subscribe_buckets({b: fluss.LATEST_OFFSET for b in range(info.num_buckets)})
-                batches = await scanner._async_poll_batches(100)
+                batches = await scanner.poll_record_batch(100)
                 if not batches:
                     print("   (Empty - no new events since start of check)")
                 else:

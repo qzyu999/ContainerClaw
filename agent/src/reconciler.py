@@ -102,6 +102,7 @@ class ReconciliationController:
             on_message=self.mod._handle_single_message,
         )
         await self.mod.publisher.start()
+        self.mod._publisher_ready.set()
 
         # Wire SubagentManager publisher
         if hasattr(self.mod, "subagent_manager") and self.mod.subagent_manager:
