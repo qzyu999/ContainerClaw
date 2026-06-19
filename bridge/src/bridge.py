@@ -14,6 +14,17 @@ from flask_cors import CORS
 
 import fluss
 
+# ── Bridge Constants ─────────────────────────────────────────────
+GRPC_CONNECT_MAX_ATTEMPTS = 60       # Attempts to reach agent gRPC on startup
+GRPC_CONNECT_TIMEOUT_S = 2          # Timeout per gRPC connection check
+GRPC_CONNECT_RETRY_DELAY_S = 2     # Delay between connection attempts
+FLUSS_POLL_TIMEOUT_MS = 200         # Poll timeout for SSE event streaming
+FLUSS_SYNC_POLL_TIMEOUT_MS = 1000   # Poll timeout for synchronous (non-SSE) reads
+FLUSS_POLL_MAX_ATTEMPTS = 25        # Max poll iterations per SSE flush cycle
+FLUSS_POLL_INTERVAL_S = 0.1        # Sleep between poll attempts in SSE loops
+FLUSS_RUN_ASYNC_TIMEOUT_S = 15     # Timeout for _run_async() coroutine scheduling
+TASK_SUBMIT_MAX_RETRIES = 3        # Retry count for task submission to agent
+
 # Add shared/ to path for context_builder and config_loader
 shared_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if shared_parent not in sys.path:
@@ -39,18 +50,18 @@ CORS(app)  # Allow frontend to hit the bridge
 def get_grpc_stub():
     # 60 attempts * 2s = 2 minutes of patience
     # This is plenty of time for the Fluss Tablet Server to boot
-    for i in range(60):
+    for i in range(GRPC_CONNECT_MAX_ATTEMPTS):
         try:
             channel = grpc.insecure_channel(CONFIG.agent_url)
             # This is the "Python version" of the nc command
             # It blocks until port 50051 is actually open
-            grpc.channel_ready_future(channel).result(timeout=2)
+            grpc.channel_ready_future(channel).result(timeout=GRPC_CONNECT_TIMEOUT_S)
             print(f"✅ Bridge: Connected to Agent on attempt {i + 1}")
             return agent_pb2_grpc.AgentServiceStub(channel)
         except Exception:
             if i % 5 == 0:
                 print(f"⏳ Bridge: Waiting for Agent gRPC... (Attempt {i + 1}/60)")
-            time.sleep(2)
+            time.sleep(GRPC_CONNECT_RETRY_DELAY_S)
 
     raise Exception("❌ Bridge: Timeout waiting for Agent.")
 
@@ -157,7 +168,7 @@ def proxy_task():
     prompt = data.get("prompt", "")
 
     # Simple retry for task submission
-    for i in range(3):
+    for i in range(TASK_SUBMIT_MAX_RETRIES):
         try:
             stub = get_grpc_stub()
             response = stub.ExecuteTask(
@@ -165,11 +176,11 @@ def proxy_task():
             )
             return {"status": "ok", "message": response.message}
         except grpc.RpcError as e:
-            if e.code() == grpc.StatusCode.UNAVAILABLE and i < 2:
+            if e.code() == grpc.StatusCode.UNAVAILABLE and i < TASK_SUBMIT_MAX_RETRIES - 1:
                 print(
                     f"Bridge: Agent unavailable, retrying task {i + 1}...", flush=True
                 )
-                time.sleep(2)
+                time.sleep(GRPC_CONNECT_RETRY_DELAY_S)
                 continue
             return {
                 "status": "error",
@@ -402,7 +413,7 @@ ANCHOR_MESSAGE_TABLE = "anchor_message"
 def _run_async(coro):
     """Run an async coroutine on the dedicated Fluss event loop thread."""
     future = asyncio.run_coroutine_threadsafe(coro, _fluss_loop)
-    return future.result(timeout=15)
+    return future.result(timeout=FLUSS_RUN_ASYNC_TIMEOUT_S)
 
 
 async def _ensure_fluss_conn():
@@ -468,13 +479,13 @@ async def _lookup_dag_edges(session_id):
 
         # Fast poll loop: stop as soon as we've caught up
         processed_any = False
-        for poll_attempt in range(25):
+        for poll_attempt in range(FLUSS_POLL_MAX_ATTEMPTS):
             try:
-                batches = await scanner.poll_record_batch(200)
+                batches = await scanner.poll_record_batch(FLUSS_POLL_TIMEOUT_MS)
                 if not batches:
                     if processed_any:
                         break  # Caught up to the current head
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(FLUSS_POLL_INTERVAL_S)
                     continue
 
                 processed_any = True
@@ -601,7 +612,7 @@ def telemetry_dag_stream(session_id):
             )
 
             while True:
-                batches = _run_async(scanner.poll_record_batch(1000))
+                batches = _run_async(scanner.poll_record_batch(FLUSS_SYNC_POLL_TIMEOUT_MS))
                 if not batches:
                     yield ": heartbeat\n\n"
                     continue
@@ -705,12 +716,12 @@ async def _lookup_metrics(session_id):
         )
 
         processed_any = False
-        for poll_attempt in range(25):
-            batches = await scanner.poll_record_batch(200)
+        for poll_attempt in range(FLUSS_POLL_MAX_ATTEMPTS):
+            batches = await scanner.poll_record_batch(FLUSS_POLL_TIMEOUT_MS)
             if not batches:
                 if processed_any:
                     break
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(FLUSS_POLL_INTERVAL_S)
                 continue
 
             processed_any = True
@@ -793,13 +804,13 @@ async def _lookup_snorkel_perspective(session_id, target_ts_str, actor_id):
         # Determine anchor text at that specific historical moment
         anchor_text = await _fetch_anchor_at_timestamp(session_id, target_ts_ms)
 
-        for poll_attempt in range(25):
+        for poll_attempt in range(FLUSS_POLL_MAX_ATTEMPTS):
             try:
-                batches = await scanner.poll_record_batch(200)
+                batches = await scanner.poll_record_batch(FLUSS_POLL_TIMEOUT_MS)
                 if not batches:
                     if processed_any:
                         break  # Caught up to the current head
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(FLUSS_POLL_INTERVAL_S)
                     continue
 
                 processed_any = True
@@ -970,13 +981,13 @@ async def _lookup_raw_history(session_id, target_ts_str):
 
         processed_any = False
         reached_target = False
-        for poll_attempt in range(25):
+        for poll_attempt in range(FLUSS_POLL_MAX_ATTEMPTS):
             try:
-                batches = await scanner.poll_record_batch(200)
+                batches = await scanner.poll_record_batch(FLUSS_POLL_TIMEOUT_MS)
                 if not batches:
                     if processed_any:
                         break
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(FLUSS_POLL_INTERVAL_S)
                     continue
 
                 processed_any = True
@@ -1112,13 +1123,13 @@ async def _fetch_anchor_at_timestamp(session_id, target_ts_ms):
 
     # Scan full history up to target_ts_ms
     processed_any = False
-    for poll_attempt in range(20):
+    for poll_attempt in range(FLUSS_POLL_MAX_ATTEMPTS):
         try:
-            batches = await scanner.poll_record_batch(200)
+            batches = await scanner.poll_record_batch(FLUSS_POLL_TIMEOUT_MS)
             if not batches:
                 if processed_any:
                     break
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(FLUSS_POLL_INTERVAL_S)
                 continue
 
             processed_any = True

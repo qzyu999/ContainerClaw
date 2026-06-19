@@ -11,6 +11,17 @@ import asyncio
 import time
 
 import pyarrow as pa
+
+# ── Operational Constants ────────────────────────────────────────
+# Tuning parameters for Fluss client behavior. Adjust if Fluss cluster
+# latency or throughput characteristics change.
+
+CONNECT_MAX_ATTEMPTS = 30        # Retry count for initial connection
+CONNECT_RETRY_DELAY_S = 3.0     # Seconds between connection retries
+POLL_TIMEOUT_MS = 500            # Default poll timeout per call (ms)
+POLL_EMPTY_THRESHOLD_SHORT = 5   # Empty polls before giving up (session list, anchor)
+POLL_EMPTY_THRESHOLD_LONG = 10   # Empty polls before giving up (full history replay)
+
 from schemas import (
     AGENT_STATUS_SCHEMA,
     AGENT_STATUS_TABLE,
@@ -53,7 +64,7 @@ class FlussClient:
         self.status_table = None
         self.anchor_table = None
 
-    async def connect(self, max_attempts: int = 30, retry_delay: float = 3.0):
+    async def connect(self, max_attempts: int = CONNECT_MAX_ATTEMPTS, retry_delay: float = CONNECT_RETRY_DELAY_S):
         """Connect to Fluss and initialize all tables.
 
         Retries up to max_attempts times with retry_delay between attempts.
@@ -169,7 +180,7 @@ class FlussClient:
             raise e
 
     @staticmethod
-    async def poll_async(scanner, timeout_ms: int = 500):
+    async def poll_async(scanner, timeout_ms: int = POLL_TIMEOUT_MS):
         """Perform a single async poll, returning a list of pyarrow RecordBatch.
 
         Uses poll_record_batch() from apache/fluss-rust which integrates
@@ -234,8 +245,8 @@ class FlussClient:
             scanner = await self.create_scanner(self.sessions_table)
             sessions_dict = {}
             empty_polls = 0
-            while empty_polls < 5:
-                batches = await self.poll_async(scanner, timeout_ms=500)
+            while empty_polls < POLL_EMPTY_THRESHOLD_SHORT:
+                batches = await self.poll_async(scanner)
                 if not batches:
                     empty_polls += 1
                     continue
@@ -294,8 +305,8 @@ class FlussClient:
 
         events = []
         empty_polls = 0
-        while empty_polls < 10:
-            batches = await self.poll_async(scanner, timeout_ms=500)
+        while empty_polls < POLL_EMPTY_THRESHOLD_LONG:
+            batches = await self.poll_async(scanner)
             if not batches:
                 empty_polls += 1
                 continue
@@ -342,8 +353,8 @@ class FlussClient:
         latest_ts = -1
         latest_content = ""
         empty_polls = 0
-        while empty_polls < 5:
-            batches = await self.poll_async(scanner, timeout_ms=500)
+        while empty_polls < POLL_EMPTY_THRESHOLD_SHORT:
+            batches = await self.poll_async(scanner)
             if not batches:
                 empty_polls += 1
                 continue

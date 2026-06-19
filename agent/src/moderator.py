@@ -5,10 +5,15 @@ from typing import List
 from commands import create_default_dispatcher
 from context import ContextManager
 from election import ElectionProtocol
-from fluss_client import FlussClient
+from fluss_client import FlussClient, POLL_TIMEOUT_MS
 from publisher import FlussPublisher
 from tool_executor import ToolExecutor
 from tools import ToolDispatcher
+
+# ── Moderator Constants ──────────────────────────────────────────
+PUBLISHER_READY_TIMEOUT_S = 10.0     # Max wait for publisher during early startup
+REPLAY_POLL_ATTEMPTS = 5             # Max poll attempts when scanning session start time
+RECONCILER_POLL_TIMEOUT_MS = 600     # Poll timeout in the reconciliation loop (slightly > default)
 
 from agent import GeminiAgent
 
@@ -71,7 +76,7 @@ class StageModerator:
             if not self.publisher:
                 print("⏳ [Moderator] Waiting for publisher to initialize...")
                 try:
-                    await asyncio.wait_for(self._publisher_ready.wait(), timeout=10.0)
+                    await asyncio.wait_for(self._publisher_ready.wait(), timeout=PUBLISHER_READY_TIMEOUT_S)
                 except asyncio.TimeoutError:
                     print("❌ [Moderator] Publisher initialization timed out.")
                     return ""
@@ -99,8 +104,8 @@ class StageModerator:
             try:
                 scanner = await self.fluss.create_scanner(self.sessions_table)
                 found = False
-                for _ in range(5):
-                    batches = await FlussClient.poll_async(scanner, timeout_ms=500)
+                for _ in range(REPLAY_POLL_ATTEMPTS):
+                    batches = await FlussClient.poll_async(scanner, timeout_ms=POLL_TIMEOUT_MS)
                     for poll in batches:
                         if poll.num_rows == 0:
                             continue
@@ -129,7 +134,7 @@ class StageModerator:
 
         total_replayed = 0
         while True:
-            batches = await FlussClient.poll_async(self.scanner, timeout_ms=500)
+            batches = await FlussClient.poll_async(self.scanner, timeout_ms=POLL_TIMEOUT_MS)
             if not batches:
                 break
 
@@ -225,7 +230,7 @@ class StageModerator:
 
     async def _poll_once(self) -> bool:
         """Poll the Fluss scanner once and process. Returns True if human interrupted."""
-        batches = await FlussClient.poll_async(self.scanner, timeout_ms=600)
+        batches = await FlussClient.poll_async(self.scanner, timeout_ms=RECONCILER_POLL_TIMEOUT_MS)
         return await self._process_batches(batches)
 
     # ── Main Orchestration Loop ────────────────────────────────────
@@ -319,7 +324,7 @@ class StageModerator:
             self.current_steps = 0
 
         while True:
-            batches = await FlussClient.poll_async(self.scanner, timeout_ms=500)
+            batches = await FlussClient.poll_async(self.scanner, timeout_ms=POLL_TIMEOUT_MS)
             human_interrupted = await self._process_batches(batches)
 
             if human_interrupted or (self.current_steps != 0):
