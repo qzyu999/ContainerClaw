@@ -281,7 +281,7 @@ class LLMAgent:
         )
 
         text = self._extract_text(raw_response)
-        raw_tool_calls = self._extract_function_calls(raw_response)
+        raw_tool_calls = self._extract_function_calls(raw_response) or []
 
         # Preserve the model's response as an assistant message for multi-turn
         if raw_response and raw_tool_calls:
@@ -371,7 +371,7 @@ class LLMAgent:
         )
 
         text = self._extract_text(raw_response)
-        raw_tool_calls = self._extract_function_calls(raw_response)
+        raw_tool_calls = self._extract_function_calls(raw_response) or []
 
         # If more function calls, preserve this turn too
         if raw_response and raw_tool_calls:
