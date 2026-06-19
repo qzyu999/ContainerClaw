@@ -61,6 +61,9 @@ class ProviderConfig(BaseModel):
     api_key_secret: str = ""     # Docker secret name
     models: list[str] = []
     settings: dict = {}
+    auth_scheme: str = "bearer"  # "bearer" or "basic"
+    endpoint_path: str = ""      # Custom endpoint path (e.g., "/conversation")
+    verify_ssl: bool = True      # Set to false for corporate proxies with custom CAs
 
 
 class AgentConfig(BaseModel):
@@ -229,8 +232,24 @@ def _resolve_secret(secret_name: str) -> str:
 # ── Main Loader ──────────────────────────────────────────────────
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Recursively merge override dict into base dict. Override wins on conflicts."""
+    merged = base.copy()
+    for key, value in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def load_config(config_path: str | None = None) -> ClawConfig:
     """Load and validate the unified configuration.
+
+    Supports an optional local override file (config.local.yaml) that is
+    deep-merged on top of the base config. This enables environment-specific
+    settings (e.g., enterprise LLM providers) without modifying the tracked
+    config.yaml.
 
     Args:
         config_path: Override path (for testing). Defaults to CONFIG_PATH env.
@@ -251,6 +270,14 @@ def load_config(config_path: str | None = None) -> ClawConfig:
     with open(path) as f:
         raw = yaml.safe_load(f)
 
+    # Apply local override if present (gitignored — for private/enterprise config)
+    local_override_path = Path(path).parent / "config.local.yaml"
+    if local_override_path.exists():
+        with open(local_override_path) as f:
+            local_raw = yaml.safe_load(f) or {}
+        raw = _deep_merge(raw, local_raw)
+        print(f"🔧 [Config] Applied local override from {local_override_path}")
+
     # Parse providers
     providers = {}
     for name, prov in raw.get("llm", {}).get("providers", {}).items():
@@ -265,6 +292,9 @@ def load_config(config_path: str | None = None) -> ClawConfig:
             api_key_secret=prov.get("api_key_secret", ""),
             models=prov.get("models", []),
             settings=prov.get("settings", {}),
+            auth_scheme=prov.get("auth_scheme", "bearer"),
+            endpoint_path=prov.get("endpoint_path", ""),
+            verify_ssl=prov.get("verify_ssl", True),
         )
 
     # Parse basic LLM settings
