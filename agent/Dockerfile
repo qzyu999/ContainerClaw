@@ -1,6 +1,10 @@
 # Use a minimal Python base image
 FROM python:3.12-slim-bookworm as builder
 
+# Force apt to use HTTPS (required on networks that block port 80)
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
+    sed -i 's|http://|https://|g' /etc/apt/sources.list 2>/dev/null; true
+
 # --- FLUSS BUILD TOOLS ---
 RUN apt-get update && apt-get install -y \
     curl build-essential pkg-config libssl-dev protobuf-compiler \
@@ -29,6 +33,10 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # Final stage
 FROM python:3.12-slim-bookworm
+
+# Force apt to use HTTPS (required on networks that block port 80)
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
+    sed -i 's|http://|https://|g' /etc/apt/sources.list 2>/dev/null; true
 
 # Create a non-root user
 RUN groupadd -g 1000 agent && \

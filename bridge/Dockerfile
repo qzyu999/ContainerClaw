@@ -1,6 +1,10 @@
 # ── Build stage: compile Fluss Python wheel from Rust bindings ────
 FROM python:3.12-slim-bookworm AS fluss-builder
 
+# Force apt to use HTTPS (required on networks that block port 80)
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
+    sed -i 's|http://|https://|g' /etc/apt/sources.list 2>/dev/null; true
+
 RUN apt-get update && apt-get install -y \
     curl build-essential pkg-config libssl-dev protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
