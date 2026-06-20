@@ -1,0 +1,21 @@
+# ContainerClaw agent config for cloud deployment
+# This overrides config.yaml when mounted into the agent container.
+# Customize the LLM provider and model for your environment.
+
+llm:
+  # Override with your enterprise LLM provider
+  # default_provider: "enterprise"
+  # default_model: "gpt-5.4"
+  providers: {}
+
+# Infrastructure — resolved via env vars in ECS task definition
+infrastructure:
+  fluss:
+    bootstrap_servers: "fluss.containerclaw.local:9123"
+
+# Agent settings for cloud (can be tuned)
+agents:
+  settings:
+    autonomous_steps: -1
+    conchshell_enabled: true
+    max_tool_rounds: 30

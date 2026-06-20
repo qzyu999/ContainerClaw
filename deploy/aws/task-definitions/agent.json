@@ -1,0 +1,71 @@
+{
+  "family": "containerclaw-agent",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "4096",
+  "containerDefinitions": [
+    {
+      "name": "claw-agent",
+      "image": "${ECR_REGISTRY}/containerclaw-agent:latest",
+      "essential": true,
+      "portMappings": [
+        {"containerPort": 50051, "protocol": "tcp", "name": "grpc"},
+        {"containerPort": 5001, "protocol": "tcp", "name": "bridge"}
+      ],
+      "environment": [
+        {"name": "FLUSS_BOOTSTRAP_SERVERS", "value": "fluss.containerclaw.local:9123"},
+        {"name": "LLM_GATEWAY_URL", "value": "http://localhost:8000"},
+        {"name": "CLAW_CONFIG_PATH", "value": "/config/config.yaml"},
+        {"name": "PYTHONUNBUFFERED", "value": "1"},
+        {"name": "AUTONOMOUS_STEPS", "value": "-1"},
+        {"name": "CONCHSHELL_ENABLED", "value": "true"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/containerclaw/agent",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "agent"
+        }
+      }
+    },
+    {
+      "name": "llm-gateway",
+      "image": "${ECR_REGISTRY}/containerclaw-llm-gateway:latest",
+      "essential": true,
+      "portMappings": [
+        {"containerPort": 8000, "protocol": "tcp", "name": "gateway"}
+      ],
+      "environment": [
+        {"name": "CLAW_CONFIG_PATH", "value": "/config/config.yaml"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/containerclaw/gateway",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "gateway"
+        }
+      }
+    },
+    {
+      "name": "ui-bridge",
+      "image": "${ECR_REGISTRY}/containerclaw-bridge:latest",
+      "essential": false,
+      "environment": [
+        {"name": "AGENT_URL", "value": "localhost:50051"},
+        {"name": "FLUSS_BOOTSTRAP_SERVERS", "value": "fluss.containerclaw.local:9123"},
+        {"name": "CLAW_CONFIG_PATH", "value": "/config/config.yaml"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/containerclaw/bridge",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "bridge"
+        }
+      }
+    }
+  ]
+}

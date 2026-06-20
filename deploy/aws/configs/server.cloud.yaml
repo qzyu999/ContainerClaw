@@ -1,0 +1,10 @@
+# Fluss server config for cloud deployment (ECS Fargate)
+# This is injected via FLUSS_ADVERTISED_HOST and FLUSS_REMOTE_DATA_DIR env vars.
+# Only override here if you need additional Fluss properties.
+
+# Datalake tiering config (enables Flink → Iceberg → Glue)
+datalake.format: iceberg
+datalake.iceberg.type: glue
+datalake.iceberg.warehouse: s3://${S3_BUCKET}/enriched/containerclaw
+datalake.iceberg.client.region: ${AWS_REGION}
+datalake.iceberg.io-impl: org.apache.iceberg.aws.s3.S3FileIO

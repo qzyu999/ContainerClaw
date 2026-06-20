@@ -1,0 +1,37 @@
+{
+  "family": "containerclaw-fluss",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "4096",
+  "memory": "8192",
+  "containerDefinitions": [
+    {
+      "name": "fluss",
+      "image": "${ECR_REGISTRY}/containerclaw-fluss:latest",
+      "essential": true,
+      "portMappings": [
+        {"containerPort": 9123, "protocol": "tcp", "name": "fluss-client"},
+        {"containerPort": 2181, "protocol": "tcp", "name": "zookeeper"}
+      ],
+      "environment": [
+        {"name": "FLUSS_REMOTE_DATA_DIR", "value": "s3://${S3_BUCKET}/fluss/remote-data"},
+        {"name": "FLUSS_ADVERTISED_HOST", "value": "fluss.containerclaw.local"}
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/containerclaw/fluss",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "fluss"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "echo srvr | nc localhost 2181 | grep -q Zookeeper"],
+        "interval": 10,
+        "timeout": 5,
+        "retries": 5,
+        "startPeriod": 30
+      }
+    }
+  ]
+}
