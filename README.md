@@ -1,123 +1,156 @@
 # ContainerClaw 🦀
 
-ContainerClaw is a secure, defense-in-depth, and containerized runtime for autonomous AI agents. Unlike traditional agents that run natively on your machine, ContainerClaw executes in an isolated sandbox, shielding your host files and credentials from prompt-injection attacks and rouge AI behavior.
+A multi-agent system (MAS) where autonomous AI agents collaborate through elections, debate, and tool use — coordinated by a persistent event log (Apache Fluss).
 
----
+## What it does
 
-# Temporary Fluss Workaround
-The Dockerfile requires compiling a fluss-rust repo as the Python library is not ready. **Rust must be installed on your machine** to build these components. This is done via a git submodule located in `./vendor/fluss-rust`.
+ContainerClaw runs a team of AI agents (Alice, Bob, Carol, David, Eve) that:
+- **Vote** to decide who acts next (election protocol)
+- **Use tools** — read/write files, run tests, manage a project board
+- **Persist everything** to an append-only log (Fluss) — full audit trail
+- **Work autonomously** or with human steering via the chat UI
 
-## Step 1: Clone the main project
-git clone https://github.com/qzyu999/containerclaw.git
-cd containerclaw
+## Architecture
 
-## Step 2: "Fill" the empty portal (The magic command)
+```
+Browser (React UI)  →  Bridge (SSE/REST)  →  Agent (gRPC, asyncio)
+                                                ↓
+                                          LLM Gateway  →  GPT / DeepSeek / Gemini / Local
+                                                ↓
+                                             Fluss (event log, Arrow-native)
+```
+
+All services run in Docker. One command starts everything.
+
+## Quick Start
+
+```bash
+# Clone with submodule
+git clone --recursive https://github.com/qzyu999/ContainerClaw.git
+cd ContainerClaw
+
+# Start the stack
+docker compose up --build
+
+# Open the UI
+cd ui && npm install && npm run dev
+# → http://localhost:5173/
+```
+
+**Requirements:** Docker, Docker Compose, Node.js 22+ (for UI dev server)
+
+## Configuration
+
+All configuration lives in `config.yaml`. Key sections:
+
+| Section | Controls |
+|---------|----------|
+| `llm.providers` | LLM backends (OpenAI, Gemini, DeepSeek, local MLX) |
+| `llm.default_provider` | Which provider to use |
+| `agents.roster` | Agent names, personas, tools |
+| `agents.settings` | Tool rounds, context limits, autonomy budget |
+| `gateway` | Timeout, retry, rate limits |
+
+### Enterprise / Custom Providers
+
+For non-standard LLM endpoints (custom auth, non-standard URLs):
+
+```bash
+cp config.local.yaml.example config.local.yaml
+# Edit with your provider details — this file is gitignored
+```
+
+The config loader deep-merges `config.local.yaml` on top of `config.yaml` at startup.
+
+## Project Structure
+
+```
+ContainerClaw/
+├── agent/              # Multi-agent system (Python, asyncio, gRPC)
+│   └── src/            # reconciler, moderator, election, tools, publisher
+├── llm-gateway/        # Provider-agnostic LLM router (FastAPI)
+├── bridge/             # UI backend + programmatic API (Flask)
+├── fluss/              # Universal Fluss cluster image (ZK + Coordinator + Tablet)
+├── ui/                 # React frontend (Vite, TypeScript)
+├── vendor/fluss-rust/  # Submodule: apache/fluss-rust (Python bindings via PyO3)
+├── shared/             # Config loader (shared across containers)
+├── config.yaml         # System configuration (tracked)
+├── docker-compose.yml  # Full local stack
+└── secrets/            # API keys (gitignored except placeholders)
+```
+
+## Programmatic API
+
+No browser needed. Submit tasks and get results via HTTP:
+
+```python
+import requests
+
+result = requests.post("http://localhost:5001/api/v1/run", json={
+    "prompt": "Read main.py and explain what it does",
+    "timeout_s": 120
+}).json()
+
+print(result["result"])       # Agent's final output
+print(result["event_count"])  # How many events were generated
+print(result["elapsed_s"])    # Wall-clock time
+```
+
+### Endpoints
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/v1/run` | POST | Submit task, wait for completion, return results |
+| `/api/v1/status/{session_id}` | GET | Check session state (active/idle) |
+| `/api/v1/sessions` | GET | List all sessions |
+| `/api/v1/history/{session_id}` | GET | Full event trace |
+| `/events/{session_id}` | GET (SSE) | Real-time event stream |
+
+## How It Works
+
+1. **Human sends a message** → published to Fluss event log
+2. **Election** → each agent votes for who should act (via LLM)
+3. **Winner executes** → reads files, writes code, runs commands
+4. **Results published** → all events go to Fluss
+5. **Next election** → repeat until agents vote "done"
+
+The entire history is replayable from the Fluss log. Sessions persist across restarts.
+
+## Key Design Decisions
+
+- **Fluss over Kafka/Redis** — Arrow-native, zero-copy Python↔Rust, lightweight single-node
+- **Election protocol** — prevents conflicting tool mutations (single-writer-per-cycle)
+- **Gateway abstraction** — agent never knows which LLM it's talking to
+- **Config overlays** — enterprise settings stay gitignored, OSS defaults are tracked
+
+## Submodule (fluss-rust)
+
+ContainerClaw uses `apache/fluss-rust` for Python bindings to Fluss:
+
+```bash
+# If vendor/fluss-rust is empty after clone:
 git submodule update --init --recursive
-
-The second command will also git clone the required submodule for the Python fluss library to work correctly.
-
-## 🚀 Getting Started
-
-### 1. Prerequisites
-- Docker & Docker Compose
-- A Gemini API Key (from Google AI Studio)
-- [Rust](https://www.rust-lang.org/tools/install) (Required to build dependencies)
-
-### 2. Configuration
-ContainerClaw uses a centralized `config.yaml` to define your agent roster, credentials, and provider endpoints.
-
-1.  **Configure System Defaults:** Edit `config.yaml` in the project root. By default, it supports local inference (MLX/vLLM) and Cloud APIs (Gemini/OpenAI).
-2.  **Add Secrets:** Create a `secrets` directory. Add your text files exactly matching the secret names referenced in `config.yaml`:
-    ```bash
-    mkdir -p secrets
-    echo "your-api-key-here" > secrets/gemini_api_key.txt
-    ```
-You can also update your local git to untrack those files after adding your API key:
-    ```bash
-    git update-index --skip-worktree secrets/gemini_api_key.txt
-    ```
-3.  **Customize Agents (Optional):** Define new agents in the `agents.roster` section of `config.yaml`. You can assign different models or providers securely on a per-agent basis.
-
-#### Single-agent vs multi-agent SWE-bench runs
-If you want to isolate the effect of orchestration (voting/debate) on SWE-bench, use `config.yaml` as follows:
-
-- **Single-agent condition**: set `agents.roster` to exactly one agent entry (for example only `Alice`).
-  - With one agent, election still executes structurally, but there is no real inter-agent competition or tie-break debate because only one voter/nominee exists.
-- **Multi-agent condition**: keep 2+ entries in `agents.roster` (default is 5) to enable full vote dynamics.
-- Keep all other settings fixed between runs (model, max tool rounds, dataset slice, timeout) so your comparison is attributable to agent count.
-
-Example minimal single-agent roster:
-
-```yaml
-agents:
-  roster:
-    - name: "Alice"
-      persona: "Software architect."
-      tools: "default_tools"
 ```
 
-Tip: if you want stricter single-agent behavior, keep `conchshell_enabled: true` but use one roster member. Disabling `conchshell_enabled` switches to direct single-agent fallback behavior, which is a different runtime mode and not a pure "same-loop, fewer agents" ablation.
+This is compiled at Docker build time via maturin (~3 min first build, cached after).
 
-
-### 3. Launching the Stack
-Use the provided `claw.sh` script to manage the lifecycle of your agent sessions.
+## Development
 
 ```bash
-# Start a new session
-./claw.sh up my-first-session
+# Format + lint
+cd agent && pip install ruff && ruff check src/
 
-# View the status of the containers
-docker ps
+# Run just the gateway (for LLM testing)
+docker compose up llm-gateway
+
+# Run the full stack without the UI
+docker compose up fluss llm-gateway claw-agent ui-bridge
+
+# Purge all state (fresh start)
+docker compose down -v
+rm -rf .fluss_data .zk_data .claw_state
 ```
 
----
+## License
 
-## 🛠 Usage
-
-### Interacting with the Agent
-In this Phase 1 MVP, the Agent is a background service. You can interact with the components:
-
-- **Dashboard**: Open `http://localhost:3000` in your browser to interact with the modern React dashboard.
-- **Log Streaming**: Follow the live logs to see what's happening:
-  ```bash
-  ./claw.sh logs
-  ```
-- **Agent Sandbox**: The agent's workspace is mirrored to your local directory. Any files the agent creates will appear in your project root, but it cannot access files outside this folder.
-
-### Stopping the Agent
-To stop the session gracefully:
-```bash
-./claw.sh down
-```
-
----
-
-## 🔒 Security Architecture
-
-ContainerClaw follows a **Microservices Security Pattern**:
-
-1.  **Isolated Agent**: The agent runs as a rootless user with a restrictive **Seccomp** profile and **no internet access**. It is restricted to an internal Docker network.
-2.  **LLM Gateway**: Only this hardened container has access to your API keys (via Docker Secrets). The agent must ask the Gateway to make LLM calls on its behalf.
-3.  **Audited Logs**: All agent actions are designed to be streamed to an external Log Streamer (Apache Fluss) so they cannot be tampered with by a compromised agent.
-
----
-
-## 📜 Project Structure
-
-- `agent/`: The autonomous execution engine.
-- `llm-gateway/`: The credential-isolated proxy for LLM APIs.
-- `bridge/`: Flask proxy bridging gRPC streams to SSE for the browser.
-- `ui/`: Modern Vite/React frontend dashboard.
-- `proto/`: gRPC definitions for internal communication.
-- `claw.sh`: The main control script.
-
----
-
-## 🗺 Roadmap
-- [ ] **Phase 2**: Implement full gRPC protocol for Agent ↔ UI interaction.
-- [ ] **Phase 2b**: Session Persistence — the agent resumes its thought process after a restart.
-- [ ] **Phase 3**: Real-time log processing and anomaly detection via Apache Fluss.
-
-## 📘 Design/Research Notes
-- [UX + Multi-Agent Professionalization Review (April 30, 2026)](docs/ux_multiagent_professionalization_review_apr_2026.md)
-- [SWE-bench Verified: Sampling & Evaluation Guide](docs/swe_bench_verified_harness.md)
+Apache 2.0
