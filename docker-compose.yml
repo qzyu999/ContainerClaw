@@ -29,8 +29,8 @@ services:
       - SWE_BENCH_MODE=${SWE_BENCH_MODE:-false}
       - HOME=${CLAW_HOME:-/home/claw}
     depends_on:
-      coordinator-server:
-        condition: service_started
+      fluss:
+        condition: service_healthy
       llm-gateway:
         condition: service_started
     tty: true
@@ -83,65 +83,27 @@ services:
       - "host.docker.internal:host-gateway"
     command: [ "gunicorn", "-c", "gunicorn.conf.py", "src.main:app" ]
 
-  zookeeper:
-    image: zookeeper:3.9.2
-    restart: always
+  fluss:
+    build:
+      context: ./fluss
+    hostname: coordinator-server
     networks:
       - internal
-    volumes:
-      - ${PROJECT_DIR:-.}/.zk_data/data:/data
-      - ${PROJECT_DIR:-.}/.zk_data/datalog:/datalog
-    healthcheck:
-      test: [ "CMD", "zkServer.sh", "status" ]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  coordinator-server:
-    image: apache/fluss:0.9.0-incubating
-    command: coordinatorServer
-    hostname: coordinator-server # Explicitly set for DNS stability
-    depends_on:
-      zookeeper:
-        condition: service_healthy
-    networks:
-      - internal
-    environment:
-      - |
-        FLUSS_PROPERTIES=
-        zookeeper.address: zookeeper:2181
-        bind.listeners: INTERNAL://0.0.0.0:9122, CLIENT://0.0.0.0:9123
-        advertised.listeners: INTERNAL://coordinator-server:9122, CLIENT://coordinator-server:9123
-        internal.listener.name: INTERNAL
-        remote.data.dir: /tmp/fluss/remote-data
     ports:
       - "9123:9123"
-    volumes:
-      - ${PROJECT_DIR:-.}/.fluss_data:/tmp/fluss
-
-  tablet-server:
-    image: apache/fluss:0.9.0-incubating
-    command: tabletServer
-    depends_on:
-      coordinator-server:
-        condition: service_started
-    networks:
-      - internal
+      - "9124:9223"
     environment:
-      - |
-        FLUSS_PROPERTIES=
-        zookeeper.address: zookeeper:2181
-        bind.listeners: INTERNAL://0.0.0.0:9122, CLIENT://0.0.0.0:9123
-        advertised.listeners: INTERNAL://tablet-server:9122, CLIENT://tablet-server:9123
-        internal.listener.name: INTERNAL
-        tablet-server.id: 0
-        kv.snapshot.interval: 0s
-        data.dir: /tmp/fluss/data
-        remote.data.dir: /tmp/fluss/remote-data
-    ports:
-      - "9124:9123"
+      - FLUSS_ADVERTISED_HOST=coordinator-server
+      - FLUSS_REMOTE_DATA_DIR=/tmp/fluss/remote-data
     volumes:
       - ${PROJECT_DIR:-.}/.fluss_data:/tmp/fluss
+      - ${PROJECT_DIR:-.}/.zk_data:/data/zookeeper
+    healthcheck:
+      test: ["CMD-SHELL", "echo srvr | nc localhost 2181 | grep -q Zookeeper"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 25s
 
   ui:
     build:
@@ -195,8 +157,8 @@ services:
       - SHARED_MODULE_PATH=/app/shared
       - PYTHONUNBUFFERED=1
     depends_on:
-      coordinator-server:
-        condition: service_started
+      fluss:
+        condition: service_healthy
 
   # ── Telemetry: Flink (Side-car Telemetry Pipeline) ──────────────
   flink-jobmanager:
@@ -222,8 +184,8 @@ services:
     networks:
       - internal
     depends_on:
-      coordinator-server:
-        condition: service_started
+      fluss:
+        condition: service_healthy
 
   flink-taskmanager:
     build:
