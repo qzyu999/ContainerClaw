@@ -14,6 +14,7 @@ services:
       - ${PROJECT_DIR:-.}/workspace:/workspace:rw
       - ${PROJECT_DIR:-.}/.claw_state:/state:rw
       - ${PROJECT_DIR:-.}/config.yaml:/config/config.yaml:ro
+      - ${PROJECT_DIR:-.}/config.local.yaml:/config/config.local.yaml:ro
       - ${PROJECT_DIR:-.}/SELF.md:/config/SELF.md:ro
       - ${PROJECT_DIR:-.}/shared:/app/shared:ro
     secrets:
@@ -69,6 +70,7 @@ services:
       - egress
     volumes:
       - ${PROJECT_DIR:-.}/config.yaml:/config/config.yaml:ro
+      - ${PROJECT_DIR:-.}/config.local.yaml:/config/config.local.yaml:ro
       - ${PROJECT_DIR:-.}/shared:/app/shared:ro
       - ${PROJECT_DIR:-.}/llm-gateway/gunicorn.conf.py:/app/gunicorn.conf.py:ro
     secrets:
@@ -76,6 +78,7 @@ services:
       - anthropic_api_key
       - openai_api_key
       - deepseek_api_key
+      - enterprise_api_key
     environment:
       - CLAW_CONFIG_PATH=/config/config.yaml
       - SHARED_MODULE_PATH=/app/shared
@@ -223,6 +226,8 @@ secrets:
     file: ./secrets/openai_api_key.txt
   deepseek_api_key:
     file: ./secrets/deepseek_api_key.txt
+  enterprise_api_key:
+    file: ./secrets/enterprise_api_key.txt
   discord_bot_token:
     file: ./secrets/discord_bot_token.txt
   discord_webhook_url:

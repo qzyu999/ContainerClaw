@@ -150,6 +150,36 @@ def _ensure_network(client: docker.DockerClient, network_name: str):
         print(f"🌐 Creating network: {network_name}")
         client.networks.create(network_name, driver="bridge")
 
+def _kill_sidecar_if_running():
+    """Stop and remove the sidecar container to release workspace bind-mount locks."""
+    try:
+        client = docker.from_env()
+        container_name = config.CONFIG.sidecar_config.default_target_id
+        try:
+            old = client.containers.get(container_name)
+            print(f"🧹 Stopping sidecar '{container_name}' to release workspace lock...")
+            old.remove(force=True)
+        except docker.errors.NotFound:
+            pass
+        # On Windows, the claw-agent also bind-mounts the workspace.
+        # Clear workspace contents from INSIDE the agent container to avoid
+        # host-side "Access is denied" errors from Docker's file locks.
+        try:
+            agent = client.containers.get("claw-agent")
+            print(f"🧹 Clearing /workspace from inside claw-agent container...")
+            exec_result = client.api.exec_create(
+                container="claw-agent",
+                cmd=["sh", "-c", "rm -rf /workspace/* /workspace/.[!.]* /workspace/..?* 2>/dev/null; echo done"],
+            )
+            output = client.api.exec_start(exec_id=exec_result['Id'])
+            print(f"   ✅ Workspace cleared via container: {output.decode().strip()}")
+            time.sleep(1)
+        except Exception as e:
+            print(f"   ⚠️ Container-side cleanup failed: {e}")
+    except Exception as e:
+        print(f"⚠️  Could not stop sidecar (non-fatal): {e}")
+
+
 def setup_local_workspace(instance: dict, workspace_dir: str = "./workspace",
                           install_deps: bool = False) -> Path:
     """Existing local setup logic (renamed)."""
@@ -163,6 +193,11 @@ def setup_local_workspace(instance: dict, workspace_dir: str = "./workspace",
     conchshell_backup = None
     if workspace.exists():
         print(f"🧹 Cleaning existing workspace: {workspace}")
+
+        # Kill sidecar first — it holds a bind-mount on the workspace dir,
+        # which on Windows causes "Access is denied" when trying to rmtree.
+        _kill_sidecar_if_running()
+
         # Backup .conchshell state (will restore after clone)
         conchshell_dir = workspace / ".conchshell"
         if conchshell_dir.exists():
@@ -170,7 +205,35 @@ def setup_local_workspace(instance: dict, workspace_dir: str = "./workspace",
             conchshell_backup = Path(tempfile.mkdtemp()) / ".conchshell"
             shutil.copytree(conchshell_dir, conchshell_backup)
 
-        shutil.rmtree(workspace)
+        # CRITICAL: Do NOT rmtree the workspace directory itself on Windows.
+        # Docker Desktop bind mounts break if you delete and recreate the dir.
+        # Only delete the CONTENTS, preserving the directory.
+        for item in workspace.iterdir():
+            try:
+                if item.is_dir():
+                    shutil.rmtree(item, onerror=_rmtree_error_handler)
+                else:
+                    item.unlink()
+            except Exception as e:
+                print(f"   ⚠️ Could not delete {item.name}: {e}")
+
+    # Ensure workspace directory exists for the clone
+    workspace.mkdir(parents=True, exist_ok=True)
+
+def _rmtree_error_handler(func, path, exc_info):
+    """Handle read-only or locked files on Windows during rmtree."""
+    import stat
+    # Make file writable and retry
+    os.chmod(path, stat.S_IWRITE)
+    try:
+        func(path)
+    except Exception:
+        # If still failing, wait and retry once more
+        time.sleep(2)
+        try:
+            func(path)
+        except Exception as e:
+            print(f"   ⚠️ Could not delete {path}: {e}")
 
     # Clone the repo — use a targeted fetch strategy that avoids downloading
     # full history for large repos (e.g. django/django has 500k+ commits).

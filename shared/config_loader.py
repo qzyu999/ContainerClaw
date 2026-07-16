@@ -222,11 +222,24 @@ class ClawConfig(BaseModel):
 
 
 def _resolve_secret(secret_name: str) -> str:
-    """Read a Docker secret from /run/secrets/."""
+    """Read a Docker secret from /run/secrets/ or local secrets/ directory."""
+    # Docker runtime path
     try:
         return Path(f"/run/secrets/{secret_name}").read_text().strip()
     except Exception:
-        return ""
+        pass
+    # Local development fallback: secrets/<name>.txt in the project root
+    try:
+        local_path = CONFIG_DIR / "secrets" / f"{secret_name}.txt"
+        if local_path.exists():
+            return local_path.read_text().strip()
+        # Also try relative to CWD (for scripts run from project root)
+        cwd_path = Path("secrets") / f"{secret_name}.txt"
+        if cwd_path.exists():
+            return cwd_path.read_text().strip()
+    except Exception:
+        pass
+    return ""
 
 
 # ── Main Loader ──────────────────────────────────────────────────
