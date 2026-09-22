@@ -7,3 +7,4 @@ requests
 pyarrow
 pyyaml
 pydantic
+pyfluss==1.0.0

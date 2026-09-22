@@ -6,3 +6,4 @@ pandas
 pyyaml
 pydantic
 docker
+pyfluss==1.0.0

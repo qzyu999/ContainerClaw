@@ -1,3 +1,0 @@
-[submodule "vendor/fluss-rust"]
-	path = vendor/fluss-rust
-	url = https://github.com/apache/fluss-rust.git

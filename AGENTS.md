@@ -4,7 +4,7 @@ Guidance for AI coding agents contributing to ContainerClaw.
 
 ## Project Overview
 
-ContainerClaw is a multi-agent system (MAS) where AI agents collaborate via elections and tool use, coordinated by an append-only event log (Apache Fluss). The codebase spans Python (agent, bridge), TypeScript (UI), Rust (Fluss SDK bindings), and Docker infrastructure.
+ContainerClaw is a multi-agent system (MAS) where AI agents collaborate via elections and tool use, coordinated by an append-only event log (Apache Fluss). The codebase spans Python (agent, bridge), TypeScript (UI), and Docker infrastructure.
 
 ## Architecture
 
@@ -14,14 +14,13 @@ llm-gateway/     → Python 3.11, FastAPI/Gunicorn, provider routing
 bridge/          → Python 3.12, Flask, SSE + REST API
 fluss/           → Dockerfile for unified ZK + Fluss cluster
 ui/              → TypeScript, React 19, Vite 8, Node 22
-vendor/fluss-rust/ → Submodule (apache/fluss-rust), compiled via maturin
 shared/          → Config loader (mounted into all containers)
 ```
 
 ## Critical Rules
 
 ### Dependencies
-- **Fluss SDK**: Built from `vendor/fluss-rust` submodule via maturin. Do NOT add `pyfluss` to requirements.txt (PyPI version is incompatible).
+- **Fluss SDK**: Installed from PyPI as `pyfluss==1.0.0`. The importable module is `fluss` (not `pyfluss`). Prebuilt wheels are available for Python 3.9–3.12 on Linux, macOS, and Windows. Stay on Python 3.12 in Docker to avoid needing a Rust toolchain.
 - **Config**: All configuration comes from `config.yaml` via `shared/config_loader.py`. No scattered `os.getenv()` — use the `ClawConfig` Pydantic model.
 
 ### Async/Concurrency
@@ -166,4 +165,3 @@ Human message → Reconciler activates → Election (N agents vote in parallel)
 
 - Commit prefix: `[component]` — e.g. `[agent]`, `[gateway]`, `[infra]`, `[ui]`, `[bridge]`
 - Never commit `config.local.yaml`, `docker-compose.enterprise.yml`, or private secret files
-- Submodule: `vendor/fluss-rust` → pinned at a specific commit on `apache/fluss-rust`
